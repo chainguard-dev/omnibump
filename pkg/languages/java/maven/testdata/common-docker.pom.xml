@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.confluent</groupId>
+        <artifactId>common</artifactId>
+        <version>[7.7.0-0, 7.7.1-0)</version>
+    </parent>
+
+    <groupId>io.confluent</groupId>
+    <artifactId>common-docker</artifactId>
+    <packaging>pom</packaging>
+    <version>7.7.0-0</version>
+
+    <name>${project.artifactId}</name>
+    <description>Common Docker utilities, new cp-base, and cp-base-lite image</description>
+
+    <modules>
+        <module>utility-belt</module>
+        <module>docker-utils</module>
+        <module>base</module>
+        <module>base-lite</module>
+        <module>jmxterm</module>
+        <!-- <module>kerberos</module> -->
+    </modules>
+
+    <properties>
+        <docker.os_type>ubi8</docker.os_type>
+        <docker.file>Dockerfile.${docker.os_type}</docker.file>
+        <docker.tag>${io.confluent.common-docker.version}-${docker.os_type}</docker.tag>
+        <io.confluent.common-docker.version>7.7.0-0</io.confluent.common-docker.version>
+        <!-- Versions-->
+        <ubi.image.version>8.9-1108</ubi.image.version>
+        <!-- Redhat Package Versions -->
+        <ubi.openssl.version>1.1.1k-12.el8_9</ubi.openssl.version>
+        <ubi.wget.version>1.19.5-11.el8</ubi.wget.version>
+        <ubi.netcat.version>7.92-1.el8</ubi.netcat.version>
+        <ubi.python39.version>3.9.18-1.module+el8.9.0+20024+793d7211</ubi.python39.version>
+        <ubi.tar.version>1.30-9.el8</ubi.tar.version>
+        <ubi.procps.version>3.3.15-14.el8</ubi.procps.version>
+        <ubi.krb5.workstation.version>1.18.2-26.el8_9</ubi.krb5.workstation.version>
+        <ubi.iputils.version>20180629-11.el8</ubi.iputils.version>
+        <ubi.hostname.version>3.20-6.el8</ubi.hostname.version>
+        <ubi.xzlibs.version>5.2.4-4.el8_6</ubi.xzlibs.version>
+        <ubi.glibc.version>2.28-236.el8_9.12</ubi.glibc.version>
+        <ubi.curl.version>7.61.1-33.el8</ubi.curl.version>
+        <ubi.findutils.version>1:4.6.0-21.el8</ubi.findutils.version>
+        <ubi.crypto.policies.scripts.version>20230731-1.git3177e06.el8</ubi.crypto.policies.scripts.version>
+        <!-- ZULU OpenJDK Package Version -->
+        <ubi.zulu.openjdk.version>11.0.22-1</ubi.zulu.openjdk.version>
+        <!-- Python Module Versions -->
+        <ubi.python.pip.version>20.*</ubi.python.pip.version>
+        <ubi.python.setuptools.version>67.8.0</ubi.python.setuptools.version>
+        <ubi.python.confluent.docker.utils.version>v0.0.75</ubi.python.confluent.docker.utils.version>
+        <!-- Golang Version -->
+        <golang.version>1.21-bullseye</golang.version>
+        <!-- In base/{pom.xml,Dockerfile.ubi} this property is used to to fail a build if the Yum/Dnf package manager
+        detects that there is security update availible to be installed. Set to true if you want to skip the check
+        (more accurately the check is still done, it just won't fail if an update is detected), or leave it as
+        false to enforce the check. Users may override this behavior on the maven CLI by adding this option:
+        `-Ddocker.skip-security-update-check=true` -->
+        <docker.skip-security-update-check>false</docker.skip-security-update-check>
+    </properties>
+</project>

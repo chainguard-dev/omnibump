@@ -1,0 +1,16 @@
+# Copyright 2025 Chainguard, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+patches:
+  # CVE-2023-34062
+  - groupID: io.projectreactor.netty
+    artifactID: reactor-netty-http
+    version: 1.0.39
+  # CVE-2023-5072
+  - groupId: org.json
+    artifactId: json
+    version: "20231013"
+  # CVE-2023-6378
+  - groupId: ch.qos.logback
+    artifactId: logback-core
+    version: "[1.4.12,2.0.0)"

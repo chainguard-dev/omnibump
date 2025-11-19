@@ -1,0 +1,262 @@
+/*
+Copyright 2024 Chainguard, Inc.
+SPDX-License-Identifier: Apache-2.0
+*/
+
+package omnibump
+
+import (
+	"fmt"
+	"log/slog"
+	"os"
+
+	"github.com/chainguard-dev/clog"
+	charmlog "github.com/charmbracelet/log"
+	"github.com/spf13/cobra"
+	"sigs.k8s.io/release-utils/version"
+
+	"github.com/chainguard-dev/omnibump/pkg/config"
+	"github.com/chainguard-dev/omnibump/pkg/languages"
+	_ "github.com/chainguard-dev/omnibump/pkg/languages/golang" // Register Go
+	_ "github.com/chainguard-dev/omnibump/pkg/languages/java"   // Register Java (Maven, Gradle, etc.)
+	_ "github.com/chainguard-dev/omnibump/pkg/languages/rust"   // Register Rust
+)
+
+type rootFlags struct {
+	language       string
+	depsFile       string
+	propertiesFile string
+	packages       string
+	properties     string
+	rootDir        string
+	tidy           bool
+	showDiff       bool
+	dryRun         bool
+	logLevel       string
+	logPolicy      []string
+}
+
+var flags rootFlags
+
+// New creates the root omnibump command.
+func New() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:          "omnibump",
+		Short:        "dependency version bumping tool",
+		Long:         `omnibump is a tool for bumping dependency versions across multiple language ecosystems with automatic language detection.`,
+		SilenceUsage: true,
+		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+			return setupLogging()
+		},
+		RunE: runUpdate,
+	}
+
+	// Add persistent flags
+	pf := cmd.PersistentFlags()
+	pf.StringVar(&flags.logLevel, "log-level", "info", "log level (debug, info, warn, error)")
+	pf.StringSliceVar(&flags.logPolicy, "log-policy", []string{"builtin:stderr"}, "log policy")
+
+	// Add root command flags
+	f := cmd.Flags()
+	f.StringVarP(&flags.language, "language", "l", "auto", "language to use (auto, java, go, rust, or deprecated: maven)")
+	f.StringVar(&flags.depsFile, "deps", "", "dependencies file (deps.yaml, or legacy names)")
+	f.StringVar(&flags.propertiesFile, "properties", "", "properties file (properties.yaml)")
+	f.StringVar(&flags.packages, "packages", "", "inline package list (space-separated)")
+	f.StringVar(&flags.properties, "props", "", "inline properties list (space-separated)")
+	f.StringVar(&flags.rootDir, "dir", ".", "project root directory")
+	f.BoolVar(&flags.tidy, "tidy", false, "run tidy command after update")
+	f.BoolVar(&flags.showDiff, "show-diff", false, "show diff of changes")
+	f.BoolVar(&flags.dryRun, "dry-run", false, "simulate update without making changes")
+
+	// Add version command
+	cmd.AddCommand(version.WithFont("starwars"))
+
+	// Add analyze command
+	cmd.AddCommand(analyzeCmd())
+
+	cmd.DisableAutoGenTag = true
+
+	return cmd
+}
+
+func setupLogging() error {
+	// Simple log writer setup
+	out := os.Stderr
+	for _, policy := range flags.logPolicy {
+		if policy != "builtin:stderr" {
+			f, err := os.OpenFile(policy, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			if err != nil {
+				return fmt.Errorf("failed to create log writer: %w", err)
+			}
+			out = f
+			break
+		}
+	}
+
+	// Parse log level
+	var level charmlog.Level
+	switch flags.logLevel {
+	case "debug":
+		level = charmlog.DebugLevel
+	case "info":
+		level = charmlog.InfoLevel
+	case "warn":
+		level = charmlog.WarnLevel
+	case "error":
+		level = charmlog.ErrorLevel
+	default:
+		level = charmlog.InfoLevel
+	}
+
+	slog.SetDefault(slog.New(charmlog.NewWithOptions(out, charmlog.Options{
+		ReportTimestamp: true,
+		Level:           level,
+	})))
+
+	return nil
+}
+
+func runUpdate(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
+	log := clog.FromContext(ctx)
+
+	// Validate input
+	if flags.depsFile == "" && flags.packages == "" {
+		return fmt.Errorf("either --deps or --packages must be specified")
+	}
+
+	if flags.depsFile != "" && flags.packages != "" {
+		return fmt.Errorf("cannot use both --deps and --packages")
+	}
+
+	// Load configuration
+	var cfg *config.Config
+	var err error
+
+	if flags.depsFile != "" {
+		// Load from file(s)
+		files := []string{flags.depsFile}
+		if flags.propertiesFile != "" {
+			files = append(files, flags.propertiesFile)
+		}
+		cfg, err = config.LoadMultipleConfigs(ctx, files)
+		if err != nil {
+			return fmt.Errorf("failed to load configuration: %w", err)
+		}
+	} else {
+		// Parse inline packages
+		packages, err := config.ParseInlinePackages(flags.packages)
+		if err != nil {
+			return fmt.Errorf("failed to parse inline packages: %w", err)
+		}
+		cfg = &config.Config{
+			Packages: packages,
+		}
+	}
+
+	// Detect language if not specified
+	detectedLang := flags.language
+
+	// Handle backward compatibility: "maven" -> "java"
+	if detectedLang == "maven" {
+		log.Warnf("Language 'maven' is deprecated, use 'java' instead")
+		detectedLang = "java"
+	}
+
+	if detectedLang == "auto" || detectedLang == "" {
+		detectedLang, err = languages.DetectLanguage(ctx, flags.rootDir)
+		if err != nil {
+			return fmt.Errorf("failed to detect language: %w (try specifying --language explicitly)", err)
+		}
+		log.Infof("Detected language: %s", detectedLang)
+	}
+
+	// Override language from config if specified
+	if cfg.Language != "" && cfg.Language != "auto" {
+		detectedLang = cfg.Language
+		// Handle backward compatibility in config too
+		if detectedLang == "maven" {
+			log.Warnf("Language 'maven' in config is deprecated, use 'java' instead")
+			detectedLang = "java"
+		}
+	}
+
+	// Get language implementation
+	lang, err := languages.Get(detectedLang)
+	if err != nil {
+		return fmt.Errorf("failed to get language implementation: %w", err)
+	}
+
+	log.Infof("Using language: %s", lang.Name())
+
+	// Convert config to UpdateConfig
+	updateCfg := convertToUpdateConfig(cfg)
+	updateCfg.RootDir = flags.rootDir
+	updateCfg.Tidy = flags.tidy
+	updateCfg.ShowDiff = flags.showDiff
+	updateCfg.DryRun = flags.dryRun
+
+	// Perform update
+	if err := lang.Update(ctx, updateCfg); err != nil {
+		return fmt.Errorf("update failed: %w", err)
+	}
+
+	// Validate
+	if !flags.dryRun {
+		if err := lang.Validate(ctx, updateCfg); err != nil {
+			log.Warnf("Validation completed with warnings: %v", err)
+		}
+	}
+
+	log.Infof("Update completed successfully")
+	return nil
+}
+
+func convertToUpdateConfig(cfg *config.Config) *languages.UpdateConfig {
+	updateCfg := &languages.UpdateConfig{
+		Dependencies: make([]languages.Dependency, 0, len(cfg.Packages)),
+		Properties:   make(map[string]string),
+		Options:      make(map[string]any),
+	}
+
+	// Convert packages
+	for _, pkg := range cfg.Packages {
+		dep := languages.Dependency{
+			Name:     pkg.Name,
+			Version:  pkg.Version,
+			Scope:    pkg.Scope,
+			Type:     pkg.Type,
+			Metadata: make(map[string]any),
+		}
+
+		// Store Maven-specific fields in metadata
+		if pkg.GroupID != "" {
+			dep.Metadata["groupId"] = pkg.GroupID
+		}
+		if pkg.ArtifactID != "" {
+			dep.Metadata["artifactId"] = pkg.ArtifactID
+		}
+
+		updateCfg.Dependencies = append(updateCfg.Dependencies, dep)
+	}
+
+	// Convert properties
+	for _, prop := range cfg.Properties {
+		updateCfg.Properties[prop.Property] = prop.Value
+	}
+
+	// Convert replaces (Go-specific)
+	if len(cfg.Replaces) > 0 {
+		for _, repl := range cfg.Replaces {
+			dep := languages.Dependency{
+				OldName: repl.OldName,
+				Name:    repl.Name,
+				Version: repl.Version,
+				Replace: true,
+			}
+			updateCfg.Dependencies = append(updateCfg.Dependencies, dep)
+		}
+	}
+
+	return updateCfg
+}

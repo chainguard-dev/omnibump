@@ -1,0 +1,8 @@
+# Copyright 2025 Chainguard, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+properties:
+  - property: "prop1"
+    value: "value1"
+  - property: "prop2"
+    value: "value2"
