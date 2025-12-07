@@ -13,6 +13,7 @@ import (
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
+	"github.com/chainguard-dev/omnibump/pkg/languages/java/gradle"
 	"github.com/chainguard-dev/omnibump/pkg/languages/java/maven"
 )
 
@@ -25,8 +26,8 @@ type Java struct {
 // registeredBuildTools is the list of supported build tools in priority order.
 // Build tools are checked in order until one is detected.
 var registeredBuildTools = []BuildTool{
-	&maven.Maven{}, // Maven is checked first
-	// Future: &gradle.Gradle{},
+	&maven.Maven{},
+	&gradle.Gradle{},
 }
 
 // init registers Java with the language registry.

@@ -74,6 +74,9 @@ func New() *cobra.Command {
 	// Add analyze command
 	cmd.AddCommand(analyzeCmd())
 
+	// Add supported command
+	cmd.AddCommand(supportedCmd())
+
 	cmd.DisableAutoGenTag = true
 
 	return cmd

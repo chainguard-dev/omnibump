@@ -1,5 +1,6 @@
 # omnibump
 
+
 Language: java
 Total dependencies: 15
 Dependencies using properties: 12
@@ -40,6 +41,155 @@ omnibump --deps deps.yaml
 # Update using inline format: groupId@artifactId@version
 omnibump --packages "io.netty@netty-codec-http@4.1.94.Final junit@junit@4.13.2@test"
 ```
+
+### Java (Gradle) Projects
+
+#### Example 1: Update Gradle Dependencies (String Notation)
+
+For projects using string notation like `implementation("group:artifact:version")`:
+
+Create `deps.yaml`:
+
+```yaml
+# language field is optional - will auto-detect
+packages:
+  - name: "org.apache.commons:commons-lang3"
+    version: "3.18.0"
+
+  - name: "io.netty:netty-all"
+    version: "4.1.101.Final"
+
+  - name: "junit:junit"
+    version: "4.13.3"
+    scope: test
+```
+
+Run update:
+
+```bash
+omnibump --deps deps.yaml
+```
+
+This updates dependencies in `build.gradle` or `build.gradle.kts`:
+
+```kotlin
+// Before
+implementation("org.apache.commons:commons-lang3:3.12.0")
+
+// After
+implementation("org.apache.commons:commons-lang3:3.18.0")
+```
+
+#### Example 2: Spring Boot library() Pattern
+
+For Spring Boot projects using the `library()` function:
+
+```yaml
+packages:
+  # Use the display name as it appears in library()
+  - name: "org.apache.commons:Commons Lang3"
+    version: "3.18.0"
+
+  - name: "io.netty:Netty"
+    version: "4.1.101.Final"
+```
+
+Run update:
+
+```bash
+omnibump --deps deps.yaml --dir spring-boot-project/spring-boot-dependencies
+```
+
+This updates:
+
+```groovy
+// Before
+library("Commons Lang3", "3.17.0") {
+  group("org.apache.commons") {
+    modules = ["commons-lang3"]
+  }
+}
+
+// After
+library("Commons Lang3", "3.18.0") {
+  group("org.apache.commons") {
+    modules = ["commons-lang3"]
+  }
+}
+```
+
+#### Example 3: CVE Remediation (Replacing sed)
+
+**Old approach (manual sed):**
+
+```bash
+sed -i 's/library("Commons Lang3", "3.17.0")/library("Commons Lang3", "3.18.0")/g' \
+  spring-boot-project/spring-boot-dependencies/build.gradle
+```
+
+**New approach (omnibump):**
+
+```bash
+omnibump --packages "org.apache.commons:Commons Lang3@3.18.0" \
+  --dir spring-boot-project/spring-boot-dependencies
+```
+
+Benefits:
+- Type-safe (no typos in sed patterns)
+- Works across Groovy and Kotlin DSL
+- Handles multiple dependency patterns automatically
+- Shows clear diffs with `--show-diff`
+
+#### Example 4: Multi-Module Gradle Projects
+
+For projects with subprojects:
+
+```bash
+# Update root build.gradle
+omnibump --deps deps.yaml --dir .
+
+# Or update specific subproject
+omnibump --deps deps.yaml --dir subproject-name
+```
+
+#### Example 5: Inline Gradle Updates
+
+```bash
+# Quick CVE fix
+omnibump --language java \
+  --packages "org.apache.commons:commons-lang3@3.18.0 io.netty:netty-all@4.1.101.Final"
+
+# With dry run to preview
+omnibump --packages "org.apache.commons:commons-lang3@3.18.0" \
+  --dry-run --show-diff
+```
+
+#### Example 6: Gradle Wrapper Projects
+
+Projects using `gradlew` work automatically:
+
+```bash
+# omnibump updates build.gradle[.kts]
+omnibump --deps deps.yaml
+
+# Then build with gradlew as usual
+./gradlew build
+```
+
+#### Example 7: Both Groovy and Kotlin DSL
+
+omnibump supports both DSL formats transparently:
+
+```yaml
+# Same configuration works for both
+packages:
+  - name: "org.springframework.boot:spring-boot-dependencies"
+    version: "3.2.0"
+```
+
+Works with:
+- `build.gradle` (Groovy DSL)
+- `build.gradle.kts` (Kotlin DSL)
 
 ### Cross-Language Projects
 
@@ -168,6 +318,32 @@ omnibump analyze [project-path] [flags]
 | `--packages` | | Inline packages to analyze | |
 | `--output-deps` | | Write deps recommendations to file | |
 | `--output-props` | | Write properties recommendations to file | |
+
+### Supported Command
+
+```bash
+omnibump supported
+```
+
+Display all supported languages and build systems. Useful for understanding what omnibump can handle.
+
+Example output:
+```
+Supported Languages and Build Systems
+=====================================
+
+Language: java
+  Detects: [pom.xml build.gradle build.gradle.kts ...]
+  Build Tools:
+    - Maven (pom.xml)
+    - Gradle (build.gradle, build.gradle.kts)
+
+Language: go
+  Detects: [go.mod go.sum go.work]
+
+Language: rust
+  Detects: [Cargo.toml Cargo.lock]
+```
 
 ### Version Command
 
@@ -356,6 +532,40 @@ packages:
 --packages "junit@junit@4.13.2@test"
 --packages "org.example@custom@1.0.0@compile@war"
 ```
+
+### Gradle
+
+```yaml
+packages:
+  # Standard format (groupId:artifactId)
+  - name: "org.apache.commons:commons-lang3"
+    version: "3.18.0"
+
+  # For Spring Boot library() - use display name
+  - name: "org.apache.commons:Commons Lang3"
+    version: "3.18.0"
+```
+
+**Inline format:**
+```bash
+# String notation dependencies
+--packages "groupId:artifactId@version"
+
+# Spring Boot library() dependencies (use display name)
+--packages "groupId:Display Name@version"
+```
+
+**Examples:**
+```bash
+# Standard Gradle dependencies
+--packages "org.apache.commons:commons-lang3@3.18.0"
+--packages "io.netty:netty-all@4.1.101.Final"
+
+# Spring Boot library() pattern
+--packages "org.apache.commons:Commons Lang3@3.18.0"
+```
+
+**Note:** Gradle uses `:` separator in package names (not `@` like Maven). The `@` only appears before the version in inline format.
 
 ## Advanced Usage
 
@@ -620,7 +830,7 @@ A: Use the analyze command to discover dependencies, then create a configuration
 
 ### Q: Does omnibump support Gradle?
 
-A: Not yet. Gradle support is planned. See the design document in `docs/GRADLE_INTEGRATION_DESIGN.md`.
+A: Yes! Gradle support is fully implemented. omnibump auto-detects Gradle projects and supports both Groovy DSL (`build.gradle`) and Kotlin DSL (`build.gradle.kts`). See the Gradle examples section below.
 
 ### Q: Can omnibump handle complex version constraints?
 
