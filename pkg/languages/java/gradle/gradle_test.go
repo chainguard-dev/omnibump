@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/chainguard-dev/omnibump/pkg/analyzer"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 )
 
@@ -964,5 +965,461 @@ func TestGradle_FindBuildFiles_SkipsHiddenDirs(t *testing.T) {
 
 	if len(files) > 0 && files[0] != rootBuild {
 		t.Errorf("Expected %s, got %s", rootBuild, files[0])
+	}
+}
+
+func TestGradleAnalyzer_Analyze_WithTomlCatalog(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create gradle directory
+	gradleDir := filepath.Join(tmpDir, "gradle")
+	if err := os.MkdirAll(gradleDir, 0755); err != nil {
+		t.Fatalf("failed to create gradle directory: %v", err)
+	}
+
+	// Create libs.versions.toml with version catalog
+	tomlFile := filepath.Join(gradleDir, "libs.versions.toml")
+	tomlContent := `[versions]
+netty-all = "4.1.100.Final"
+commons-lang3 = "3.12.0"
+
+[libraries]
+netty-all = { module = "io.netty:netty-all", version.ref = "netty-all" }
+commons-lang3 = { module = "org.apache.commons:commons-lang3", version.ref = "commons-lang3" }
+`
+	if err := os.WriteFile(tomlFile, []byte(tomlContent), 0600); err != nil {
+		t.Fatalf("failed to write libs.versions.toml: %v", err)
+	}
+
+	// Create build.gradle with dependencies
+	buildFile := filepath.Join(tmpDir, "build.gradle")
+	buildContent := `dependencies {
+    implementation("io.netty:netty-all:4.1.100.Final")
+    implementation("org.apache.commons:commons-lang3:3.12.0")
+}
+`
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+		t.Fatalf("failed to write build.gradle: %v", err)
+	}
+
+	// Analyze the project
+	analyzer := &GradleAnalyzer{}
+	result, err := analyzer.Analyze(context.Background(), tmpDir)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+
+	// Verify we found version catalog keys
+	if len(result.Properties) != 2 {
+		t.Errorf("Expected 2 version catalog keys, got %d", len(result.Properties))
+	}
+
+	if result.Properties["netty-all"] != "4.1.100.Final" {
+		t.Errorf("Expected netty-all version 4.1.100.Final, got %s", result.Properties["netty-all"])
+	}
+
+	if result.Properties["commons-lang3"] != "3.12.0" {
+		t.Errorf("Expected commons-lang3 version 3.12.0, got %s", result.Properties["commons-lang3"])
+	}
+
+	// Verify we found dependencies
+	if len(result.Dependencies) != 2 {
+		t.Errorf("Expected 2 dependencies, got %d", len(result.Dependencies))
+	}
+}
+
+func TestGradleAnalyzer_Analyze_WithInlineCatalog(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create settings.gradle with inline version catalog
+	settingsFile := filepath.Join(tmpDir, "settings.gradle")
+	settingsContent := `rootProject.name = 'test-project'
+
+dependencyResolutionManagement {
+    versionCatalogs {
+        libs {
+            version("netty-all", "4.1.100.Final")
+            version("commons-lang3", "3.12.0")
+        }
+    }
+}
+`
+	if err := os.WriteFile(settingsFile, []byte(settingsContent), 0600); err != nil {
+		t.Fatalf("failed to write settings.gradle: %v", err)
+	}
+
+	// Create build.gradle with dependencies
+	buildFile := filepath.Join(tmpDir, "build.gradle")
+	buildContent := `dependencies {
+    implementation("io.netty:netty-all:4.1.100.Final")
+}
+`
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+		t.Fatalf("failed to write build.gradle: %v", err)
+	}
+
+	// Analyze the project
+	analyzer := &GradleAnalyzer{}
+	result, err := analyzer.Analyze(context.Background(), tmpDir)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+
+	// Verify we found inline version catalog keys
+	if len(result.Properties) != 2 {
+		t.Errorf("Expected 2 version catalog keys, got %d", len(result.Properties))
+	}
+
+	if result.Properties["netty-all"] != "4.1.100.Final" {
+		t.Errorf("Expected netty-all version 4.1.100.Final, got %s", result.Properties["netty-all"])
+	}
+}
+
+func TestGradleAnalyzer_RecommendStrategy_DirectUpdates(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create build.gradle with direct version dependencies
+	buildFile := filepath.Join(tmpDir, "build.gradle")
+	buildContent := `dependencies {
+    implementation("io.netty:netty-all:4.1.100.Final")
+    implementation("org.apache.commons:commons-lang3:3.12.0")
+}
+`
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+		t.Fatalf("failed to write build.gradle: %v", err)
+	}
+
+	// Analyze the project
+	gradleAnalyzer := &GradleAnalyzer{}
+	analysis, err := gradleAnalyzer.Analyze(context.Background(), tmpDir)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+
+	// Request updates
+	deps := []analyzer.Dependency{
+		{
+			Name:    "io.netty:netty-all",
+			Version: "4.1.101.Final",
+		},
+		{
+			Name:    "org.apache.commons:commons-lang3",
+			Version: "3.18.0",
+		},
+	}
+
+	strategy, err := gradleAnalyzer.RecommendStrategy(context.Background(), analysis, deps)
+	if err != nil {
+		t.Fatalf("RecommendStrategy() error = %v", err)
+	}
+
+	// Both should be direct updates (no version catalog)
+	if len(strategy.DirectUpdates) != 2 {
+		t.Errorf("Expected 2 direct updates, got %d", len(strategy.DirectUpdates))
+	}
+
+	if len(strategy.PropertyUpdates) != 0 {
+		t.Errorf("Expected 0 version catalog updates, got %d", len(strategy.PropertyUpdates))
+	}
+}
+
+func TestGradleAnalyzer_RecommendStrategy_CatalogUpdates(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create gradle directory
+	gradleDir := filepath.Join(tmpDir, "gradle")
+	if err := os.MkdirAll(gradleDir, 0755); err != nil {
+		t.Fatalf("failed to create gradle directory: %v", err)
+	}
+
+	// Create libs.versions.toml with version catalog
+	tomlFile := filepath.Join(gradleDir, "libs.versions.toml")
+	tomlContent := `[versions]
+netty = "4.1.100.Final"
+
+[libraries]
+netty-all = { module = "io.netty:netty-all", version.ref = "netty" }
+`
+	if err := os.WriteFile(tomlFile, []byte(tomlContent), 0600); err != nil {
+		t.Fatalf("failed to write libs.versions.toml: %v", err)
+	}
+
+	// Create build.gradle - simulate using catalog (we detect from catalog definition)
+	buildFile := filepath.Join(tmpDir, "build.gradle")
+	buildContent := `dependencies {
+    // Would actually be implementation(libs.netty.all) in real project
+}
+`
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+		t.Fatalf("failed to write build.gradle: %v", err)
+	}
+
+	// Analyze the project
+	gradleAnalyzer := &GradleAnalyzer{}
+	analysis, err := gradleAnalyzer.Analyze(context.Background(), tmpDir)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+
+	// Manually mark the dependency as using catalog (simulating catalog reference detection)
+	if dep, exists := analysis.Dependencies["io.netty:netty-all"]; exists {
+		dep.UsesProperty = true
+		dep.PropertyName = "netty"
+	}
+
+	// Request update
+	deps := []analyzer.Dependency{
+		{
+			Name:    "io.netty:netty-all",
+			Version: "4.1.101.Final",
+		},
+	}
+
+	strategy, err := gradleAnalyzer.RecommendStrategy(context.Background(), analysis, deps)
+	if err != nil {
+		t.Fatalf("RecommendStrategy() error = %v", err)
+	}
+
+	// Should be catalog update
+	if len(strategy.PropertyUpdates) != 1 {
+		t.Errorf("Expected 1 version catalog update, got %d", len(strategy.PropertyUpdates))
+	}
+
+	if strategy.PropertyUpdates["netty"] != "4.1.101.Final" {
+		t.Errorf("Expected netty catalog key to be updated to 4.1.101.Final, got %s", strategy.PropertyUpdates["netty"])
+	}
+
+	if len(strategy.DirectUpdates) != 0 {
+		t.Errorf("Expected 0 direct updates, got %d", len(strategy.DirectUpdates))
+	}
+}
+
+func TestGradleAnalyzer_Analyze_EmptyProject(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create empty build.gradle
+	buildFile := filepath.Join(tmpDir, "build.gradle")
+	if err := os.WriteFile(buildFile, []byte(""), 0600); err != nil {
+		t.Fatalf("failed to write build.gradle: %v", err)
+	}
+
+	// Analyze the project
+	analyzer := &GradleAnalyzer{}
+	result, err := analyzer.Analyze(context.Background(), tmpDir)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+
+	// Should find no dependencies or catalogs
+	if len(result.Dependencies) != 0 {
+		t.Errorf("Expected 0 dependencies, got %d", len(result.Dependencies))
+	}
+
+	if len(result.Properties) != 0 {
+		t.Errorf("Expected 0 version catalog keys, got %d", len(result.Properties))
+	}
+}
+
+func TestGradle_Validate_Success(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create build.gradle with dependencies
+	buildFile := filepath.Join(tmpDir, "build.gradle.kts")
+	buildContent := `
+dependencies {
+    implementation("io.netty:netty-all:4.1.101.Final")
+}
+`
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+		t.Fatalf("failed to write build.gradle.kts: %v", err)
+	}
+
+	// Update configuration matching the actual versions in the file
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "io.netty:netty-all", Version: "4.1.101.Final"},
+		},
+	}
+
+	gradle := &Gradle{}
+	err := gradle.Validate(context.Background(), cfg)
+	if err != nil {
+		t.Errorf("Validate() error = %v, expected nil", err)
+	}
+}
+
+func TestGradle_Validate_VersionMismatch(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create build.gradle with old versions
+	buildFile := filepath.Join(tmpDir, "build.gradle.kts")
+	buildContent := `
+dependencies {
+    implementation("org.apache.commons:commons-lang3:3.12.0")
+}
+`
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+		t.Fatalf("failed to write build.gradle.kts: %v", err)
+	}
+
+	// Request validation for a different version
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "org.apache.commons:commons-lang3", Version: "3.18.0"},
+		},
+	}
+
+	gradle := &Gradle{}
+	err := gradle.Validate(context.Background(), cfg)
+	if err == nil {
+		t.Error("Validate() expected error for version mismatch, got nil")
+	}
+	if err != nil && !strings.Contains(err.Error(), "has version 3.12.0, expected 3.18.0") {
+		t.Errorf("Validate() error = %v, expected version mismatch message", err)
+	}
+}
+
+func TestGradle_Validate_DependencyNotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create empty build.gradle
+	buildFile := filepath.Join(tmpDir, "build.gradle.kts")
+	buildContent := `
+dependencies {
+}
+`
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+		t.Fatalf("failed to write build.gradle.kts: %v", err)
+	}
+
+	// Request validation for a dependency that doesn't exist
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "org.apache.commons:commons-lang3", Version: "3.18.0"},
+		},
+	}
+
+	gradle := &Gradle{}
+	err := gradle.Validate(context.Background(), cfg)
+	if err == nil {
+		t.Error("Validate() expected error for missing dependency, got nil")
+	}
+	if err != nil && !strings.Contains(err.Error(), "not found in project after update") {
+		t.Errorf("Validate() error = %v, expected not found message", err)
+	}
+}
+
+func TestGradle_Validate_VersionCatalog(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create gradle directory for TOML catalog
+	gradleDir := filepath.Join(tmpDir, "gradle")
+	if err := os.MkdirAll(gradleDir, 0755); err != nil {
+		t.Fatalf("failed to create gradle directory: %v", err)
+	}
+
+	// Create libs.versions.toml with correct version
+	tomlFile := filepath.Join(gradleDir, "libs.versions.toml")
+	tomlContent := `[versions]
+netty-all = "4.1.101.Final"
+
+[libraries]
+netty-all = { module = "io.netty:netty-all", version.ref = "netty-all" }
+`
+	if err := os.WriteFile(tomlFile, []byte(tomlContent), 0600); err != nil {
+		t.Fatalf("failed to write libs.versions.toml: %v", err)
+	}
+
+	// Create build.gradle using catalog
+	buildFile := filepath.Join(tmpDir, "build.gradle.kts")
+	buildContent := `
+dependencies {
+    implementation(libs.netty.all)
+}
+`
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+		t.Fatalf("failed to write build.gradle.kts: %v", err)
+	}
+
+	// Validate the version catalog was updated correctly
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "io.netty:netty-all", Version: "4.1.101.Final"},
+		},
+	}
+
+	gradle := &Gradle{}
+	err := gradle.Validate(context.Background(), cfg)
+	if err != nil {
+		t.Errorf("Validate() error = %v, expected nil for correct catalog version", err)
+	}
+}
+
+func TestGradle_Validate_VersionCatalogMismatch(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create gradle directory for TOML catalog
+	gradleDir := filepath.Join(tmpDir, "gradle")
+	if err := os.MkdirAll(gradleDir, 0755); err != nil {
+		t.Fatalf("failed to create gradle directory: %v", err)
+	}
+
+	// Create libs.versions.toml with old version
+	tomlFile := filepath.Join(gradleDir, "libs.versions.toml")
+	tomlContent := `[versions]
+netty-all = "4.1.100.Final"
+
+[libraries]
+netty-all = { module = "io.netty:netty-all", version.ref = "netty-all" }
+`
+	if err := os.WriteFile(tomlFile, []byte(tomlContent), 0600); err != nil {
+		t.Fatalf("failed to write libs.versions.toml: %v", err)
+	}
+
+	// Create build.gradle using catalog
+	buildFile := filepath.Join(tmpDir, "build.gradle.kts")
+	buildContent := `
+dependencies {
+    implementation(libs.netty.all)
+}
+`
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+		t.Fatalf("failed to write build.gradle.kts: %v", err)
+	}
+
+	// Validate should fail because catalog wasn't updated
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "io.netty:netty-all", Version: "4.1.101.Final"},
+		},
+	}
+
+	gradle := &Gradle{}
+	err := gradle.Validate(context.Background(), cfg)
+	if err == nil {
+		t.Error("Validate() expected error for catalog version mismatch, got nil")
+	}
+	if err != nil && !strings.Contains(err.Error(), "catalog key netty-all has version 4.1.100.Final, expected 4.1.101.Final") {
+		t.Errorf("Validate() error = %v, expected catalog version mismatch message", err)
+	}
+}
+
+func TestGradle_Validate_InvalidDirectory(t *testing.T) {
+	cfg := &languages.UpdateConfig{
+		RootDir: "/nonexistent/directory",
+		Dependencies: []languages.Dependency{
+			{Name: "org.apache.commons:commons-lang3", Version: "3.18.0"},
+		},
+	}
+
+	gradle := &Gradle{}
+	err := gradle.Validate(context.Background(), cfg)
+	if err == nil {
+		t.Error("Validate() expected error for invalid directory, got nil")
 	}
 }
