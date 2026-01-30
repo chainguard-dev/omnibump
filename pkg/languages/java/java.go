@@ -53,7 +53,7 @@ func (j *Java) Detect(ctx context.Context, dir string) (bool, error) {
 // GetManifestFiles returns Java manifest files from the detected build tool.
 func (j *Java) GetManifestFiles() []string {
 	// Return all possible manifest files from all build tools
-	var files []string
+	var files []string //nolint: prealloc
 	for _, tool := range registeredBuildTools {
 		files = append(files, tool.GetManifestFiles()...)
 	}
