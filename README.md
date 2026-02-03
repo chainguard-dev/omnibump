@@ -1,5 +1,469 @@
 # omnibump
 
+=======
+**Dependency version management tool**
+
+`omnibump` is a CLI tool for updating dependency versions across multiple language ecosystems with an easy-to-use interface with automatic language detection.
+
+## Features
+
+- **Multi-Language Support**: Go, Rust, and Java (Maven, Gradle)
+- **Automatic Detection**: Identifies project language automatically
+- **Unified Configuration**: Single configuration format across all languages
+- **Property-Based Updates**: Smart property management for Maven
+- **Version Resolution**: Resolves `@latest` queries without spurious changes
+- **Dependency Analysis**: Understand project's dependency structure
+- **Dry Run Mode**: Preview changes before applying
+- **Backward Compatible**: Works with legacy configuration file names
+
+## Supported Languages
+
+| Language | Build Tool | Manifest Files |
+|----------|-----------|----------------|
+| Go | Go Modules | `go.mod`, `go.sum` |
+| Rust | Cargo | `Cargo.lock`, `Cargo.toml` |
+| Java | Maven | `pom.xml` |
+| Java | Gradle | `build.gradle`, `build.gradle.kts` |
+
+## Validation and Safety Rules
+
+omnibump includes built-in validation to prevent common mistakes and respect language ecosystem conventions:
+
+### Go Module Validation
+
+**Replace Directive Precedence** (Go-specific behavior)
+- In Go, `replace` directives take precedence over `require` directives
+- When a package has a replace, omnibump validates against the **replacement version only**
+- The require directive is ignored during validation
+
+```yaml
+# Example go.mod:
+# replace github.com/example/pkg => github.com/example/pkg v1.1.0
+# require github.com/example/pkg v1.4.0
+#
+# Actual version used: v1.1.0 (replace takes precedence)
+# omnibump will allow: v1.2.0 (upgrade from v1.1.0)
+# omnibump will block: v1.0.0 (downgrade from v1.1.0)
+```
+
+**Downgrade Prevention**
+- Prevents accidental downgrades in both `require` and `replace` directives
+- Only allows version upgrades (higher semantic versions)
+
+```bash
+# Current: github.com/example/pkg v2.0.0
+# Attempting: v1.9.0
+# Result: ERROR - downgrade blocked
+```
+
+**Main Module Protection**
+- Prevents bumping the main module itself (protects against accidental self-updates)
+
+```bash
+# go.mod: module github.com/myorg/myproject
+# Attempting: github.com/myorg/myproject@v2.0.0
+# Result: ERROR - main module bump blocked
+```
+
+### Maven Validation
+
+**Downgrade Prevention**
+- Prevents downgrades in both direct dependencies and property-based versions
+
+**Scope Preservation**
+- Maintains dependency scope (compile, test, runtime, provided) during updates
+
+### Gradle Validation
+
+**Format Detection**
+- Automatically handles both Groovy DSL and Kotlin DSL
+- Preserves exact formatting and structure
+
+### Rust Validation
+
+**Lock File Integrity**
+- Maintains Cargo.lock consistency during updates
+
+### Cross-Language Safety
+
+All languages benefit from:
+- **Dry run validation**: Test changes before applying
+- **Diff preview**: See exactly what will change
+- **Version format validation**: Ensures versions match ecosystem conventions
+- **File integrity**: Preserves comments, formatting, and structure
+
+## Installation
+
+### From Source (Recommended)
+
+```bash
+git clone https://github.com/chainguard-dev/mono/omnibump
+cd mono/omnibump
+make build
+sudo make install
+```
+
+### Manual Build
+
+```bash
+git clone https://github.com/chainguard-dev/omnibump
+cd omnibump
+go build -o omnibump .
+sudo mv omnibump /usr/local/bin/
+```
+
+### Verify Installation
+
+```bash
+omnibump version
+```
+
+### Build Targets
+
+The Makefile provides several useful targets for building and developing omnibump:
+
+#### Building
+
+```bash
+# Build the binary with version information embedded
+make build
+```
+
+The build process automatically injects version information using ldflags:
+- `GIT_VERSION` - Git tag or commit (e.g., `v1.0.0` or `abc1234`)
+- `GIT_COMMIT` - Short commit hash
+- `GIT_TREE_STATE` - Whether the working tree is clean or dirty
+- `BUILD_DATE` - Timestamp of the build
+
+Example output:
+```
+Building omnibump...
+  Version:    v1.0.0-3-gabc1234-dirty
+  Commit:     abc1234
+  Tree State: dirty
+  Build Date: 2025-11-12T14:23:45Z
+Build complete: ./omnibump
+```
+
+#### Installing
+
+```bash
+# Install to $GOPATH/bin (typically ~/go/bin)
+make install
+```
+
+This builds the binary with version information and installs it to your Go binary path.
+
+#### Testing
+
+```bash
+# Run all tests
+make test
+
+# Run tests with coverage report (generates coverage.html)
+make test-coverage
+```
+
+The test-coverage target creates an HTML coverage report that you can open in your browser.
+
+#### Development Tasks
+
+```bash
+# Format Go code
+make fmt
+
+# Tidy and verify go modules
+make tidy
+
+# Vendor dependencies (creates vendor/ directory)
+make vendor
+
+# Run golangci-lint (if installed)
+make lint
+```
+
+#### Cleanup
+
+```bash
+# Remove built binaries and clean build artifacts
+make clean
+```
+
+#### Version Information
+
+```bash
+# Display version information that will be embedded in the binary
+make version
+
+# Build and run the version command
+make run-version
+```
+
+Example version output:
+```
+Version Information:
+  GIT_VERSION:    v1.0.0
+  GIT_COMMIT:     abc1234
+  GIT_TREE_STATE: clean
+  BUILD_DATE:     2025-11-12T14:23:45Z
+```
+
+#### Help
+
+```bash
+# Display all available make targets with descriptions
+make help
+```
+
+## Quick Start
+
+### 1. Analyze Your Project
+
+Before updating dependencies, analyze your project to understand its structure:
+
+```bash
+# Analyze current directory
+omnibump analyze
+
+# Analyze specific directory
+omnibump analyze /path/to/project
+
+# Get recommendations for updating specific dependencies
+omnibump analyze --packages "golang.org/x/sys@v0.28.0"
+```
+
+### 2. Update Dependencies
+
+```bash
+# Using configuration file
+omnibump --deps deps.yaml
+
+# Using inline packages
+omnibump --packages "golang.org/x/sys@v0.28.0"
+
+# Dry run first (recommended)
+omnibump --deps deps.yaml --dry-run
+
+# With automatic tidying
+omnibump --deps deps.yaml --tidy
+```
+
+## Usage Examples
+
+### Go Projects
+
+#### Example 1: Update Single Dependency
+
+```bash
+# Update golang.org/x/sys to latest
+omnibump --language go --packages "golang.org/x/sys@latest" --tidy
+```
+
+#### Example 2: Update Multiple Dependencies
+
+Create `deps.yaml`:
+
+```yaml
+# language field is optional - will auto-detect
+packages:
+  - name: golang.org/x/sys
+    version: v0.28.0
+
+  - name: golang.org/x/crypto
+    version: v0.31.0
+
+  - name: github.com/spf13/cobra
+    version: v1.10.1
+```
+
+Run update:
+
+```bash
+omnibump --deps deps.yaml --tidy
+```
+
+#### Example 3: Update with Module Replacement
+
+Create `deps.yaml`:
+
+```yaml
+language: go
+
+packages:
+  - name: golang.org/x/net
+    version: v0.32.0
+
+replaces:
+  - oldName: github.com/old/package
+    name: github.com/new/package
+    version: v2.0.0
+```
+
+Run update:
+
+```bash
+omnibump --deps deps.yaml
+```
+
+#### Example 4: Update Workspace Projects
+
+For projects using `go.work`:
+
+```bash
+# omnibump automatically detects and updates go.work
+omnibump --deps deps.yaml --tidy
+```
+
+#### Example 5: Analyze Go Dependencies
+
+```bash
+# Basic analysis
+omnibump analyze .
+
+# Check if specific version is already current
+omnibump analyze --packages "golang.org/x/sys@latest"
+```
+
+### Rust Projects
+
+#### Example 1: Update Cargo Dependencies
+
+Create `deps.yaml`:
+
+```yaml
+# language field is optional - will auto-detect
+packages:
+  - name: tokio
+    version: 1.42.0
+
+  - name: serde
+    version: 1.0.217
+
+  - name: serde_json
+    version: 1.0.135
+```
+
+Run update:
+
+```bash
+omnibump --deps deps.yaml
+```
+
+#### Example 2: Update with cargo update
+
+Some Rust projects benefit from running `cargo update` first:
+
+```bash
+# Run cargo update before applying specific version pins
+omnibump --deps deps.yaml --tidy
+```
+
+#### Example 3: Update Specific Version of Package
+
+For packages with multiple versions in `Cargo.lock`:
+
+```yaml
+language: rust
+
+packages:
+  # Update specific version of syn
+  - name: syn
+    version: 2.0.90
+```
+
+```bash
+omnibump --deps deps.yaml
+```
+
+#### Example 4: Inline Package Updates
+
+```bash
+# Quick inline update
+omnibump --language rust --packages "tokio@1.42.0 serde@1.0.217"
+```
+
+#### Example 5: Analyze Rust Dependencies
+
+```bash
+# See all dependencies in Cargo.lock
+omnibump analyze .
+
+# Check for version conflicts
+omnibump analyze --output json > analysis.json
+```
+
+### Java (Maven) Projects
+
+#### Example 1: Update Dependencies Directly
+
+Create `deps.yaml`:
+
+```yaml
+# language field is optional - will auto-detect
+packages:
+  - groupId: io.netty
+    artifactId: netty-codec-http
+    version: 4.1.94.Final
+
+  - groupId: org.slf4j
+    artifactId: slf4j-api
+    version: 2.0.16
+
+  - groupId: junit
+    artifactId: junit
+    version: 4.13.2
+    scope: test
+```
+
+Run update:
+
+```bash
+omnibump --deps deps.yaml
+```
+
+#### Example 2: Update via Properties (Recommended)
+
+For dependencies that use Maven properties like `${slf4j.version}`:
+
+Create `properties.yaml`:
+
+```yaml
+properties:
+  - property: slf4j.version
+    value: 2.0.16
+
+  - property: netty.version
+    value: 4.1.94.Final
+
+  - property: junit.version
+    value: 4.13.2
+```
+
+Run update:
+
+```bash
+omnibump --properties properties.yaml
+```
+
+#### Example 3: Combined Updates (Properties + Direct)
+
+```bash
+# Update both properties and direct dependencies
+omnibump --deps deps.yaml --properties properties.yaml
+```
+
+#### Example 4: Analyze Maven Project
+
+```bash
+# Analyze which dependencies use properties
+omnibump analyze .
+```
+
+Example output:
+```
+Dependency Analysis
+==================
+>>>>>>> c648b0e (omnibump(golang): respect Go replace directive precedence (#31179))
 
 Language: java
 Total dependencies: 15

@@ -793,6 +793,7 @@ func TestHigherVersionRejection(t *testing.T) {
 		pkgVersions          map[string]*Package
 		setupFunc            func(string)
 		expectErrorToContain string
+		expectNoError        bool
 	}{
 		{
 			name: "reject downgrade for required module",
@@ -807,6 +808,28 @@ func TestHigherVersionRejection(t *testing.T) {
 				copyFile(t, "testdata/aws-efs-csi-driver/go.mod", dir)
 			},
 			expectErrorToContain: "package github.com/google/uuid: requested version 'v1.0.0', is already at version",
+		},
+		{
+			name: "replace takes precedence over require - allow upgrade",
+			pkgVersions: map[string]*Package{
+				"github.com/example/dependency": {
+					Name:    "github.com/example/dependency",
+					Version: "v1.2.0", // Higher than replace (v1.1.0), lower than require (v1.4.0)
+				},
+			},
+			setupFunc: func(dir string) {
+				// Create a go.mod where replace has v1.1.0 but require has v1.4.0
+				// In Go, replace takes precedence, so v1.2.0 should be allowed
+				goModContent := `module test
+go 1.23
+replace github.com/example/dependency => github.com/example/dependency v1.1.0
+require github.com/example/dependency v1.4.0
+`
+				if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goModContent), 0600); err != nil {
+					t.Fatalf("Failed to create go.mod: %v", err)
+				}
+			},
+			expectNoError: true, // Should succeed because replace (v1.1.0) < v1.2.0
 		},
 		{
 			name: "reject downgrade for replaced module",
@@ -853,6 +876,13 @@ func TestHigherVersionRejection(t *testing.T) {
 			tc.setupFunc(tmpdir)
 
 			_, err := DoUpdate(context.Background(), tc.pkgVersions, &UpdateConfig{Modroot: tmpdir, Tidy: false, GoVersion: ""})
+
+			if tc.expectNoError {
+				if err != nil {
+					t.Fatalf("Expected no error but got: %v", err)
+				}
+				return
+			}
 
 			if err == nil {
 				t.Fatalf("Expected error but got nil") // Should get an error

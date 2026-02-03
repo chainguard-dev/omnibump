@@ -70,7 +70,7 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 	}
 
 	// Detect require/replace modules and validate the version values
-	err = checkPackageValues(pkgVersions, modFile)
+	err = CheckPackageValues(pkgVersions, modFile)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +175,9 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 	return newModFile, nil
 }
 
-func checkPackageValues(pkgVersions map[string]*Package, modFile *modfile.File) error {
+// CheckPackageValues validates that package versions to be updated are valid
+// Checks for main module bumps and downgrades in both replace and require directives
+func CheckPackageValues(pkgVersions map[string]*Package, modFile *modfile.File) error {
 	if _, ok := pkgVersions[modFile.Module.Mod.Path]; ok {
 		return fmt.Errorf("bumping the main module is not allowed '%s'", modFile.Module.Mod.Path)
 	}
@@ -184,6 +186,8 @@ func checkPackageValues(pkgVersions map[string]*Package, modFile *modfile.File) 
 		ReqVersion, AvailableVersion string
 	}
 	errorPkgVer := make(map[string]pkgVersion)
+	// Track which packages have replace directives (replace takes precedence over require in Go)
+	replacedPackages := make(map[string]bool)
 
 	// Detect if the list of packages contain any replace statement for the package
 	for _, replace := range modFile.Replace {
@@ -193,6 +197,8 @@ func checkPackageValues(pkgVersions map[string]*Package, modFile *modfile.File) 
 				if pkgVersions[replace.New.Path].OldName == "" {
 					pkgVersions[replace.New.Path].OldName = replace.Old.Path
 				}
+				// Mark that this package (Old.Path) has a replace directive
+				replacedPackages[replace.Old.Path] = true
 				if semver.IsValid(pkgVersions[replace.New.Path].Version) {
 					if semver.Compare(replace.New.Version, pkgVersions[replace.New.Path].Version) > 0 {
 						errorPkgVer[replace.New.Path] = pkgVersion{
@@ -209,9 +215,14 @@ func checkPackageValues(pkgVersions map[string]*Package, modFile *modfile.File) 
 	}
 
 	// Detect if the list of packages contain any require statement for the package
+	// Skip packages that have replace directives (replace takes precedence in Go)
 	for _, require := range modFile.Require {
 		if require != nil {
 			if _, ok := pkgVersions[require.Mod.Path]; ok {
+				// Skip if this package has a replace directive (replace takes precedence)
+				if replacedPackages[require.Mod.Path] {
+					continue
+				}
 				pkgVersions[require.Mod.Path].Require = true
 				if semver.IsValid(pkgVersions[require.Mod.Path].Version) {
 					if semver.Compare(require.Mod.Version, pkgVersions[require.Mod.Path].Version) > 0 {
