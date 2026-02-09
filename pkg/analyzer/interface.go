@@ -8,6 +8,26 @@ package analyzer
 
 import "context"
 
+// RemoteAnalysisResult contains results from analyzing remote manifest files.
+// For multi-module repos, this contains analysis for each manifest file found.
+type RemoteAnalysisResult struct {
+	// Language is the detected language ecosystem
+	Language string
+
+	// FileAnalyses contains analysis results for each manifest file.
+	// Ordered list to preserve discovery order.
+	FileAnalyses []FileAnalysis
+}
+
+// FileAnalysis contains analysis for a single manifest file.
+type FileAnalysis struct {
+	// FilePath is the path to the manifest file (e.g., "go.mod", "api/go.mod")
+	FilePath string
+
+	// Analysis is the dependency analysis for this file
+	Analysis *AnalysisResult
+}
+
 // Analyzer defines the interface for analyzing project dependencies.
 // Based on pombump's analyzer functionality - analyzes dependency structure
 // and recommends update strategies, but does NOT perform vulnerability scanning.
@@ -15,6 +35,12 @@ type Analyzer interface {
 	// Analyze performs dependency analysis on a project.
 	// Returns detailed information about how dependencies are defined.
 	Analyze(ctx context.Context, projectPath string) (*AnalysisResult, error)
+
+	// AnalyzeRemote performs dependency analysis on remotely-fetched manifest files.
+	// For multi-module repos (e.g., kubernetes with multiple go.mod files),
+	// this analyzes each manifest file separately and returns a list of results.
+	// files is a map of file path to content (e.g., "go.mod" -> content, "api/go.mod" -> content)
+	AnalyzeRemote(ctx context.Context, files map[string][]byte) (*RemoteAnalysisResult, error)
 
 	// RecommendStrategy suggests the best update strategy for given dependencies.
 	// For example, Maven: should we update via properties or direct patches?

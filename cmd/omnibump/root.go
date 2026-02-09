@@ -74,6 +74,9 @@ func New() *cobra.Command {
 	// Add analyze command
 	cmd.AddCommand(analyzeCmd())
 
+	// Add analyze-remote command
+	cmd.AddCommand(analyzeRemoteCmd())
+
 	// Add supported command
 	cmd.AddCommand(supportedCmd())
 

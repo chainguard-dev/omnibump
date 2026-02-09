@@ -91,6 +91,12 @@ func (ma *MavenAnalyzer) Analyze(ctx context.Context, projectPath string) (*anal
 	return result, nil
 }
 
+// AnalyzeRemote performs dependency analysis on remotely-fetched Maven files.
+// Not yet implemented for Maven - returns error.
+func (ma *MavenAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]byte) (*analyzer.RemoteAnalysisResult, error) {
+	return nil, fmt.Errorf("remote analysis not yet implemented for Maven")
+}
+
 // RecommendStrategy suggests whether to use properties or direct patches.
 func (ma *MavenAnalyzer) RecommendStrategy(ctx context.Context, analysis *analyzer.AnalysisResult, deps []analyzer.Dependency) (*analyzer.Strategy, error) {
 	log := clog.FromContext(ctx)

@@ -36,6 +36,17 @@ func ParseGoModfile(path string) (*modfile.File, []byte, error) {
 	return mod, content, nil
 }
 
+// ParseGoModfileFromContent parses a go.mod file from byte content.
+// This is useful for analyzing go.mod files fetched remotely (e.g., via GitHub API)
+// without requiring a local filesystem.
+func ParseGoModfileFromContent(filename string, content []byte) (*modfile.File, error) {
+	mod, err := modfile.Parse(filename, content, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse go.mod from content: %w", err)
+	}
+	return mod, nil
+}
+
 // DoUpdate performs the actual update of Go module dependencies.
 // Ported from gobump/pkg/update/update.go:DoUpdate
 func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateConfig) (*modfile.File, error) {

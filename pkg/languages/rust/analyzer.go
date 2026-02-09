@@ -92,6 +92,12 @@ func (ra *RustAnalyzer) Analyze(ctx context.Context, projectPath string) (*analy
 	return result, nil
 }
 
+// AnalyzeRemote performs dependency analysis on remotely-fetched Rust files.
+// Not yet implemented for Rust - returns error.
+func (ra *RustAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]byte) (*analyzer.RemoteAnalysisResult, error) {
+	return nil, fmt.Errorf("remote analysis not yet implemented for Rust")
+}
+
 // RecommendStrategy suggests update strategy for Rust dependencies.
 // For Rust, updates are always direct using cargo update.
 func (ra *RustAnalyzer) RecommendStrategy(ctx context.Context, analysis *analyzer.AnalysisResult, deps []analyzer.Dependency) (*analyzer.Strategy, error) {

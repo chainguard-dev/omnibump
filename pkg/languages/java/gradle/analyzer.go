@@ -106,6 +106,12 @@ func (ga *GradleAnalyzer) Analyze(ctx context.Context, projectPath string) (*ana
 	return result, nil
 }
 
+// AnalyzeRemote performs dependency analysis on remotely-fetched Gradle files.
+// Not yet implemented for Gradle - returns error.
+func (ga *GradleAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]byte) (*analyzer.RemoteAnalysisResult, error) {
+	return nil, fmt.Errorf("remote analysis not yet implemented for Gradle")
+}
+
 // RecommendStrategy recommends an update strategy for given dependencies.
 func (ga *GradleAnalyzer) RecommendStrategy(ctx context.Context, analysis *analyzer.AnalysisResult, deps []analyzer.Dependency) (*analyzer.Strategy, error) {
 	log := clog.FromContext(ctx)
