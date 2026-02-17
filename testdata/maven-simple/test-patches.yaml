@@ -1,0 +1,10 @@
+# Copyright 2025 Chainguard, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+patches:
+  - groupId: junit
+    artifactId: junit
+    version: 4.13.2
+  - groupId: io.netty
+    artifactId: netty-handler
+    version: 4.1.118.Final

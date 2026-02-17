@@ -1,0 +1,6 @@
+# Copyright 2025 Chainguard, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+packages:
+  - name: github.com/NVIDIA/go-nvml
+    version: "95ef6acc3271a9894fd02c1071edef1d"

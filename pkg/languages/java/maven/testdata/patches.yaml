@@ -1,0 +1,16 @@
+# Copyright 2025 Chainguard, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+patches:
+  - groupID: groupid-1
+    artifactID: artifactid-1
+    version: 1.0.0
+    type: pom
+  - groupID: groupid-2
+    artifactID: artifactid-2
+    version: 2.0.0
+    scope: scope-2
+  - groupID: groupid-3
+    artifactID: artifactid-3
+    type: somethingelse
+    version: 3.0.0

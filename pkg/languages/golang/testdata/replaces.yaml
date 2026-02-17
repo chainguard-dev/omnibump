@@ -1,0 +1,8 @@
+# Copyright 2025 Chainguard, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+packages:
+  - oldName: "github.com/google/gofuzz"
+    name:    "github.com/fakefuzz"
+    version: "v1.2.3"
+    replace: true

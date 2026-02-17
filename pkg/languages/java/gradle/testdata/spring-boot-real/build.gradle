@@ -1,0 +1,52 @@
+// Based on Spring Boot's actual build.gradle pattern
+// Real-world example from enterprise-packages/spring-boot.yaml
+// spring-boot-project/spring-boot-dependencies/build.gradle
+
+plugins {
+	id "org.springframework.boot.bom"
+	id "org.springframework.boot.deployed"
+}
+
+description = "Spring Boot Dependencies"
+
+bom {
+	upgrade {
+		policy = "same-minor-version"
+		gitHub {
+			issueLabels = ["type: dependency-upgrade"]
+		}
+	}
+	library("Commons Lang3", "3.17.0") {
+		group("org.apache.commons") {
+			modules = [
+				"commons-lang3"
+			]
+		}
+		links {
+			site("https://commons.apache.org/proper/commons-lang")
+			releaseNotes("https://commons.apache.org/proper/commons-lang/changes.html#a{version}")
+		}
+	}
+	library("Netty", "4.1.100.Final") {
+		group("io.netty") {
+			imports = [
+				"netty-bom"
+			]
+		}
+		links {
+			site("https://netty.io")
+			releaseNotes("https://netty.io/news/{version}.Final.html")
+		}
+	}
+	library("JUnit", "4.13.2") {
+		group("junit") {
+			modules = [
+				"junit"
+			]
+		}
+		links {
+			site("https://junit.org/junit4")
+			releaseNotes("https://github.com/junit-team/junit4/releases/tag/r{version}")
+		}
+	}
+}
