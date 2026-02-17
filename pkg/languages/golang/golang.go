@@ -246,9 +246,8 @@ func isVersionQuery(version string) bool {
 // resolveVersionQuery resolves a version query to an actual version using go list
 func resolveVersionQuery(modulePath, query, modroot string) (string, error) {
 	modulePath = filepath.Clean(modulePath)
-	// nolint:gosec // G204: Subprocess with dynamic arguments - Safe because modulePath comes from parsed go.mod
-	// files (validated Go module paths) and query is a version string. There's no pure Go library alternative
-	// to 'go list' for resolving version queries against the Go module proxy.
+	// Safe: modulePath comes from parsed go.mod (validated Go module paths) and query is a version string
+	//nolint:gosec // G204: Using exec.Command with variables from validated go.mod files
 	cmd := exec.Command("go", "list", "-m", fmt.Sprintf("%s@%s", modulePath, query))
 	cmd.Dir = modroot
 	// Override vendor mode to allow querying

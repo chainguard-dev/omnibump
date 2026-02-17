@@ -31,11 +31,15 @@ func (ra *RustAnalyzer) Analyze(ctx context.Context, projectPath string) (*analy
 	log.Debugf("Analyzing Rust project: %s", cargoLockPath)
 
 	// Parse Cargo.lock
-	file, err := os.Open(cargoLockPath)
+	file, err := os.Open(filepath.Clean(cargoLockPath))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open Cargo.lock: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			log.Warnf("failed to close Cargo.lock: %v", closeErr)
+		}
+	}()
 
 	cargoPackages, err := ParseCargoLock(file)
 	if err != nil {

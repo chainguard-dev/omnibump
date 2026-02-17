@@ -263,7 +263,7 @@ func CheckPackageValues(pkgVersions map[string]*Package, modFile *modfile.File) 
 		var errorMsg strings.Builder
 		errorMsg.WriteString("The following errors were found::\n")
 		for pkg, ver := range errorPkgVer {
-			errorMsg.WriteString(fmt.Sprintf("  - package %s: requested version '%s', is already at version '%s'\n", pkg, ver.ReqVersion, ver.AvailableVersion))
+			fmt.Fprintf(&errorMsg, "  - package %s: requested version '%s', is already at version '%s'\n", pkg, ver.ReqVersion, ver.AvailableVersion)
 		}
 		return fmt.Errorf("%s", errorMsg.String())
 	}

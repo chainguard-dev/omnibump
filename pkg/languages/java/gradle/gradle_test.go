@@ -1423,3 +1423,224 @@ func TestGradle_Validate_InvalidDirectory(t *testing.T) {
 		t.Error("Validate() expected error for invalid directory, got nil")
 	}
 }
+
+// Security Tests
+
+func TestValidateVersion_ValidVersions(t *testing.T) {
+	validVersions := []string{
+		"1.0.0",
+		"3.14.0",
+		"4.1.101.Final",
+		"1.2.3-SNAPSHOT",
+		"2.0.0+build.123",
+		"1.0_beta",
+		"5.0.0.RELEASE",
+	}
+
+	for _, version := range validVersions {
+		t.Run(version, func(t *testing.T) {
+			err := validateVersion(version)
+			if err != nil {
+				t.Errorf("validateVersion(%q) should be valid, got error: %v", version, err)
+			}
+		})
+	}
+}
+
+func TestValidateVersion_InvalidVersions(t *testing.T) {
+	invalidVersions := []struct {
+		version string
+		desc    string
+	}{
+		{
+			version: `3.14.0")
+}
+
+task('backdoor') {
+  doLast {
+    println('injected')
+  }
+}
+
+dependencies {
+    implementation("org.apache.commons:commons-lang3:3.14.0`,
+			desc: "code injection with newlines and braces",
+		},
+		{
+			version: `1.0"; println("injected"); "1.0`,
+			desc: "code injection with quotes and semicolons",
+		},
+		{
+			version: "1.0.0{injected}",
+			desc: "version with braces",
+		},
+		{
+			version: "1.0.0(injected)",
+			desc: "version with parentheses",
+		},
+		{
+			version: "1.0.0;malicious",
+			desc: "version with semicolon",
+		},
+		{
+			version: "1.0.0'injected'",
+			desc: "version with single quotes",
+		},
+		{
+			version: `1.0.0"injected"`,
+			desc: "version with double quotes",
+		},
+		{
+			version: "1.0.0\ninjected",
+			desc: "version with newline",
+		},
+		{
+			version: "1.0.0\rinjected",
+			desc: "version with carriage return",
+		},
+		{
+			version: "1.0.0<injected>",
+			desc: "version with angle brackets",
+		},
+		{
+			version: "1.0.0$injected",
+			desc: "version with dollar sign",
+		},
+		{
+			version: "1.0.0\\injected",
+			desc: "version with backslash",
+		},
+	}
+
+	for _, tt := range invalidVersions {
+		t.Run(tt.desc, func(t *testing.T) {
+			err := validateVersion(tt.version)
+			if err == nil {
+				t.Errorf("validateVersion(%q) should be invalid for: %s", tt.version, tt.desc)
+			}
+			if err != nil && !strings.Contains(err.Error(), "invalid version string") {
+				t.Errorf("validateVersion(%q) error should mention invalid version, got: %v", tt.version, err)
+			}
+		})
+	}
+}
+
+func TestGradle_Update_RejectsCodeInjection(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create build.gradle
+	buildFile := filepath.Join(tmpDir, "build.gradle")
+	buildContent := `dependencies {
+    implementation("org.apache.commons:commons-lang3:3.12.0")
+}
+`
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+		t.Fatalf("failed to write build.gradle: %v", err)
+	}
+
+	// Attempt code injection via malicious version string
+	maliciousVersion := `3.14.0")
+}
+
+task('backdoor') {
+  doLast {
+    println('INJECTED CODE')
+  }
+}
+
+dependencies {
+    implementation("org.apache.commons:commons-lang3:3.14.0`
+
+	g := &Gradle{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{
+				Name:    "org.apache.commons:commons-lang3",
+				Version: maliciousVersion,
+			},
+		},
+	}
+
+	// Update should fail with validation error
+	err := g.Update(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("Update() should reject malicious version string, but succeeded")
+	}
+
+	if !strings.Contains(err.Error(), "invalid version string") {
+		t.Errorf("Update() error should mention invalid version, got: %v", err)
+	}
+
+	// Verify file was not modified
+	afterContent, err := os.ReadFile(buildFile)
+	if err != nil {
+		t.Fatalf("failed to read file: %v", err)
+	}
+
+	if string(afterContent) != buildContent {
+		t.Errorf("File should not be modified after validation failure, but was changed")
+	}
+
+	// Verify no malicious code was injected
+	if strings.Contains(string(afterContent), "backdoor") {
+		t.Error("Malicious code was injected into build file!")
+	}
+}
+
+func TestFindBuildFiles_SkipsSymlinks(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create real build.gradle
+	realBuildFile := filepath.Join(tmpDir, "build.gradle")
+	if err := os.WriteFile(realBuildFile, []byte("real file"), 0600); err != nil {
+		t.Fatalf("failed to write real build.gradle: %v", err)
+	}
+
+	// Create a sensitive target file outside the project
+	sensitiveDir := filepath.Join(tmpDir, "sensitive")
+	if err := os.MkdirAll(sensitiveDir, 0755); err != nil {
+		t.Fatalf("failed to create sensitive directory: %v", err)
+	}
+	sensitiveFile := filepath.Join(sensitiveDir, "secrets.txt")
+	if err := os.WriteFile(sensitiveFile, []byte("SECRET DATA"), 0600); err != nil {
+		t.Fatalf("failed to write sensitive file: %v", err)
+	}
+
+	// Create a symlink named build.gradle.kts pointing to sensitive file
+	symlinkPath := filepath.Join(tmpDir, "build.gradle.kts")
+	if err := os.Symlink(sensitiveFile, symlinkPath); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+
+	// Find build files - should skip the symlink
+	files, err := findBuildFiles(tmpDir)
+	if err != nil {
+		t.Fatalf("findBuildFiles() error = %v", err)
+	}
+
+	// Should only find the real build.gradle, not the symlink
+	if len(files) != 1 {
+		t.Errorf("Expected 1 file (real build.gradle), got %d: %v", len(files), files)
+	}
+
+	if len(files) > 0 && files[0] != realBuildFile {
+		t.Errorf("Expected to find %s, got %s", realBuildFile, files[0])
+	}
+
+	// Verify the symlink was not included
+	for _, file := range files {
+		if file == symlinkPath {
+			t.Error("Symlink should not be included in build files list")
+		}
+	}
+
+	// Verify sensitive file was not modified
+	sensitiveContent, err := os.ReadFile(sensitiveFile)
+	if err != nil {
+		t.Fatalf("failed to read sensitive file: %v", err)
+	}
+	if string(sensitiveContent) != "SECRET DATA" {
+		t.Error("Sensitive file was modified!")
+	}
+}

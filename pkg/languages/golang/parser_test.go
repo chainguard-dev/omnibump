@@ -82,3 +82,16 @@ func TestParseFile(t *testing.T) {
 		})
 	}
 }
+
+// TestParseFile_IOReadError tests that io.ReadAll errors are properly propagated
+// This test ensures FINDING-OMNIBUMP-003 is fixed
+func TestParseFile_IOReadError(t *testing.T) {
+	// Test that a non-existent file returns a proper error
+	_, err := ParseFile("testdata-parser/non-existent-file.yaml")
+	if err == nil {
+		t.Error("ParseFile should return error for non-existent file")
+	}
+	if !strings.Contains(err.Error(), "failed reading file") {
+		t.Errorf("ParseFile error should mention 'failed reading file', got: %v", err)
+	}
+}

@@ -6,9 +6,12 @@ SPDX-License-Identifier: Apache-2.0
 package omnibump
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/chainguard-dev/clog"
 	charmlog "github.com/charmbracelet/log"
@@ -85,12 +88,69 @@ func New() *cobra.Command {
 	return cmd
 }
 
+var (
+	// ErrInvalidLogPath is returned when a log-policy path fails validation.
+	ErrInvalidLogPath = errors.New("invalid log-policy path")
+
+	// disallowedLogPaths lists sensitive paths that should never be written to.
+	disallowedLogPaths = []string{
+		"/etc/",
+		"/root/",
+		"/bin/",
+		"/sbin/",
+		"/usr/bin/",
+		"/usr/sbin/",
+		"/boot/",
+		"/sys/",
+		"/proc/",
+		"/.ssh/",
+		"/var/spool/cron/",
+		"/etc/cron",
+	}
+)
+
+// validateLogPath checks if a log file path is safe to write to.
+// Returns an error if the path is disallowed or suspicious.
+func validateLogPath(path string) error {
+	// Get absolute path to normalize it
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("%w: failed to resolve absolute path: %v", ErrInvalidLogPath, err)
+	}
+
+	// Clean the path to remove any .. or . components
+	cleanPath := filepath.Clean(absPath)
+
+	// Check against disallowed paths
+	for _, disallowed := range disallowedLogPaths {
+		if strings.HasPrefix(cleanPath, disallowed) {
+			return fmt.Errorf("%w: path %q is in disallowed directory %q", ErrInvalidLogPath, path, disallowed)
+		}
+	}
+
+	// Check for suspicious path components
+	for component := range strings.SplitSeq(cleanPath, string(filepath.Separator)) {
+		// Disallow paths with suspicious components that could enable attacks
+		if component == ".ssh" || component == "authorized_keys" ||
+			strings.HasPrefix(component, "cron") {
+			return fmt.Errorf("%w: path %q contains disallowed component %q", ErrInvalidLogPath, path, component)
+		}
+	}
+
+	return nil
+}
+
 func setupLogging() error {
 	// Simple log writer setup
 	out := os.Stderr
 	for _, policy := range flags.logPolicy {
 		if policy != "builtin:stderr" {
-			f, err := os.OpenFile(policy, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			// Validate the log path to prevent arbitrary file writes
+			if err := validateLogPath(policy); err != nil {
+				return fmt.Errorf("log-policy validation failed: %w", err)
+			}
+
+			f, err := os.OpenFile(filepath.Clean(policy), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 			if err != nil {
 				return fmt.Errorf("failed to create log writer: %w", err)
 			}

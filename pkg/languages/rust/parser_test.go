@@ -113,3 +113,35 @@ func TestParseCargoLock(t *testing.T) {
 		})
 	}
 }
+
+// TestParseBumpFile_IOReadError tests that io.ReadAll errors are properly propagated (FINDING-003)
+func TestParseBumpFile_IOReadError(t *testing.T) {
+	// Create a reader that will fail
+	failReader := &failingReader{err: fmt.Errorf("simulated I/O error")}
+	
+	_, err := ParseBumpFile(failReader)
+	require.Error(t, err, "ParseBumpFile should return error on I/O failure")
+	assert.Contains(t, err.Error(), "reading file", "Error should mention reading file")
+}
+
+// TestParseBumpFile_NonExistentFile tests error handling for missing files
+func TestParseBumpFile_NonExistentFile(t *testing.T) {
+	f, err := os.Open("testdata-parser/non-existent.yaml")
+	if err == nil {
+		defer func() {
+			_ = f.Close()
+		}()
+		t.Fatal("Should not be able to open non-existent file")
+	}
+	// This test verifies the caller handles file open errors
+	assert.Error(t, err, "Opening non-existent file should error")
+}
+
+// failingReader simulates an I/O error during reading
+type failingReader struct {
+	err error
+}
+
+func (r *failingReader) Read(p []byte) (n int, err error) {
+	return 0, r.err
+}

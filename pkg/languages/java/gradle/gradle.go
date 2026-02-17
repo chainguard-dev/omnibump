@@ -9,6 +9,7 @@ package gradle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,6 +34,17 @@ const (
 	versionGroupTwo = 2
 )
 
+var (
+	// versionValidationRegex defines the allowlist for valid version strings.
+	// Only allows alphanumeric characters, dots, underscores, hyphens, and plus signs.
+	// This prevents injection of quotes, parentheses, newlines, braces, and other
+	// characters that could be used for code injection in Gradle build files.
+	versionValidationRegex = regexp.MustCompile(`^[a-zA-Z0-9._+-]+$`)
+
+	// ErrInvalidVersion is returned when a version string fails validation.
+	ErrInvalidVersion = errors.New("invalid version string: contains disallowed characters")
+)
+
 // gradleManifestFiles lists all files that can contain dependency versions.
 var gradleManifestFiles = map[string]bool{
 	"build.gradle.kts":    true,
@@ -46,6 +58,16 @@ var gradleManifestFiles = map[string]bool{
 var skipDirs = map[string]bool{
 	"vendor":       true,
 	"node_modules": true,
+}
+
+// validateVersion checks if a version string contains only safe characters.
+// Returns an error if the version contains characters that could be used for
+// code injection (quotes, parentheses, newlines, braces, etc.).
+func validateVersion(version string) error {
+	if !versionValidationRegex.MatchString(version) {
+		return fmt.Errorf("%w: %q (allowed characters: a-zA-Z0-9._+-)", ErrInvalidVersion, version)
+	}
+	return nil
 }
 
 // Name returns the build tool identifier.
@@ -92,6 +114,13 @@ func (g *Gradle) GetAnalyzer() analyzer.Analyzer {
 func (g *Gradle) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	log := clog.FromContext(ctx)
 	log.Infof("Updating Gradle project at: %s", cfg.RootDir)
+
+	// Validate all dependency versions upfront to fail fast
+	for _, dep := range cfg.Dependencies {
+		if err := validateVersion(dep.Version); err != nil {
+			return fmt.Errorf("dependency %s: %w", dep.Name, err)
+		}
+	}
 
 	// Find build files
 	buildFiles, err := findBuildFiles(cfg.RootDir)
@@ -220,6 +249,16 @@ func findBuildFiles(root string) ([]string, error) {
 			return nil
 		}
 
+		// Skip symlinks to prevent arbitrary file corruption via symlink attacks
+		// Use Lstat to check the file itself, not what it points to
+		fileInfo, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if fileInfo.Mode()&os.ModeSymlink != 0 {
+			return nil // Skip symlinks
+		}
+
 		// Check if this is a file that can contain dependency versions
 		if gradleManifestFiles[info.Name()] {
 			files = append(files, path)
@@ -286,7 +325,7 @@ func processFileUpdate(ctx context.Context, path string, cfg *languages.UpdateCo
 	log := clog.FromContext(ctx)
 
 	// Read the file
-	content, err := os.ReadFile(path)
+	content, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return fmt.Errorf("failed to read %s: %w", path, err)
 	}

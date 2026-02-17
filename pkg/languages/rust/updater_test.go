@@ -23,7 +23,9 @@ func TestUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed reading file: %v", err)
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 
 	patches, err = ParseBumpFile(file)
 	if err != nil {
@@ -34,20 +36,28 @@ func TestUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed reading file: %v", err)
 	}
-	defer cargoLockFile.Close()
+	defer func() {
+		_ = cargoLockFile.Close()
+	}()
 	cargoTomlFile, err := os.Open(filepath.Join(cargoRoot, "Cargo.toml.orig"))
 	if err != nil {
 		t.Fatalf("failed reading file: %v", err)
 	}
-	defer cargoTomlFile.Close()
+	defer func() {
+		_ = cargoTomlFile.Close()
+	}()
 
 	// copy the source file to the destination
 	copyFile(t, cargoTomlFile.Name(), "testdata/Cargo.toml")
-	defer os.Remove("testdata/Cargo.toml")
+	defer func() {
+		_ = os.Remove("testdata/Cargo.toml")
+	}()
 
 	// copy the source file to the destination
 	copyFile(t, cargoLockFile.Name(), "testdata/Cargo.lock")
-	defer os.Remove("testdata/Cargo.lock")
+	defer func() {
+		_ = os.Remove("testdata/Cargo.lock")
+	}()
 
 	pkgs, err := ParseCargoLock(cargoLockFile)
 	if err != nil {
@@ -67,7 +77,9 @@ func TestUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed reading file: %v", err)
 	}
-	defer cargoLockFile.Close()
+	defer func() {
+		_ = cargoLockFile.Close()
+	}()
 
 	updatedPkgs, err := ParseCargoLock(cargoLockFile)
 	if err != nil {

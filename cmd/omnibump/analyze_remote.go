@@ -498,7 +498,11 @@ type tokenTransport struct {
 }
 
 func (t *tokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req.Header.Set("Authorization", "Bearer "+t.token)
+	// Only add Authorization header for GitHub API requests to prevent
+	// token leakage via cross-host redirects
+	if req.URL.Host == "api.github.com" {
+		req.Header.Set("Authorization", "Bearer "+t.token)
+	}
 	return http.DefaultTransport.RoundTrip(req)
 }
 

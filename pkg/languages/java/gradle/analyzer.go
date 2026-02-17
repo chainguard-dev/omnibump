@@ -38,7 +38,7 @@ func readFileContent(ctx context.Context, path string) ([]byte, error) {
 	log := clog.FromContext(ctx)
 	log.Debugf("Reading file: %s", path)
 
-	content, err := os.ReadFile(path)
+	content, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}

@@ -119,7 +119,10 @@ type PackageList struct {
 // ParseBumpFile parses a YAML file containing package update specifications.
 // Ported from cargobump/pkg/parser/parser.go:ParseBumpFile
 func ParseBumpFile(r io.Reader) (map[string]*Package, error) {
-	bytes, _ := io.ReadAll(r)
+	bytes, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("reading file: %w", err)
+	}
 	var patches map[string]*Package
 	var packageList PackageList
 

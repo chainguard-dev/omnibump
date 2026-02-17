@@ -85,7 +85,7 @@ func LoadConfig(ctx context.Context, path string) (*Config, error) {
 		return nil, fmt.Errorf("configuration file not found: %s", path)
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read configuration file: %w", err)
 	}
@@ -173,10 +173,10 @@ func normalizePath(path string) (string, bool) {
 	dir := filepath.Dir(path)
 
 	if newName, isOld := StandardFileNames[base]; isOld {
-		return filepath.Join(dir, newName), true
+		return filepath.Clean(filepath.Join(dir, newName)), true
 	}
 
-	return path, false
+	return filepath.Clean(path), false
 }
 
 // isPropertiesFile checks if the file is a properties configuration.

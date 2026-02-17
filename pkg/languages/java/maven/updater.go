@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"path/filepath"
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/gopom"
@@ -178,7 +179,7 @@ func ParsePom(pomPath string) (*gopom.Project, error) {
 func parsePatches(ctx context.Context, patchFile, patchFlag string) ([]Patch, error) {
 	if patchFile != "" {
 		var patchList PatchList
-		file, err := os.Open(patchFile)
+		file, err := os.Open(filepath.Clean(patchFile))
 		if err != nil {
 			return nil, fmt.Errorf("failed reading file: %w", err)
 		}
@@ -188,7 +189,10 @@ func parsePatches(ctx context.Context, patchFile, patchFlag string) ([]Patch, er
 				clog.FromContext(ctx).Warnf("failed to close file: %v", err)
 			}
 		}()
-		byteValue, _ := io.ReadAll(file)
+		byteValue, err := io.ReadAll(file)
+		if err != nil {
+			return nil, fmt.Errorf("reading file: %w", err)
+		}
 		if err := yaml.Unmarshal(byteValue, &patchList); err != nil {
 			return nil, err
 		}
@@ -232,7 +236,7 @@ func parseProperties(ctx context.Context, propertyFile, propertiesFlag string) (
 	propertiesPatches := map[string]string{}
 	if propertyFile != "" {
 		var propertyList PropertyList
-		file, err := os.Open(propertyFile)
+		file, err := os.Open(filepath.Clean(propertyFile))
 		if err != nil {
 			return nil, fmt.Errorf("failed reading file: %w", err)
 		}
@@ -242,7 +246,10 @@ func parseProperties(ctx context.Context, propertyFile, propertiesFlag string) (
 				clog.FromContext(ctx).Warnf("failed to close file: %v", err)
 			}
 		}()
-		byteValue, _ := io.ReadAll(file)
+		byteValue, err := io.ReadAll(file)
+		if err != nil {
+			return nil, fmt.Errorf("reading file: %w", err)
+		}
 		if err := yaml.Unmarshal(byteValue, &propertyList); err != nil {
 			return nil, err
 		}

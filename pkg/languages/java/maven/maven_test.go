@@ -8,6 +8,7 @@ package maven
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/chainguard-dev/gopom"
@@ -357,5 +358,77 @@ func TestParseProperties(t *testing.T) {
 				t.Errorf("%s: parseProperties(%s, %s) (-got +want)\n%s", tc.name, tc.inFile, tc.inProps, diff)
 			}
 		})
+	}
+}
+
+// TestParsePatches_NonExistentFile tests error handling for missing patch files (FINDING-003)
+func TestParsePatches_NonExistentFile(t *testing.T) {
+	_, err := parsePatches(context.Background(), "testdata/non-existent-patches.yaml", "")
+	if err == nil {
+		t.Fatal("parsePatches should return error for non-existent file")
+	}
+	if err.Error() == "" {
+		t.Error("Error message should not be empty")
+	}
+}
+
+// TestParseProperties_NonExistentFile tests error handling for missing property files (FINDING-003)
+func TestParseProperties_NonExistentFile(t *testing.T) {
+	_, err := parseProperties(context.Background(), "testdata/non-existent-properties.yaml", "")
+	if err == nil {
+		t.Fatal("parseProperties should return error for non-existent file")
+	}
+	if err.Error() == "" {
+		t.Error("Error message should not be empty")
+	}
+}
+
+// TestParsePatches_InvalidYAML tests error handling for invalid YAML in patch files
+func TestParsePatches_InvalidYAML(t *testing.T) {
+	// Create a temporary file with invalid YAML
+	tmpFile, err := os.CreateTemp("", "invalid-patches-*.yaml")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer func() {
+		_ = os.Remove(tmpFile.Name())
+	}()
+
+	_, err = tmpFile.WriteString("invalid: yaml: content: [")
+	if err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		t.Fatalf("Failed to close temp file: %v", err)
+	}
+
+	_, err = parsePatches(context.Background(), tmpFile.Name(), "")
+	if err == nil {
+		t.Fatal("parsePatches should return error for invalid YAML")
+	}
+}
+
+// TestParseProperties_InvalidYAML tests error handling for invalid YAML in property files
+func TestParseProperties_InvalidYAML(t *testing.T) {
+	// Create a temporary file with invalid YAML
+	tmpFile, err := os.CreateTemp("", "invalid-properties-*.yaml")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer func() {
+		_ = os.Remove(tmpFile.Name())
+	}()
+
+	_, err = tmpFile.WriteString("invalid: yaml: content: [")
+	if err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		t.Fatalf("Failed to close temp file: %v", err)
+	}
+
+	_, err = parseProperties(context.Background(), tmpFile.Name(), "")
+	if err == nil {
+		t.Fatal("parseProperties should return error for invalid YAML")
 	}
 }

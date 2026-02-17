@@ -61,13 +61,17 @@ func (r *Rust) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	}
 
 	// Parse Cargo.lock to get current packages
-	file, err := os.Open(cargoLockPath)
+	file, err := os.Open(filepath.Clean(cargoLockPath))
 	if err != nil {
 		return fmt.Errorf("failed to open Cargo.lock: %w", err)
 	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			log.Warnf("failed to close Cargo.lock: %v", closeErr)
+		}
+	}()
 
 	cargoPackages, err := ParseCargoLock(file)
-	file.Close()
 	if err != nil {
 		return fmt.Errorf("failed to parse Cargo.lock: %w", err)
 	}
@@ -104,11 +108,15 @@ func (r *Rust) Validate(ctx context.Context, cfg *languages.UpdateConfig) error 
 	cargoLockPath := filepath.Join(cfg.RootDir, "Cargo.lock")
 
 	// Parse the updated Cargo.lock
-	file, err := os.Open(cargoLockPath)
+	file, err := os.Open(filepath.Clean(cargoLockPath))
 	if err != nil {
 		return fmt.Errorf("failed to open updated Cargo.lock: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			log.Warnf("failed to close Cargo.lock: %v", closeErr)
+		}
+	}()
 
 	cargoPackages, err := ParseCargoLock(file)
 	if err != nil {

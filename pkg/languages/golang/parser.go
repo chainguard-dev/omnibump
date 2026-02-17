@@ -33,7 +33,10 @@ func ParseFile(bumpFile string) (map[string]*Package, error) {
 			_ = err
 		}
 	}()
-	bytes, _ := io.ReadAll(file)
+	bytes, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("reading file: %w", err)
+	}
 	if err := yaml.Unmarshal(bytes, &packageList); err != nil {
 		return nil, fmt.Errorf("unmarshaling file: %w", err)
 	}
