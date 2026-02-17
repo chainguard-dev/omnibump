@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Chainguard, Inc.
+Copyright 2026 Chainguard, Inc.
 SPDX-License-Identifier: Apache-2.0
 */
 
@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"path/filepath"
+	"strings"
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/gopom"

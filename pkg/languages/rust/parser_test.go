@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Chainguard, Inc.
+Copyright 2026 Chainguard, Inc.
 SPDX-License-Identifier: Apache-2.0
 */
 
@@ -118,7 +118,7 @@ func TestParseCargoLock(t *testing.T) {
 func TestParseBumpFile_IOReadError(t *testing.T) {
 	// Create a reader that will fail
 	failReader := &failingReader{err: fmt.Errorf("simulated I/O error")}
-	
+
 	_, err := ParseBumpFile(failReader)
 	require.Error(t, err, "ParseBumpFile should return error on I/O failure")
 	assert.Contains(t, err.Error(), "reading file", "Error should mention reading file")

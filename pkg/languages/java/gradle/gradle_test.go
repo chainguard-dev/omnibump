@@ -1,5 +1,5 @@
 /*
-Copyright 2025 Chainguard, Inc.
+Copyright 2026 Chainguard, Inc.
 SPDX-License-Identifier: Apache-2.0
 */
 
@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 )
@@ -1468,47 +1469,47 @@ dependencies {
 		},
 		{
 			version: `1.0"; println("injected"); "1.0`,
-			desc: "code injection with quotes and semicolons",
+			desc:    "code injection with quotes and semicolons",
 		},
 		{
 			version: "1.0.0{injected}",
-			desc: "version with braces",
+			desc:    "version with braces",
 		},
 		{
 			version: "1.0.0(injected)",
-			desc: "version with parentheses",
+			desc:    "version with parentheses",
 		},
 		{
 			version: "1.0.0;malicious",
-			desc: "version with semicolon",
+			desc:    "version with semicolon",
 		},
 		{
 			version: "1.0.0'injected'",
-			desc: "version with single quotes",
+			desc:    "version with single quotes",
 		},
 		{
 			version: `1.0.0"injected"`,
-			desc: "version with double quotes",
+			desc:    "version with double quotes",
 		},
 		{
 			version: "1.0.0\ninjected",
-			desc: "version with newline",
+			desc:    "version with newline",
 		},
 		{
 			version: "1.0.0\rinjected",
-			desc: "version with carriage return",
+			desc:    "version with carriage return",
 		},
 		{
 			version: "1.0.0<injected>",
-			desc: "version with angle brackets",
+			desc:    "version with angle brackets",
 		},
 		{
 			version: "1.0.0$injected",
-			desc: "version with dollar sign",
+			desc:    "version with dollar sign",
 		},
 		{
 			version: "1.0.0\\injected",
-			desc: "version with backslash",
+			desc:    "version with backslash",
 		},
 	}
 
@@ -1642,5 +1643,187 @@ func TestFindBuildFiles_SkipsSymlinks(t *testing.T) {
 	}
 	if string(sensitiveContent) != "SECRET DATA" {
 		t.Error("Sensitive file was modified!")
+	}
+}
+
+// TestFindVersionKeyForArtifact_EdgeCases tests edge cases for version catalog key lookup
+func TestFindVersionKeyForArtifact_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name       string
+		artifactID string
+		versions   map[string]any
+		expected   string
+	}{
+		{
+			name:       "exact match found",
+			artifactID: "commons-lang3",
+			versions: map[string]any{
+				"commons-lang3": "3.14.0",
+			},
+			expected: "commons-lang3",
+		},
+		{
+			name:       "no match - empty map",
+			artifactID: "nonexistent",
+			versions:   map[string]any{},
+			expected:   "",
+		},
+		{
+			name:       "no match with different artifact",
+			artifactID: "spring-boot",
+			versions: map[string]any{
+				"spring-boot-starter": "2.7.0",
+			},
+			expected: "",
+		},
+		{
+			name:       "nil versions map",
+			artifactID: "any",
+			versions:   nil,
+			expected:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := findVersionKeyForArtifact(tt.artifactID, tt.versions)
+			if result != tt.expected {
+				t.Errorf("Expected %q, got %q", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestGradleAnalyzer_AnalyzeRemote tests the unimplemented remote analysis
+func TestGradleAnalyzer_AnalyzeRemote(t *testing.T) {
+	ga := &GradleAnalyzer{}
+	files := map[string][]byte{
+		"build.gradle": []byte("dependencies {}"),
+	}
+
+	_, err := ga.AnalyzeRemote(context.Background(), files)
+	if err == nil {
+		t.Error("AnalyzeRemote should return error for unimplemented function")
+	}
+	if !strings.Contains(err.Error(), "not yet implemented") {
+		t.Errorf("Error should mention not implemented, got: %v", err)
+	}
+}
+
+// TestAnalyzeVersionCatalogToml_EmptyFile tests empty TOML file handling
+func TestAnalyzeVersionCatalogToml_EmptyFile(t *testing.T) {
+	result := &analyzer.AnalysisResult{
+		Dependencies: make(map[string]*analyzer.DependencyInfo),
+		Properties:   make(map[string]string),
+	}
+
+	err := analyzeVersionCatalogToml(context.Background(), "", result)
+	if err == nil {
+		t.Error("Should error on empty content")
+	}
+}
+
+// TestAnalyzeVersionCatalogToml_InvalidToml tests invalid TOML handling
+func TestAnalyzeVersionCatalogToml_InvalidToml(t *testing.T) {
+	result := &analyzer.AnalysisResult{
+		Dependencies: make(map[string]*analyzer.DependencyInfo),
+		Properties:   make(map[string]string),
+	}
+
+	invalidToml := "invalid toml content [[[["
+	err := analyzeVersionCatalogToml(context.Background(), invalidToml, result)
+	if err == nil {
+		t.Error("Should error on invalid TOML")
+	}
+}
+
+func TestParseLibraryModule(t *testing.T) {
+	tests := []struct {
+		name           string
+		libMap         map[string]any
+		wantGroupID    string
+		wantArtifactID string
+	}{
+		{
+			name:           "valid module",
+			libMap:         map[string]any{"module": "com.example:library"},
+			wantGroupID:    "com.example",
+			wantArtifactID: "library",
+		},
+		{
+			name:           "module not string",
+			libMap:         map[string]any{"module": 123},
+			wantGroupID:    "",
+			wantArtifactID: "",
+		},
+		{
+			name:           "module not present",
+			libMap:         map[string]any{},
+			wantGroupID:    "",
+			wantArtifactID: "",
+		},
+		{
+			name:           "invalid format - no colon",
+			libMap:         map[string]any{"module": "com.example.library"},
+			wantGroupID:    "",
+			wantArtifactID: "",
+		},
+		{
+			name:           "invalid format - too many parts",
+			libMap:         map[string]any{"module": "com.example:library:extra"},
+			wantGroupID:    "",
+			wantArtifactID: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotGroupID, gotArtifactID := parseLibraryModule(tt.libMap)
+			if gotGroupID != tt.wantGroupID {
+				t.Errorf("parseLibraryModule() groupID = %v, want %v", gotGroupID, tt.wantGroupID)
+			}
+			if gotArtifactID != tt.wantArtifactID {
+				t.Errorf("parseLibraryModule() artifactID = %v, want %v", gotArtifactID, tt.wantArtifactID)
+			}
+		})
+	}
+}
+
+func TestParseLibraryVersion(t *testing.T) {
+	tests := []struct {
+		name   string
+		libMap map[string]any
+		alias  string
+		want   string
+	}{
+		{
+			name:   "direct version string",
+			libMap: map[string]any{"version": "1.0.0"},
+			alias:  "test",
+			want:   "1.0.0",
+		},
+		{
+			name:   "version map with ref key",
+			libMap: map[string]any{"version": map[string]any{"ref": "someVersion"}},
+			alias:  "test",
+			want:   "",
+		},
+		{
+			name:   "no version",
+			libMap: map[string]any{},
+			alias:  "test",
+			want:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			log := clog.FromContext(ctx)
+			got := parseLibraryVersion(tt.libMap, log, tt.alias)
+			if got != tt.want {
+				t.Errorf("parseLibraryVersion() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

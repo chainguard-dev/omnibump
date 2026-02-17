@@ -1,13 +1,19 @@
 /*
-Copyright 2025 Chainguard, Inc.
+Copyright 2026 Chainguard, Inc.
 SPDX-License-Identifier: Apache-2.0
 */
 
 package golang
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/chainguard-dev/omnibump/pkg/analyzer"
+	"github.com/chainguard-dev/omnibump/pkg/languages"
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
 )
@@ -439,5 +445,645 @@ func TestGetOptionBool(t *testing.T) {
 				t.Errorf("getOptionBool() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGolang_Detect(t *testing.T) {
+	tests := []struct {
+		name      string
+		files     []string
+		wantFound bool
+	}{
+		{
+			name:      "go.mod found",
+			files:     []string{"go.mod"},
+			wantFound: true,
+		},
+		{
+			name:      "go.sum only - not found",
+			files:     []string{"go.sum"},
+			wantFound: false,
+		},
+		{
+			name:      "both found",
+			files:     []string{"go.mod", "go.sum"},
+			wantFound: true,
+		},
+		{
+			name:      "no go files",
+			files:     []string{"package.json"},
+			wantFound: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+
+			for _, file := range tt.files {
+				path := filepath.Join(tmpDir, file)
+				err := os.WriteFile(path, []byte("module test"), 0600)
+				if err != nil {
+					t.Fatalf("Failed to create file: %v", err)
+				}
+			}
+
+			g := &Golang{}
+			found, err := g.Detect(context.Background(), tmpDir)
+			if err != nil {
+				t.Fatalf("Detect failed: %v", err)
+			}
+			if found != tt.wantFound {
+				t.Errorf("Expected found=%v, got %v", tt.wantFound, found)
+			}
+		})
+	}
+}
+
+func TestGolang_GetManifestFiles(t *testing.T) {
+	g := &Golang{}
+	files := g.GetManifestFiles()
+	expected := []string{"go.mod", "go.sum", "go.work"}
+
+	if len(files) != len(expected) {
+		t.Errorf("Expected %d files, got %d", len(expected), len(files))
+	}
+	for i, file := range expected {
+		if files[i] != file {
+			t.Errorf("Expected file %s, got %s", file, files[i])
+		}
+	}
+}
+
+func TestGolang_SupportsAnalysis(t *testing.T) {
+	g := &Golang{}
+	if !g.SupportsAnalysis() {
+		t.Error("Golang should support analysis")
+	}
+}
+
+func TestGolang_Update_MissingGoMod(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	g := &Golang{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "github.com/google/uuid", Version: "v1.3.0"},
+		},
+	}
+
+	err := g.Update(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("Expected error for missing go.mod, got nil")
+	}
+	if !strings.Contains(err.Error(), "go.mod not found") {
+		t.Errorf("Expected 'go.mod not found' error, got: %v", err)
+	}
+}
+
+func TestGolang_Update_DryRun(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create minimal go.mod
+	goModContent := `module test/module
+
+go 1.26
+
+require github.com/google/uuid v1.0.0
+`
+	goModPath := filepath.Join(tmpDir, "go.mod")
+	err := os.WriteFile(goModPath, []byte(goModContent), 0600)
+	if err != nil {
+		t.Fatalf("Failed to create go.mod: %v", err)
+	}
+
+	g := &Golang{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "github.com/google/uuid", Version: "v1.3.0"},
+		},
+		DryRun: true,
+	}
+
+	err = g.Update(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+
+	// Verify go.mod was not changed
+	content, err := os.ReadFile(goModPath)
+	if err != nil {
+		t.Fatalf("Failed to read go.mod: %v", err)
+	}
+	if !strings.Contains(string(content), "v1.0.0") {
+		t.Error("go.mod should not have been modified in dry run mode")
+	}
+}
+
+func TestGolang_Update_AllPackagesUpToDate(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create go.mod with package already at target version
+	goModContent := `module test/module
+
+go 1.26
+
+require github.com/google/uuid v1.3.0
+`
+	goModPath := filepath.Join(tmpDir, "go.mod")
+	err := os.WriteFile(goModPath, []byte(goModContent), 0600)
+	if err != nil {
+		t.Fatalf("Failed to create go.mod: %v", err)
+	}
+
+	g := &Golang{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "github.com/google/uuid", Version: "v1.3.0"},
+		},
+	}
+
+	err = g.Update(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+}
+
+func TestGolang_Update_InvalidGoMod(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create invalid go.mod
+	goModPath := filepath.Join(tmpDir, "go.mod")
+	err := os.WriteFile(goModPath, []byte("invalid content"), 0600)
+	if err != nil {
+		t.Fatalf("Failed to create go.mod: %v", err)
+	}
+
+	g := &Golang{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "github.com/google/uuid", Version: "v1.3.0"},
+		},
+	}
+
+	err = g.Update(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("Expected error for invalid go.mod, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to parse go.mod") {
+		t.Errorf("Expected parse error, got: %v", err)
+	}
+}
+
+func TestGolang_Validate_MissingGoMod(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	g := &Golang{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "github.com/google/uuid", Version: "v1.3.0"},
+		},
+	}
+
+	err := g.Validate(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("Expected error for missing go.mod, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to parse updated go.mod") {
+		t.Errorf("Expected parse error, got: %v", err)
+	}
+}
+
+func TestGolang_Validate_Success(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create go.mod with updated version
+	goModContent := `module test/module
+
+go 1.26
+
+require github.com/google/uuid v1.3.0
+`
+	goModPath := filepath.Join(tmpDir, "go.mod")
+	err := os.WriteFile(goModPath, []byte(goModContent), 0600)
+	if err != nil {
+		t.Fatalf("Failed to create go.mod: %v", err)
+	}
+
+	g := &Golang{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "github.com/google/uuid", Version: "v1.3.0"},
+		},
+	}
+
+	err = g.Validate(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+}
+
+func TestGolang_Validate_PackageNotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create go.mod without the requested package
+	goModContent := `module test/module
+
+go 1.26
+
+require github.com/sirupsen/logrus v1.0.0
+`
+	goModPath := filepath.Join(tmpDir, "go.mod")
+	err := os.WriteFile(goModPath, []byte(goModContent), 0600)
+	if err != nil {
+		t.Fatalf("Failed to create go.mod: %v", err)
+	}
+
+	g := &Golang{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "github.com/google/uuid", Version: "v1.3.0"},
+		},
+	}
+
+	// Validate logs warnings but doesn't return error for missing packages
+	err = g.Validate(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Validate should not fail for missing packages: %v", err)
+	}
+}
+
+func TestConvertDependenciesToPackages_WithReplaces(t *testing.T) {
+	deps := []languages.Dependency{
+		{Name: "example.com/foo", Version: "v1.2.3"},
+		{Name: "example.com/new", Version: "v2.0.0", Replace: true, OldName: "example.com/old"},
+	}
+
+	packages := convertDependenciesToPackages(deps)
+
+	if len(packages) != 2 {
+		t.Errorf("Expected 2 packages, got %d", len(packages))
+	}
+
+	if pkg, ok := packages["example.com/foo"]; !ok {
+		t.Error("Expected example.com/foo package")
+	} else if pkg.Version != "v1.2.3" {
+		t.Errorf("Expected version v1.2.3, got %s", pkg.Version)
+	}
+
+	if pkg, ok := packages["example.com/new"]; !ok {
+		t.Error("Expected example.com/new package")
+	} else {
+		if pkg.Version != "v2.0.0" {
+			t.Errorf("Expected version v2.0.0, got %s", pkg.Version)
+		}
+		if !pkg.Replace {
+			t.Error("Expected Replace to be true")
+		}
+		if pkg.OldName != "example.com/old" {
+			t.Errorf("Expected OldName example.com/old, got %s", pkg.OldName)
+		}
+	}
+}
+
+func TestGolangAnalyzer_Analyze(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create minimal go.mod
+	goModContent := `module test/module
+
+go 1.26
+
+require (
+	github.com/google/uuid v1.3.0
+	golang.org/x/sys v0.1.0 // indirect
+)
+`
+	goModPath := filepath.Join(tmpDir, "go.mod")
+	err := os.WriteFile(goModPath, []byte(goModContent), 0600)
+	if err != nil {
+		t.Fatalf("Failed to create go.mod: %v", err)
+	}
+
+	analyzer := &GolangAnalyzer{}
+	result, err := analyzer.Analyze(context.Background(), tmpDir)
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+
+	if result.Language != "go" {
+		t.Errorf("Expected language 'go', got %s", result.Language)
+	}
+
+	if len(result.Dependencies) != 2 {
+		t.Errorf("Expected 2 dependencies, got %d", len(result.Dependencies))
+	}
+
+	// Check direct dependency
+	if dep, ok := result.Dependencies["github.com/google/uuid"]; !ok {
+		t.Error("Expected github.com/google/uuid dependency")
+	} else {
+		if dep.Version != "v1.3.0" {
+			t.Errorf("Expected version v1.3.0, got %s", dep.Version)
+		}
+		if dep.Transitive {
+			t.Error("Expected Transitive to be false for direct dependency")
+		}
+	}
+
+	// Check indirect dependency
+	if dep, ok := result.Dependencies["golang.org/x/sys"]; !ok {
+		t.Error("Expected golang.org/x/sys dependency")
+	} else {
+		if dep.Version != "v0.1.0" {
+			t.Errorf("Expected version v0.1.0, got %s", dep.Version)
+		}
+		if !dep.Transitive {
+			t.Error("Expected Transitive to be true for indirect dependency")
+		}
+	}
+}
+
+func TestGolangAnalyzer_Analyze_MissingGoMod(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	analyzer := &GolangAnalyzer{}
+	_, err := analyzer.Analyze(context.Background(), tmpDir)
+	if err == nil {
+		t.Fatal("Expected error for missing go.mod, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to parse go.mod") {
+		t.Errorf("Expected parse error, got: %v", err)
+	}
+}
+
+func TestGolangAnalyzer_Analyze_WithReplaceDirectives(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create go.mod with replace directives
+	goModContent := `module test/module
+
+go 1.26
+
+require github.com/old/pkg v1.0.0
+
+replace github.com/old/pkg => github.com/new/pkg v2.0.0
+replace github.com/another/pkg => github.com/forked/pkg v1.5.0
+`
+	goModPath := filepath.Join(tmpDir, "go.mod")
+	err := os.WriteFile(goModPath, []byte(goModContent), 0600)
+	if err != nil {
+		t.Fatalf("Failed to create go.mod: %v", err)
+	}
+
+	ga := &GolangAnalyzer{}
+	result, err := ga.Analyze(context.Background(), tmpDir)
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+
+	// Check that replaced dependency has correct metadata
+	if dep, ok := result.Dependencies["github.com/old/pkg"]; !ok {
+		t.Error("Expected github.com/old/pkg dependency")
+	} else {
+		if replaced, ok := dep.Metadata["replaced"].(bool); !ok || !replaced {
+			t.Error("Expected replaced metadata to be true")
+		}
+		if replacedWith, ok := dep.Metadata["replacedWith"].(string); !ok || replacedWith != "github.com/new/pkg" {
+			t.Errorf("Expected replacedWith to be github.com/new/pkg, got %v", replacedWith)
+		}
+		if dep.UpdateStrategy != "replace" {
+			t.Errorf("Expected UpdateStrategy to be replace, got %s", dep.UpdateStrategy)
+		}
+	}
+
+	// Check that replace-only dependency exists
+	if dep, ok := result.Dependencies["github.com/another/pkg"]; !ok {
+		t.Error("Expected github.com/another/pkg dependency")
+	} else {
+		if replaced, ok := dep.Metadata["replaced"].(bool); !ok || !replaced {
+			t.Error("Expected replaced metadata to be true for replace-only dependency")
+		}
+	}
+}
+
+func TestGolangAnalyzer_Analyze_FilePathDirectly(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create minimal go.mod
+	goModContent := `module test/module
+
+go 1.26
+
+require github.com/google/uuid v1.3.0
+`
+	goModPath := filepath.Join(tmpDir, "go.mod")
+	err := os.WriteFile(goModPath, []byte(goModContent), 0600)
+	if err != nil {
+		t.Fatalf("Failed to create go.mod: %v", err)
+	}
+
+	// Pass file path directly instead of directory
+	analyzer := &GolangAnalyzer{}
+	result, err := analyzer.Analyze(context.Background(), goModPath)
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+
+	if len(result.Dependencies) != 1 {
+		t.Errorf("Expected 1 dependency, got %d", len(result.Dependencies))
+	}
+}
+
+func TestGolang_Update_CurrentVersionNewer(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create go.mod with package at v1.5.0 (newer than requested v1.3.0)
+	goModContent := `module test/module
+
+go 1.26
+
+require github.com/google/uuid v1.5.0
+`
+	goModPath := filepath.Join(tmpDir, "go.mod")
+	err := os.WriteFile(goModPath, []byte(goModContent), 0600)
+	if err != nil {
+		t.Fatalf("Failed to create go.mod: %v", err)
+	}
+
+	g := &Golang{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "github.com/google/uuid", Version: "v1.3.0"},
+		},
+	}
+
+	err = g.Update(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+
+	// Verify go.mod was not changed (current version is newer)
+	content, err := os.ReadFile(goModPath)
+	if err != nil {
+		t.Fatalf("Failed to read go.mod: %v", err)
+	}
+	if !strings.Contains(string(content), "v1.5.0") {
+		t.Error("go.mod should not have been modified when current version is newer")
+	}
+}
+
+func TestGolang_Update_PackageNotInGoMod(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create go.mod without the package we want to add
+	goModContent := `module test/module
+
+go 1.26
+`
+	goModPath := filepath.Join(tmpDir, "go.mod")
+	err := os.WriteFile(goModPath, []byte(goModContent), 0600)
+	if err != nil {
+		t.Fatalf("Failed to create go.mod: %v", err)
+	}
+
+	g := &Golang{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "github.com/google/uuid", Version: "v1.3.0"},
+		},
+		DryRun: true, // Use dry run to avoid actual go commands
+	}
+
+	err = g.Update(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+}
+
+func TestGolang_Validate_InvalidGoMod(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create invalid go.mod
+	goModPath := filepath.Join(tmpDir, "go.mod")
+	err := os.WriteFile(goModPath, []byte("invalid content"), 0600)
+	if err != nil {
+		t.Fatalf("Failed to create go.mod: %v", err)
+	}
+
+	g := &Golang{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "github.com/google/uuid", Version: "v1.3.0"},
+		},
+	}
+
+	err = g.Validate(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("Expected error for invalid go.mod, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to parse updated go.mod") {
+		t.Errorf("Expected parse error, got: %v", err)
+	}
+}
+
+func TestGolangAnalyzer_Analyze_WithGoVersion(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create go.mod with go version
+	goModContent := `module test/module
+
+go 1.21
+
+require github.com/google/uuid v1.3.0
+`
+	goModPath := filepath.Join(tmpDir, "go.mod")
+	err := os.WriteFile(goModPath, []byte(goModContent), 0600)
+	if err != nil {
+		t.Fatalf("Failed to create go.mod: %v", err)
+	}
+
+	ga := &GolangAnalyzer{}
+	result, err := ga.Analyze(context.Background(), tmpDir)
+	if err != nil {
+		t.Fatalf("Analyze failed: %v", err)
+	}
+
+	// Check that Go version is captured in metadata
+	if goVersion, ok := result.Metadata["goVersion"].(string); !ok || goVersion != "1.21" {
+		t.Errorf("Expected goVersion to be 1.21, got %v", result.Metadata["goVersion"])
+	}
+}
+
+func TestGolangAnalyzer_RecommendStrategy(t *testing.T) {
+	// Create sample analysis result
+	analysis := &analyzer.AnalysisResult{
+		Language: "go",
+		Dependencies: map[string]*analyzer.DependencyInfo{
+			"github.com/google/uuid": {
+				Name:           "github.com/google/uuid",
+				Version:        "v1.3.0",
+				Transitive:     false,
+				UpdateStrategy: "direct",
+				Metadata:       make(map[string]any),
+			},
+			"golang.org/x/sys": {
+				Name:           "golang.org/x/sys",
+				Version:        "v0.1.0",
+				Transitive:     true,
+				UpdateStrategy: "direct",
+				Metadata:       map[string]any{"indirect": true},
+			},
+			"github.com/replaced/pkg": {
+				Name:           "github.com/replaced/pkg",
+				Version:        "v2.0.0",
+				Transitive:     false,
+				UpdateStrategy: "direct",
+				Metadata: map[string]any{
+					"replaced":     true,
+					"replacedWith": "github.com/new/pkg",
+				},
+			},
+		},
+	}
+
+	deps := []analyzer.Dependency{
+		{Name: "github.com/google/uuid", Version: "v1.4.0"},
+		{Name: "golang.org/x/sys", Version: "v0.2.0"},
+		{Name: "github.com/replaced/pkg", Version: "v2.1.0"},
+	}
+
+	ga := &GolangAnalyzer{}
+	strategy, err := ga.RecommendStrategy(context.Background(), analysis, deps)
+	if err != nil {
+		t.Fatalf("RecommendStrategy failed: %v", err)
+	}
+
+	if len(strategy.DirectUpdates) != 3 {
+		t.Errorf("Expected 3 direct updates, got %d", len(strategy.DirectUpdates))
+	}
+
+	// Should have warnings for indirect and replaced dependencies
+	if len(strategy.Warnings) != 2 {
+		t.Errorf("Expected 2 warnings, got %d", len(strategy.Warnings))
+	}
+
+	// Check warnings contain expected messages
+	warningsText := strings.Join(strategy.Warnings, " ")
+	if !strings.Contains(warningsText, "indirect") {
+		t.Error("Expected warning about indirect dependency")
+	}
+	if !strings.Contains(warningsText, "replaced") {
+		t.Error("Expected warning about replaced dependency")
 	}
 }
