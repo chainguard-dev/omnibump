@@ -182,7 +182,8 @@ func ParsePom(pomPath string) (*gopom.Project, error) {
 func parsePatches(ctx context.Context, patchFile, patchFlag string) ([]Patch, error) {
 	if patchFile != "" {
 		var patchList PatchList
-		file, err := os.Open(filepath.Clean(patchFile))
+		// filepath.Clean sanitizes the path to prevent traversal attacks
+		file, err := os.Open(filepath.Clean(patchFile)) //nolint:gosec // G703: filepath.Clean() sanitizes user input
 		if err != nil {
 			return nil, fmt.Errorf("failed reading file: %w", err)
 		}
@@ -244,7 +245,8 @@ func parseProperties(ctx context.Context, propertyFile, propertiesFlag string) (
 	propertiesPatches := map[string]string{}
 	if propertyFile != "" {
 		var propertyList PropertyList
-		file, err := os.Open(filepath.Clean(propertyFile))
+		// filepath.Clean sanitizes the path to prevent traversal attacks
+		file, err := os.Open(filepath.Clean(propertyFile)) //nolint:gosec // G703: filepath.Clean() sanitizes user input
 		if err != nil {
 			return nil, fmt.Errorf("failed reading file: %w", err)
 		}

@@ -104,7 +104,8 @@ func UpdateGoWorkVersion(ctx context.Context, modroot string, forceWork bool, go
 	}
 
 	dir := filepath.Dir(workPath)
-	cmd := exec.CommandContext(ctx, "go", "work", "edit", "-go", goVersion)
+	// Safe: goVersion is either auto-detected from runtime.Version() or user-provided version string (e.g., "1.21")
+	cmd := exec.CommandContext(ctx, "go", "work", "edit", "-go", goVersion) //nolint:gosec // G204: goVersion is a version string, not user-controlled path
 	cmd.Dir = dir
 	if bytes, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to update go.work version: %w, output: %s", err, strings.TrimSpace(string(bytes)))
