@@ -204,7 +204,7 @@ func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package,
 		// Resolve version if it's a query (@latest, @upgrade, etc.)
 		resolvedVersion := pkg.Version
 		if isVersionQuery(pkg.Version) {
-			resolved, err := resolveVersionQuery(name, pkg.Version, modroot)
+			resolved, err := resolveVersionQuery(ctx, name, pkg.Version, modroot)
 			if err != nil {
 				return nil, fmt.Errorf("failed to resolve %s@%s: %w", name, pkg.Version, err)
 			}
@@ -251,15 +251,16 @@ func isVersionQuery(version string) bool {
 }
 
 // resolveVersionQuery resolves a version query to an actual version using go list.
-func resolveVersionQuery(modulePath, query, modroot string) (string, error) {
-	// Validate module path (module paths are not filesystem paths, don't use filepath.Clean)
+func resolveVersionQuery(ctx context.Context, modulePath, query, modroot string) (string, error) {
+	// SECURITY: Validate module path before exec.Command to prevent argument injection.
+	// Module paths are not filesystem paths - use module.CheckPath(), not filepath.Clean().
 	if err := module.CheckPath(modulePath); err != nil {
 		return "", fmt.Errorf("invalid module path %q: %w", modulePath, err)
 	}
 
 	// Safe: modulePath validated above, query is a version string
 	//nolint:gosec // G204: Using exec.Command with validated module path
-	cmd := exec.Command("go", "list", "-m", fmt.Sprintf("%s@%s", modulePath, query))
+	cmd := exec.CommandContext(ctx, "go", "list", "-m", fmt.Sprintf("%s@%s", modulePath, query))
 	cmd.Dir = modroot
 	// Override vendor mode to allow querying
 	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod")

@@ -6,6 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 package golang
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,6 +19,8 @@ import (
 )
 
 // validateModulePath validates a Go module path to prevent injection attacks.
+// SECURITY: This prevents malicious inputs like "--flag-injection" or "name; rm -rf /"
+// from being passed to exec.Command as arguments.
 // Uses module.CheckPath() from golang.org/x/mod/module to ensure the path is valid.
 func validateModulePath(path string) error {
 	if path == "" {
@@ -31,7 +34,7 @@ func validateModulePath(path string) error {
 
 // GoModTidy runs go mod tidy with the specified go version and compatibility settings.
 // Ported from gobump/pkg/run/gorun.go.
-func GoModTidy(modroot, goVersion, compat string) (string, error) {
+func GoModTidy(ctx context.Context, modroot, goVersion, compat string) (string, error) {
 	if goVersion == "" {
 		goVersion = strings.TrimPrefix(runtime.Version(), "go")
 		v := versionutil.MustParseGeneric(goVersion)
@@ -43,7 +46,7 @@ func GoModTidy(modroot, goVersion, compat string) (string, error) {
 		args = append(args, "-compat", compat)
 	}
 
-	cmd := exec.Command("go", args...) //nolint:gosec
+	cmd := exec.CommandContext(ctx, "go", args...) //nolint:gosec
 	cmd.Dir = modroot
 	if bytes, err := cmd.CombinedOutput(); err != nil {
 		return strings.TrimSpace(string(bytes)), err
@@ -79,7 +82,7 @@ func findGoWork(modroot string) string {
 }
 
 // UpdateGoWorkVersion updates the go.work version if we're using workspaces.
-func UpdateGoWorkVersion(modroot string, forceWork bool, goVersion string) error {
+func UpdateGoWorkVersion(ctx context.Context, modroot string, forceWork bool, goVersion string) error {
 	workPath := findGoWork(modroot)
 	if !forceWork && workPath == "" {
 		return nil
@@ -101,7 +104,7 @@ func UpdateGoWorkVersion(modroot string, forceWork bool, goVersion string) error
 	}
 
 	dir := filepath.Dir(workPath)
-	cmd := exec.Command("go", "work", "edit", "-go", goVersion)
+	cmd := exec.CommandContext(ctx, "go", "work", "edit", "-go", goVersion)
 	cmd.Dir = dir
 	if bytes, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to update go.work version: %w, output: %s", err, strings.TrimSpace(string(bytes)))
@@ -111,16 +114,16 @@ func UpdateGoWorkVersion(modroot string, forceWork bool, goVersion string) error
 }
 
 // GoVendor runs go mod vendor or go work vendor depending on workspace configuration.
-func GoVendor(dir string, forceWork bool) (string, error) {
+func GoVendor(ctx context.Context, dir string, forceWork bool) (string, error) {
 	workPath := findGoWork(dir)
 	if forceWork || workPath != "" {
-		cmd := exec.Command("go", "work", "vendor")
+		cmd := exec.CommandContext(ctx, "go", "work", "vendor")
 		cmd.Dir = dir
 		if bytes, err := cmd.CombinedOutput(); err != nil {
 			return strings.TrimSpace(string(bytes)), err
 		}
 	} else {
-		cmd := exec.Command("go", "mod", "vendor")
+		cmd := exec.CommandContext(ctx, "go", "mod", "vendor")
 		cmd.Dir = dir
 		if bytes, err := cmd.CombinedOutput(); err != nil {
 			return strings.TrimSpace(string(bytes)), err
@@ -131,11 +134,14 @@ func GoVendor(dir string, forceWork bool) (string, error) {
 }
 
 // GoGetModule runs go get for a specific module and version.
-func GoGetModule(name, version, modroot string) (string, error) {
+func GoGetModule(ctx context.Context, name, version, modroot string) (string, error) {
+	// SECURITY: Validate module path before exec.Command to prevent argument injection
+	// (e.g., names starting with "-" could be interpreted as flags)
 	if err := validateModulePath(name); err != nil {
 		return "", err
 	}
-	cmd := exec.Command("go", "get", fmt.Sprintf("%s@%s", name, version)) //nolint:gosec
+	// Safe: module path validated above
+	cmd := exec.CommandContext(ctx, "go", "get", fmt.Sprintf("%s@%s", name, version)) //nolint:gosec
 	cmd.Dir = modroot
 	if bytes, err := cmd.CombinedOutput(); err != nil {
 		return strings.TrimSpace(string(bytes)), err
@@ -144,7 +150,8 @@ func GoGetModule(name, version, modroot string) (string, error) {
 }
 
 // GoModEditReplaceModule edits go.mod to replace one module with another.
-func GoModEditReplaceModule(nameOld, nameNew, version, modroot string) (string, error) {
+func GoModEditReplaceModule(ctx context.Context, nameOld, nameNew, version, modroot string) (string, error) {
+	// SECURITY: Validate both module paths before exec.Command to prevent argument injection
 	if err := validateModulePath(nameOld); err != nil {
 		return "", fmt.Errorf("invalid old module path: %w", err)
 	}
@@ -152,13 +159,15 @@ func GoModEditReplaceModule(nameOld, nameNew, version, modroot string) (string, 
 		return "", fmt.Errorf("invalid new module path: %w", err)
 	}
 
-	cmd := exec.Command("go", "mod", "edit", "-dropreplace", nameOld) //nolint:gosec
+	// Safe: both module paths validated above
+	cmd := exec.CommandContext(ctx, "go", "mod", "edit", "-dropreplace", nameOld) //nolint:gosec
 	cmd.Dir = modroot
 	if bytes, err := cmd.CombinedOutput(); err != nil {
 		return strings.TrimSpace(string(bytes)), fmt.Errorf("error running go command to drop replace modules: %w", err)
 	}
 
-	cmd = exec.Command("go", "mod", "edit", "-replace", fmt.Sprintf("%s=%s@%s", nameOld, nameNew, version)) //nolint:gosec
+	// Safe: both module paths validated above
+	cmd = exec.CommandContext(ctx, "go", "mod", "edit", "-replace", fmt.Sprintf("%s=%s@%s", nameOld, nameNew, version)) //nolint:gosec
 	cmd.Dir = modroot
 	if bytes, err := cmd.CombinedOutput(); err != nil {
 		return strings.TrimSpace(string(bytes)), fmt.Errorf("error running go command to replace modules: %w", err)
@@ -167,11 +176,13 @@ func GoModEditReplaceModule(nameOld, nameNew, version, modroot string) (string, 
 }
 
 // GoModEditDropRequireModule drops a require directive from go.mod.
-func GoModEditDropRequireModule(name, modroot string) (string, error) {
+func GoModEditDropRequireModule(ctx context.Context, name, modroot string) (string, error) {
+	// SECURITY: Validate module path before exec.Command to prevent argument injection
 	if err := validateModulePath(name); err != nil {
 		return "", err
 	}
-	cmd := exec.Command("go", "mod", "edit", "-droprequire", name) //nolint:gosec
+	// Safe: module path validated above
+	cmd := exec.CommandContext(ctx, "go", "mod", "edit", "-droprequire", name) //nolint:gosec
 	cmd.Dir = modroot
 	if bytes, err := cmd.CombinedOutput(); err != nil {
 		return strings.TrimSpace(string(bytes)), err

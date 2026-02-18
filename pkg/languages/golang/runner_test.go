@@ -6,6 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 package golang
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -180,7 +181,7 @@ replace example.com/old => ./new`,
 
 				// For tests, we call UpdateGoWorkVersion with the directory containing go.work
 				// and forceWork=true since we know we want to update it
-				err := UpdateGoWorkVersion(filepath.Dir(workPath), true, tc.goVersion)
+				err := UpdateGoWorkVersion(context.Background(), filepath.Dir(workPath), true, tc.goVersion)
 				if err != nil {
 					t.Fatalf("Failed to update go.work: %v", err)
 				}
@@ -279,7 +280,7 @@ use .`
 				}
 
 				// Call GoVendor
-				_, _ = GoVendor(tmpDir, tc.forceWork)
+				_, _ = GoVendor(context.Background(), tmpDir, tc.forceWork)
 
 				// Test passes if no panic (we can't easily test the actual command executed)
 			})
@@ -311,7 +312,7 @@ github.com/google/uuid v1.3.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+
 			}
 
 			// Call GoVendor - if cmd.Dir isn't set, vendor would be in wrong place
-			_, _ = GoVendor(subDir, false)
+			_, _ = GoVendor(context.Background(), subDir, false)
 
 			// Verify vendor wasn't created in parent (wrong) directory
 			vendorInParent := filepath.Join(tmpDir, "vendor")
@@ -372,7 +373,7 @@ func TestGoGetModule_RejectsInvalidPath(t *testing.T) {
 
 	for _, invalidPath := range invalidPaths {
 		t.Run(invalidPath, func(t *testing.T) {
-			_, err := GoGetModule(invalidPath, "v1.0.0", tmpDir)
+			_, err := GoGetModule(context.Background(), invalidPath, "v1.0.0", tmpDir)
 			if err == nil {
 				t.Errorf("GoGetModule should reject invalid path %q", invalidPath)
 			}
@@ -400,7 +401,7 @@ func TestGoModEditReplaceModule_RejectsInvalidPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := GoModEditReplaceModule(tt.nameOld, tt.nameNew, "v1.0.0", tmpDir)
+			_, err := GoModEditReplaceModule(context.Background(), tt.nameOld, tt.nameNew, "v1.0.0", tmpDir)
 			if err == nil {
 				t.Errorf("GoModEditReplaceModule should reject invalid paths")
 			}
@@ -423,7 +424,7 @@ func TestGoModEditDropRequireModule_RejectsInvalidPath(t *testing.T) {
 
 	for _, invalidPath := range invalidPaths {
 		t.Run(invalidPath, func(t *testing.T) {
-			_, err := GoModEditDropRequireModule(invalidPath, tmpDir)
+			_, err := GoModEditDropRequireModule(context.Background(), invalidPath, tmpDir)
 			if err == nil {
 				t.Errorf("GoModEditDropRequireModule should reject invalid path %q", invalidPath)
 			}

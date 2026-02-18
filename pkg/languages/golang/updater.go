@@ -61,13 +61,13 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 	}
 
 	// Update go.work version FIRST before ANY go commands to avoid version mismatch errors
-	if err := UpdateGoWorkVersion(cfg.Modroot, cfg.ForceWork, goVersion); err != nil {
+	if err := UpdateGoWorkVersion(ctx, cfg.Modroot, cfg.ForceWork, goVersion); err != nil {
 		log.Warnf("Failed to update go.work version: %v", err)
 	}
 
 	// Run go mod tidy before
 	if cfg.Tidy && !cfg.SkipInitialTidy {
-		output, err := GoModTidy(cfg.Modroot, goVersion, cfg.TidyCompat)
+		output, err := GoModTidy(ctx, cfg.Modroot, goVersion, cfg.TidyCompat)
 		if err != nil {
 			return nil, fmt.Errorf("failed to run 'go mod tidy': %w with output: %v", err, output)
 		}
@@ -94,7 +94,7 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 		if pkg.Replace {
 			log.Infof("Update package: %s", k)
 			log.Infof("Running go mod edit replace ...")
-			if output, err := GoModEditReplaceModule(pkg.OldName, pkg.Name, pkg.Version, cfg.Modroot); err != nil {
+			if output, err := GoModEditReplaceModule(ctx, pkg.OldName, pkg.Name, pkg.Version, cfg.Modroot); err != nil {
 				return nil, fmt.Errorf("failed to run 'go mod edit -replace': %w for package %s/%s@%s with output: %v", err, pkg.OldName, pkg.Name, pkg.Version, output)
 			}
 		}
@@ -120,7 +120,7 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 				} else {
 					log.Infof("Running go get for commit hash or non-semver version ...")
 				}
-				if output, err := GoGetModule(pkg.Name, pkg.Version, cfg.Modroot); err != nil {
+				if output, err := GoGetModule(ctx, pkg.Name, pkg.Version, cfg.Modroot); err != nil {
 					return nil, fmt.Errorf("failed to run 'go get': %w with output: %v", err, output)
 				}
 			}
@@ -148,7 +148,7 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 
 	// Run go mod tidy
 	if cfg.Tidy {
-		output, err := GoModTidy(cfg.Modroot, goVersion, cfg.TidyCompat)
+		output, err := GoModTidy(ctx, cfg.Modroot, goVersion, cfg.TidyCompat)
 		if err != nil {
 			return nil, fmt.Errorf("failed to run 'go mod tidy': %w with output: %v", err, output)
 		}
@@ -177,7 +177,7 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 	}
 
 	if _, err := os.Stat(filepath.Join(cfg.Modroot, "vendor")); err == nil {
-		output, err := GoVendor(cfg.Modroot, cfg.ForceWork)
+		output, err := GoVendor(ctx, cfg.Modroot, cfg.ForceWork)
 		if err != nil {
 			return nil, fmt.Errorf("failed to run 'go vendor': %w with output: %v", err, output)
 		}
