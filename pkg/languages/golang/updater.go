@@ -91,6 +91,9 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 	// Replace the packages first
 	for _, k := range depsBumpOrdered {
 		pkg := pkgVersions[k]
+		if pkg == nil {
+			continue
+		}
 		if pkg.Replace {
 			log.Infof("Update package: %s", k)
 			log.Infof("Running go mod edit replace ...")
@@ -103,6 +106,9 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 	// Bump the require or new get packages in the specified order
 	for _, k := range depsBumpOrdered {
 		pkg := pkgVersions[k]
+		if pkg == nil {
+			continue
+		}
 		// Skip the replace that have been updated above
 		if !pkg.Replace {
 			log.Infof("Update package: %s", k)

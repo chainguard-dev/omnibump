@@ -32,6 +32,10 @@ func DoUpdate(ctx context.Context, packages map[string]*Package, cargoPackages [
 
 	for _, pkgName := range orderedPackages {
 		pkg := packages[pkgName]
+		if pkg == nil {
+			log.Warnf("Package %s has nil entry in packages map, skipping", pkgName)
+			continue
+		}
 
 		// Find matching package(s) in Cargo.lock
 		matchingPackages := findMatchingPackages(pkgName, cargoPackages)
