@@ -86,7 +86,7 @@ func (g *GitHubFetcher) fetchAndValidateFile(ctx context.Context, repo Repositor
 
 	// Filter to exact matches (basename must match pattern)
 	if filepath.Base(path) != pattern && path != pattern {
-		return nil, nil // Skip, not an error
+		return nil, nil //nolint:nilnil // Returning (nil, nil) to skip file is appropriate here
 	}
 
 	// Fetch content

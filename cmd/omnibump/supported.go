@@ -27,7 +27,7 @@ projects can be bumped with omnibump.`,
 	return cmd
 }
 
-func runSupported(cmd *cobra.Command, args []string) error {
+func runSupported(_ *cobra.Command, _ []string) error { // Both unused but required by cobra interface
 	fmt.Println()
 	fmt.Println("Supported Languages and Build Systems")
 	fmt.Println("=====================================")

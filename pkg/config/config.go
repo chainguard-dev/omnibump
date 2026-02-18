@@ -262,7 +262,6 @@ func loadReplacesFile(data []byte) (*Config, error) {
 	return &cfg, nil
 }
 
-// contains checks if a string is in a slice.
 // ParseInlinePackages parses inline package specifications from command line.
 // Format: "name@version" or "groupId@artifactId@version" (Maven).
 func ParseInlinePackages(packagesStr string) ([]Package, error) {

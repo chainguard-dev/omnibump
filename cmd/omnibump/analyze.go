@@ -344,11 +344,11 @@ func writeDirectUpdatesFile(filename string, deps []analyzer.Dependency) error {
 			Type:    dep.Type,
 		}
 
-		if groupId, ok := dep.Metadata["groupId"].(string); ok {
-			pkg.GroupID = groupId
+		if groupID, ok := dep.Metadata["groupId"].(string); ok {
+			pkg.GroupID = groupID
 		}
-		if artifactId, ok := dep.Metadata["artifactId"].(string); ok {
-			pkg.ArtifactID = artifactId
+		if artifactID, ok := dep.Metadata["artifactId"].(string); ok {
+			pkg.ArtifactID = artifactID
 		}
 
 		packages = append(packages, pkg)

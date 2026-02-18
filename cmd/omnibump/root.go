@@ -3,6 +3,7 @@ Copyright 2026 Chainguard, Inc.
 SPDX-License-Identifier: Apache-2.0
 */
 
+// Package omnibump implements the omnibump CLI for unified dependency version bumping.
 package omnibump
 
 import (
@@ -193,7 +194,7 @@ func setupLogging() error {
 	return nil
 }
 
-func runUpdate(cmd *cobra.Command, args []string) error {
+func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but required by cobra interface
 	ctx := cmd.Context()
 	log := clog.FromContext(ctx)
 

@@ -613,7 +613,7 @@ func TestCommit(t *testing.T) {
 
 func copyFile(t *testing.T, src, dst string) {
 	t.Helper()
-	_, err := exec.Command("cp", "-r", src, dst).Output()
+	_, err := exec.CommandContext(context.Background(), "cp", "-r", src, dst).Output()
 	if err != nil {
 		t.Fatal(err)
 	}

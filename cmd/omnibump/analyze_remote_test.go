@@ -6,6 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 package omnibump
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -63,7 +64,7 @@ func TestTokenTransport_OnlyAddsHeaderForGitHubAPI(t *testing.T) {
 			defer server.Close()
 
 			// Create request with the test URL's host
-			req, err := http.NewRequest("GET", tt.requestURL, nil)
+			req, err := http.NewRequestWithContext(context.Background(), "GET", tt.requestURL, nil)
 			if err != nil {
 				t.Fatalf("failed to create request: %v", err)
 			}
@@ -145,7 +146,7 @@ func TestTokenTransport_PreventsCrossHostTokenLeak(t *testing.T) {
 	defer attackerServer.Close()
 
 	// Simulate what would happen if GitHub redirected to attacker's server
-	req, err := http.NewRequest("GET", attackerServer.URL, nil)
+	req, err := http.NewRequestWithContext(context.Background(), "GET", attackerServer.URL, nil)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}

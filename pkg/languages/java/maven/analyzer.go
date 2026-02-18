@@ -251,7 +251,7 @@ func searchForProperties(ctx context.Context, startDir string, excludePath strin
 	// Use WalkDir instead of Walk - it doesn't follow symlinks and provides type info directly
 	err := filepath.WalkDir(projectRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // Intentionally skip directories with errors
 		}
 
 		// Skip directories
@@ -281,7 +281,8 @@ func searchForProperties(ctx context.Context, startDir string, excludePath strin
 		// Try to parse as POM
 		project, err := gopom.Parse(path)
 		if err != nil {
-			return nil
+			// Not a valid POM file, skip it
+			return nil //nolint:nilerr // Intentionally skip non-POM XML files
 		}
 
 		pomFilesChecked++

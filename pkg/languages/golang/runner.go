@@ -14,8 +14,8 @@ import (
 	"runtime"
 	"strings"
 
-	versionutil "k8s.io/apimachinery/pkg/util/version"
 	"golang.org/x/mod/module"
+	versionutil "k8s.io/apimachinery/pkg/util/version"
 )
 
 // validateModulePath validates a Go module path to prevent injection attacks.
