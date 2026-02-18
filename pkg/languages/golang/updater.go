@@ -81,7 +81,7 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 	}
 
 	// Detect require/replace modules and validate the version values
-	err = CheckPackageValues(pkgVersions, modFile)
+	err = CheckPackageValues(ctx, pkgVersions, modFile)
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +188,9 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 
 // CheckPackageValues validates that package versions to be updated are valid
 // Checks for main module bumps and downgrades in both replace and require directives.
-func CheckPackageValues(pkgVersions map[string]*Package, modFile *modfile.File) error {
+func CheckPackageValues(ctx context.Context, pkgVersions map[string]*Package, modFile *modfile.File) error {
+	log := clog.FromContext(ctx)
+
 	if _, ok := pkgVersions[modFile.Module.Mod.Path]; ok {
 		return fmt.Errorf("bumping the main module is not allowed '%s'", modFile.Module.Mod.Path)
 	}
@@ -219,7 +221,7 @@ func CheckPackageValues(pkgVersions map[string]*Package, modFile *modfile.File) 
 						continue
 					}
 				} else {
-					fmt.Printf("Requesting pin to %s. This is not a valid SemVer, so skipping version check.\n", pkgVersions[replace.New.Path].Version)
+					log.Warnf("Requesting pin to %s. This is not a valid SemVer, so skipping version check.", pkgVersions[replace.New.Path].Version)
 				}
 			}
 		}
@@ -253,7 +255,7 @@ func CheckPackageValues(pkgVersions map[string]*Package, modFile *modfile.File) 
 						continue
 					}
 				} else {
-					fmt.Printf("Requesting pin to %s. This is not a valid SemVer, so skipping version check.\n", pkgVersions[require.Mod.Path].Version)
+					log.Warnf("Requesting pin to %s. This is not a valid SemVer, so skipping version check.", pkgVersions[require.Mod.Path].Version)
 				}
 			}
 		}
@@ -261,7 +263,7 @@ func CheckPackageValues(pkgVersions map[string]*Package, modFile *modfile.File) 
 
 	if len(errorPkgVer) > 0 {
 		var errorMsg strings.Builder
-		errorMsg.WriteString("The following errors were found::\n")
+		errorMsg.WriteString("The following errors were found:\n")
 		for pkg, ver := range errorPkgVer {
 			fmt.Fprintf(&errorMsg, "  - package %s: requested version '%s', is already at version '%s'\n", pkg, ver.ReqVersion, ver.AvailableVersion)
 		}
