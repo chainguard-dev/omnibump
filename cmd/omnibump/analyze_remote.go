@@ -191,33 +191,10 @@ func runAnalyzeRemote(cmd *cobra.Command, args []string) error {
 	// If packages are provided, recommend update strategy
 	var strategies map[string]*analyzer.Strategy
 	if analyzeRemoteF.depsFile != "" || analyzeRemoteF.packages != "" {
-		// Load dependencies
-		var deps []analyzer.Dependency
-		if analyzeRemoteF.depsFile != "" {
-			cfg, err := config.LoadConfig(ctx, analyzeRemoteF.depsFile)
-			if err != nil {
-				return fmt.Errorf("failed to load deps file: %w", err)
-			}
-			deps = convertPackagesToAnalyzerDeps(cfg.Packages)
-		} else {
-			packages, err := config.ParseInlinePackages(analyzeRemoteF.packages)
-			if err != nil {
-				return fmt.Errorf("failed to parse packages: %w", err)
-			}
-			deps = convertPackagesToAnalyzerDeps(packages)
-		}
-
-		log.Infof("Checking %d package(s) for update recommendations", len(deps))
-
-		// Get strategy recommendation for each file
-		strategies = make(map[string]*analyzer.Strategy)
-		for _, fa := range result.FileAnalyses {
-			strategy, err := projectAnalyzer.RecommendStrategy(ctx, fa.Analysis, deps)
-			if err != nil {
-				log.Warnf("Failed to recommend strategy for %s: %v", fa.FilePath, err)
-				continue
-			}
-			strategies[fa.FilePath] = strategy
+		var err error
+		strategies, err = loadRemoteDepsAndRecommendStrategies(ctx, projectAnalyzer, result, analyzeRemoteF.depsFile, analyzeRemoteF.packages)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -256,6 +233,40 @@ func searchManifestFilesWithFallback(ctx context.Context, fetcher *remote.GitHub
 }
 
 // prioritizeGoModFiles filters files to prefer go.mod over vendor.mod in the same directory.
+// loadRemoteDepsAndRecommendStrategies loads dependencies and recommends strategies for each file.
+func loadRemoteDepsAndRecommendStrategies(ctx context.Context, projectAnalyzer analyzer.Analyzer, result *analyzer.RemoteAnalysisResult, depsFile, packages string) (map[string]*analyzer.Strategy, error) {
+	log := clog.FromContext(ctx)
+
+	var deps []analyzer.Dependency
+	if depsFile != "" {
+		cfg, err := config.LoadConfig(ctx, depsFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load deps file: %w", err)
+		}
+		deps = convertPackagesToAnalyzerDeps(cfg.Packages)
+	} else {
+		pkgs, err := config.ParseInlinePackages(packages)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse packages: %w", err)
+		}
+		deps = convertPackagesToAnalyzerDeps(pkgs)
+	}
+
+	log.Infof("Checking %d package(s) for update recommendations", len(deps))
+
+	// Get strategy recommendation for each file
+	strategies := make(map[string]*analyzer.Strategy)
+	for _, fa := range result.FileAnalyses {
+		strategy, err := projectAnalyzer.RecommendStrategy(ctx, fa.Analysis, deps)
+		if err != nil {
+			log.Warnf("Failed to recommend strategy for %s: %v", fa.FilePath, err)
+			continue
+		}
+		strategies[fa.FilePath] = strategy
+	}
+	return strategies, nil
+}
+
 func prioritizeGoModFiles(files []remote.RemoteFile) []remote.RemoteFile {
 	// Build a map of directory -> files
 	dirFiles := make(map[string][]remote.RemoteFile)
@@ -386,67 +397,11 @@ func outputRemoteText(result *analyzer.RemoteAnalysisResult, strategies map[stri
 
 		fmt.Println()
 
-		// Show strategy if provided
+		// Show strategy or key dependencies
 		if strategies != nil {
-			if strategy, ok := strategies[fa.FilePath]; ok {
-				fmt.Println("  Update Strategy:")
-				fmt.Println("  ----------------")
-
-				if len(strategy.DirectUpdates) > 0 {
-					fmt.Println("  Direct Updates:")
-					for _, dep := range strategy.DirectUpdates {
-						if depInfo, exists := analysis.Dependencies[dep.Name]; exists {
-							fmt.Printf("    %s: %s -> %s\n", dep.Name, depInfo.Version, dep.Version)
-						} else {
-							fmt.Printf("    %s: (not found) -> %s\n", dep.Name, dep.Version)
-						}
-					}
-				}
-
-				if len(strategy.PropertyUpdates) > 0 {
-					fmt.Println("  Property Updates:")
-					for prop, version := range strategy.PropertyUpdates {
-						currentValue := analysis.Properties[prop]
-						if currentValue != "" {
-							fmt.Printf("    %s: %s -> %s\n", prop, currentValue, version)
-						} else {
-							fmt.Printf("    %s: (new) -> %s\n", prop, version)
-						}
-					}
-				}
-
-				if len(strategy.Warnings) > 0 {
-					fmt.Println("  Warnings:")
-					for _, warning := range strategy.Warnings {
-						fmt.Printf("    ⚠ %s\n", warning)
-					}
-				}
-				fmt.Println()
-			}
-		}
-
-		// Show some key dependencies (if no strategy shown)
-		if strategies == nil && len(analysis.Dependencies) > 0 {
-			fmt.Println("  Key Dependencies:")
-			count := 0
-			for name, dep := range analysis.Dependencies {
-				if count >= 10 {
-					fmt.Printf("  ... and %d more\n", len(analysis.Dependencies)-10)
-					break
-				}
-				flags := ""
-				if dep.Transitive {
-					flags += " (indirect)"
-				}
-				if dep.UpdateStrategy == "replace" {
-					if replacedWith, ok := dep.Metadata["replacedWith"].(string); ok {
-						flags += fmt.Sprintf(" [replaced with %s]", replacedWith)
-					}
-				}
-				fmt.Printf("    - %s@%s%s\n", name, dep.Version, flags)
-				count++
-			}
-			fmt.Println()
+			printFileStrategy(fa, analysis, strategies)
+		} else if len(analysis.Dependencies) > 0 {
+			printKeyDependencies(analysis)
 		}
 	}
 
@@ -566,4 +521,70 @@ func (c *githubClient) GetFileContent(ctx context.Context, owner, repo, path, re
 	}
 
 	return []byte(content), nil
+}
+
+// printFileStrategy prints the update strategy for a specific file.
+func printFileStrategy(fa analyzer.FileAnalysis, analysis *analyzer.AnalysisResult, strategies map[string]*analyzer.Strategy) {
+	strategy, ok := strategies[fa.FilePath]
+	if !ok {
+		return
+	}
+
+	fmt.Println("  Update Strategy:")
+	fmt.Println("  ----------------")
+
+	if len(strategy.DirectUpdates) > 0 {
+		fmt.Println("  Direct Updates:")
+		for _, dep := range strategy.DirectUpdates {
+			if depInfo, exists := analysis.Dependencies[dep.Name]; exists {
+				fmt.Printf("    %s: %s -> %s\n", dep.Name, depInfo.Version, dep.Version)
+			} else {
+				fmt.Printf("    %s: (not found) -> %s\n", dep.Name, dep.Version)
+			}
+		}
+	}
+
+	if len(strategy.PropertyUpdates) > 0 {
+		fmt.Println("  Property Updates:")
+		for prop, version := range strategy.PropertyUpdates {
+			currentValue := analysis.Properties[prop]
+			if currentValue != "" {
+				fmt.Printf("    %s: %s -> %s\n", prop, currentValue, version)
+			} else {
+				fmt.Printf("    %s: (new) -> %s\n", prop, version)
+			}
+		}
+	}
+
+	if len(strategy.Warnings) > 0 {
+		fmt.Println("  Warnings:")
+		for _, warning := range strategy.Warnings {
+			fmt.Printf("    ⚠ %s\n", warning)
+		}
+	}
+	fmt.Println()
+}
+
+// printKeyDependencies prints a summary of key dependencies.
+func printKeyDependencies(analysis *analyzer.AnalysisResult) {
+	fmt.Println("  Key Dependencies:")
+	count := 0
+	for name, dep := range analysis.Dependencies {
+		if count >= 10 {
+			fmt.Printf("  ... and %d more\n", len(analysis.Dependencies)-10)
+			break
+		}
+		flags := ""
+		if dep.Transitive {
+			flags += " (indirect)"
+		}
+		if dep.UpdateStrategy == "replace" {
+			if replacedWith, ok := dep.Metadata["replacedWith"].(string); ok {
+				flags += fmt.Sprintf(" [replaced with %s]", replacedWith)
+			}
+		}
+		fmt.Printf("    - %s@%s%s\n", name, dep.Version, flags)
+		count++
+	}
+	fmt.Println()
 }

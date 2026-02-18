@@ -225,55 +225,7 @@ func outputText(analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy) 
 
 	// Show strategy if provided
 	if strategy != nil {
-		fmt.Println("Update Strategy")
-		fmt.Println("===============")
-		fmt.Println()
-
-		if len(strategy.PropertyUpdates) > 0 {
-			fmt.Println("Property Updates:")
-			fmt.Println("-----------------")
-			for prop, version := range strategy.PropertyUpdates {
-				currentValue := analysis.Properties[prop]
-				if currentValue != "" {
-					fmt.Printf("  %s: %s -> %s\n", prop, currentValue, version)
-				} else {
-					fmt.Printf("  %s: (new) -> %s\n", prop, version)
-				}
-
-				// Show affected dependencies
-				if affected, ok := strategy.AffectedDependencies[prop]; ok && len(affected) > 0 {
-					fmt.Printf("    Affects %d dependencies:\n", len(affected))
-					for _, dep := range affected {
-						fmt.Printf("      - %s\n", dep)
-					}
-				}
-			}
-			fmt.Println()
-		}
-
-		if len(strategy.DirectUpdates) > 0 {
-			fmt.Println("Direct Dependency Updates:")
-			fmt.Println("--------------------------")
-			for _, dep := range strategy.DirectUpdates {
-				depKey := dep.Name
-				if depInfo, exists := analysis.Dependencies[depKey]; exists {
-					fmt.Printf("  %s: %s -> %s\n", depKey, depInfo.Version, dep.Version)
-				} else {
-					fmt.Printf("  %s: (new) -> %s\n", depKey, dep.Version)
-				}
-			}
-			fmt.Println()
-		}
-
-		if len(strategy.Warnings) > 0 {
-			fmt.Println("Warnings:")
-			fmt.Println("---------")
-			for _, warning := range strategy.Warnings {
-				fmt.Printf("  ⚠ %s\n", warning)
-			}
-			fmt.Println()
-		}
-
+		printUpdateStrategy(analysis, strategy)
 		fmt.Printf("Summary: %d property updates, %d direct dependency updates\n",
 			len(strategy.PropertyUpdates), len(strategy.DirectUpdates))
 	}
@@ -410,4 +362,71 @@ func writePropertiesFile(filename string, properties map[string]string) error {
 	}
 
 	return os.WriteFile(filename, data, 0o600)
+}
+
+// printUpdateStrategy prints the update strategy in human-readable format.
+func printUpdateStrategy(analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy) {
+	fmt.Println("Update Strategy")
+	fmt.Println("===============")
+	fmt.Println()
+
+	if len(strategy.PropertyUpdates) > 0 {
+		printPropertyUpdates(analysis, strategy)
+	}
+
+	if len(strategy.DirectUpdates) > 0 {
+		printDirectUpdates(analysis, strategy)
+	}
+
+	if len(strategy.Warnings) > 0 {
+		printStrategyWarnings(strategy)
+	}
+}
+
+// printPropertyUpdates prints property-based updates.
+func printPropertyUpdates(analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy) {
+	fmt.Println("Property Updates:")
+	fmt.Println("-----------------")
+	for prop, version := range strategy.PropertyUpdates {
+		currentValue := analysis.Properties[prop]
+		if currentValue != "" {
+			fmt.Printf("  %s: %s -> %s\n", prop, currentValue, version)
+		} else {
+			fmt.Printf("  %s: (new) -> %s\n", prop, version)
+		}
+
+		// Show affected dependencies
+		if affected, ok := strategy.AffectedDependencies[prop]; ok && len(affected) > 0 {
+			fmt.Printf("    Affects %d dependencies:\n", len(affected))
+			for _, dep := range affected {
+				fmt.Printf("      - %s\n", dep)
+			}
+		}
+	}
+	fmt.Println()
+}
+
+// printDirectUpdates prints direct dependency updates.
+func printDirectUpdates(analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy) {
+	fmt.Println("Direct Dependency Updates:")
+	fmt.Println("--------------------------")
+	for _, dep := range strategy.DirectUpdates {
+		depKey := dep.Name
+		if depInfo, exists := analysis.Dependencies[depKey]; exists {
+			fmt.Printf("  %s: %s -> %s\n", depKey, depInfo.Version, dep.Version)
+		} else {
+			fmt.Printf("  %s: (new) -> %s\n", depKey, dep.Version)
+		}
+	}
+	fmt.Println()
+}
+
+// printStrategyWarnings prints strategy warnings.
+func printStrategyWarnings(strategy *analyzer.Strategy) {
+	fmt.Println("Warnings:")
+	fmt.Println("---------")
+	for _, warning := range strategy.Warnings {
+		fmt.Printf("  ⚠ %s\n", warning)
+	}
+	fmt.Println()
 }

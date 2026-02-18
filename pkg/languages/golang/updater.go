@@ -170,33 +170,10 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 		}
 	}
 
-	// Read the entire go.mod one more time into memory and check that all the version constraints are met
-	newModFile, newContent, err := ParseGoModfile(modpath)
+	// Verify updates and handle post-update tasks
+	newModFile, err := verifyAndFinalize(ctx, modpath, pkgVersions, content, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("unable to parse the go mod file with error: %w", err)
-	}
-
-	for _, pkg := range pkgVersions {
-		verStr := getVersion(newModFile, pkg.Name)
-		if verStr != "" && semver.Compare(verStr, pkg.Version) < 0 {
-			return nil, fmt.Errorf("%w: package %s with %s is less than the desired version %s", ErrPackageDowngrade, pkg.Name, verStr, pkg.Version)
-		}
-		if verStr == "" {
-			return nil, fmt.Errorf("%w: package %s. Please remove the package or add it to the list of 'replaces'", ErrPackageNotFound, pkg.Name)
-		}
-	}
-
-	if cfg.ShowDiff {
-		if diff := cmp.Diff(string(content), string(newContent)); diff != "" {
-			fmt.Println(diff)
-		}
-	}
-
-	if _, err := os.Stat(filepath.Join(cfg.Modroot, "vendor")); err == nil {
-		output, err := GoVendor(ctx, cfg.Modroot, cfg.ForceWork)
-		if err != nil {
-			return nil, fmt.Errorf("failed to run 'go vendor': %w with output: %v", err, output)
-		}
+		return nil, err
 	}
 
 	return newModFile, nil
@@ -332,6 +309,40 @@ func updateRequirePackage(ctx context.Context, log *clog.Logger, pkg *Package, m
 		return fmt.Errorf("failed to run 'go get': %w with output: %v", err, output)
 	}
 	return nil
+}
+
+// verifyAndFinalize verifies package versions and handles final tasks.
+func verifyAndFinalize(ctx context.Context, modpath string, pkgVersions map[string]*Package, originalContent []byte, cfg *UpdateConfig) (*modfile.File, error) {
+	// Read the entire go.mod one more time into memory and check that all the version constraints are met
+	newModFile, newContent, err := ParseGoModfile(modpath)
+	if err != nil {
+		return nil, fmt.Errorf("unable to parse the go mod file with error: %w", err)
+	}
+
+	for _, pkg := range pkgVersions {
+		verStr := getVersion(newModFile, pkg.Name)
+		if verStr != "" && semver.Compare(verStr, pkg.Version) < 0 {
+			return nil, fmt.Errorf("%w: package %s with %s is less than the desired version %s", ErrPackageDowngrade, pkg.Name, verStr, pkg.Version)
+		}
+		if verStr == "" {
+			return nil, fmt.Errorf("%w: package %s. Please remove the package or add it to the list of 'replaces'", ErrPackageNotFound, pkg.Name)
+		}
+	}
+
+	if cfg.ShowDiff {
+		if diff := cmp.Diff(string(originalContent), string(newContent)); diff != "" {
+			fmt.Println(diff)
+		}
+	}
+
+	if _, err := os.Stat(filepath.Join(cfg.Modroot, "vendor")); err == nil {
+		output, err := GoVendor(ctx, cfg.Modroot, cfg.ForceWork)
+		if err != nil {
+			return nil, fmt.Errorf("failed to run 'go vendor': %w with output: %v", err, output)
+		}
+	}
+
+	return newModFile, nil
 }
 
 func orderPkgVersionsMap(pkgVersions map[string]*Package) []string {
