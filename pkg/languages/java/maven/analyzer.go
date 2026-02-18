@@ -131,38 +131,11 @@ func (ma *MavenAnalyzer) RecommendStrategy(ctx context.Context, analysis *analyz
 		log.Debugf("Checking dependency: %s @ %s", depKey, dep.Version)
 
 		// Check if this dependency uses a property
-		if depInfo, exists := analysis.Dependencies[depKey]; exists && depInfo.UsesProperty {
-			propertyName := depInfo.PropertyName
-			log.Debugf("  -> Dependency uses property ${%s}", propertyName)
-
-			// Check if we already have this property
-			if existingVersion, exists := strategy.PropertyUpdates[propertyName]; exists {
-				log.Warnf("Property %s already set to %s, requested %s for %s",
-					propertyName, existingVersion, dep.Version, depKey)
-			} else {
-				strategy.PropertyUpdates[propertyName] = dep.Version
-
-				// Track affected dependencies
-				affected := getAffectedDependencies(analysis, propertyName)
-				strategy.AffectedDependencies[propertyName] = affected
-
-				// Check if property is actually defined
-				if currentValue, exists := analysis.Properties[propertyName]; exists {
-					log.Infof("Will update property %s from %s to %s", propertyName, currentValue, dep.Version)
-				} else {
-					log.Warnf("Property %s is referenced but not found - may be in external parent POM", propertyName)
-					missingProperties = append(missingProperties, propertyName)
-				}
-			}
+		depInfo, exists := analysis.Dependencies[depKey]
+		if exists && depInfo.UsesProperty {
+			handlePropertyUpdate(log, depKey, dep, depInfo, analysis, strategy, &missingProperties)
 		} else {
-			// Direct patch
-			if _, exists := analysis.Dependencies[depKey]; exists {
-				log.Debugf("  -> Dependency found but doesn't use properties")
-			} else {
-				log.Debugf("  -> Dependency not found (may be from BOM or new)")
-			}
-			strategy.DirectUpdates = append(strategy.DirectUpdates, dep)
-			log.Infof("Will directly patch %s to %s", depKey, dep.Version)
+			handleDirectPatch(log, depKey, dep, exists, strategy)
 		}
 	}
 
@@ -175,6 +148,45 @@ func (ma *MavenAnalyzer) RecommendStrategy(ctx context.Context, analysis *analyz
 	log.Infof("Strategy: %d direct patches, %d property updates", len(strategy.DirectUpdates), len(strategy.PropertyUpdates))
 
 	return strategy, nil
+}
+
+// handlePropertyUpdate processes a dependency that uses a Maven property.
+func handlePropertyUpdate(log *clog.Logger, depKey string, dep analyzer.Dependency, depInfo *analyzer.DependencyInfo, analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy, missingProps *[]string) {
+	propertyName := depInfo.PropertyName
+	log.Debugf("  -> Dependency uses property ${%s}", propertyName)
+
+	// Check if we already have this property
+	if existingVersion, exists := strategy.PropertyUpdates[propertyName]; exists {
+		log.Warnf("Property %s already set to %s, requested %s for %s",
+			propertyName, existingVersion, dep.Version, depKey)
+		return
+	}
+
+	strategy.PropertyUpdates[propertyName] = dep.Version
+
+	// Track affected dependencies
+	affected := getAffectedDependencies(analysis, propertyName)
+	strategy.AffectedDependencies[propertyName] = affected
+
+	// Check if property is actually defined
+	if currentValue, exists := analysis.Properties[propertyName]; exists {
+		log.Infof("Will update property %s from %s to %s", propertyName, currentValue, dep.Version)
+	} else {
+		log.Warnf("Property %s is referenced but not found - may be in external parent POM", propertyName)
+		*missingProps = append(*missingProps, propertyName)
+	}
+}
+
+// handleDirectPatch processes a dependency that requires a direct patch.
+func handleDirectPatch(log *clog.Logger, depKey string, dep analyzer.Dependency, exists bool, strategy *analyzer.Strategy) {
+	// Direct patch
+	if exists {
+		log.Debugf("  -> Dependency found but doesn't use properties")
+	} else {
+		log.Debugf("  -> Dependency not found (may be from BOM or new)")
+	}
+	strategy.DirectUpdates = append(strategy.DirectUpdates, dep)
+	log.Infof("Will directly patch %s to %s", depKey, dep.Version)
 }
 
 // analyzeDependency analyzes a single Maven dependency.

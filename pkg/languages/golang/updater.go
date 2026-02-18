@@ -38,6 +38,11 @@ var (
 	ErrUnexpectedGoVersion = errors.New("unexpected format of go version output")
 )
 
+// pkgVersion holds version information for validation.
+type pkgVersion struct {
+	ReqVersion, AvailableVersion string
+}
+
 // ParseGoModfile parses a go.mod file from the specified path.
 // Ported from gobump/pkg/update/update.go.
 func ParseGoModfile(path string) (*modfile.File, []byte, error) {
@@ -128,26 +133,13 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 			continue
 		}
 		// Skip the replace that have been updated above
-		if !pkg.Replace {
-			log.Infof("Update package: %s", k)
-			useDirectEdit := pkg.Require && semver.IsValid(pkg.Version)
+		if pkg.Replace {
+			continue
+		}
 
-			if useDirectEdit {
-				log.Infof("Updating existing require with AddRequire ...")
-				if err := modFile.AddRequire(pkg.Name, pkg.Version); err != nil {
-					return nil, fmt.Errorf("failed to update require for %s@%s: %w", pkg.Name, pkg.Version, err)
-				}
-			} else {
-				// For new dependencies or commit hashes, use go get
-				if !pkg.Require {
-					log.Infof("Running go get for new dependency ...")
-				} else {
-					log.Infof("Running go get for commit hash or non-semver version ...")
-				}
-				if output, err := GoGetModule(ctx, pkg.Name, pkg.Version, cfg.Modroot); err != nil {
-					return nil, fmt.Errorf("failed to run 'go get': %w with output: %v", err, output)
-				}
-			}
+		log.Infof("Update package: %s", k)
+		if err := updateRequirePackage(ctx, log, pkg, modFile, cfg.Modroot); err != nil {
+			return nil, err
 		}
 	}
 
@@ -219,70 +211,25 @@ func CheckPackageValues(ctx context.Context, pkgVersions map[string]*Package, mo
 		return fmt.Errorf("%w: '%s'", ErrMainModuleBump, modFile.Module.Mod.Path)
 	}
 
-	type pkgVersion struct {
-		ReqVersion, AvailableVersion string
-	}
 	errorPkgVer := make(map[string]pkgVersion)
 	// Track which packages have replace directives (replace takes precedence over require in Go)
 	replacedPackages := make(map[string]bool)
 
 	// Detect if the list of packages contain any replace statement for the package
 	for _, replace := range modFile.Replace {
-		if replace != nil {
-			if _, ok := pkgVersions[replace.New.Path]; ok {
-				pkgVersions[replace.New.Path].Replace = true
-				if pkgVersions[replace.New.Path].OldName == "" {
-					pkgVersions[replace.New.Path].OldName = replace.Old.Path
-				}
-				// Mark that this package (Old.Path) has a replace directive
-				replacedPackages[replace.Old.Path] = true
-				if semver.IsValid(pkgVersions[replace.New.Path].Version) {
-					if semver.Compare(replace.New.Version, pkgVersions[replace.New.Path].Version) > 0 {
-						errorPkgVer[replace.New.Path] = pkgVersion{
-							ReqVersion:       pkgVersions[replace.New.Path].Version,
-							AvailableVersion: replace.New.Version,
-						}
-						continue
-					}
-				} else {
-					log.Warnf("Requesting pin to %s. This is not a valid SemVer, so skipping version check.", pkgVersions[replace.New.Path].Version)
-				}
-			}
+		if replace == nil {
+			continue
 		}
+		processReplaceDirective(log, replace, pkgVersions, replacedPackages, errorPkgVer)
 	}
 
 	// Detect if the list of packages contain any require statement for the package
 	// Skip packages that have replace directives (replace takes precedence in Go)
 	for _, require := range modFile.Require {
-		if require != nil {
-			if _, ok := pkgVersions[require.Mod.Path]; ok {
-				// Skip if this package has a replace directive (replace takes precedence)
-				if replacedPackages[require.Mod.Path] {
-					continue
-				}
-				pkgVersions[require.Mod.Path].Require = true
-				if semver.IsValid(pkgVersions[require.Mod.Path].Version) {
-					if semver.Compare(require.Mod.Version, pkgVersions[require.Mod.Path].Version) > 0 {
-						if existingPkg, exists := errorPkgVer[require.Mod.Path]; exists {
-							if semver.Compare(require.Mod.Version, existingPkg.AvailableVersion) > 0 {
-								errorPkgVer[require.Mod.Path] = pkgVersion{
-									ReqVersion:       pkgVersions[require.Mod.Path].Version,
-									AvailableVersion: require.Mod.Version,
-								}
-							}
-						} else {
-							errorPkgVer[require.Mod.Path] = pkgVersion{
-								ReqVersion:       pkgVersions[require.Mod.Path].Version,
-								AvailableVersion: require.Mod.Version,
-							}
-						}
-						continue
-					}
-				} else {
-					log.Warnf("Requesting pin to %s. This is not a valid SemVer, so skipping version check.", pkgVersions[require.Mod.Path].Version)
-				}
-			}
+		if require == nil {
+			continue
 		}
+		processRequireDirective(log, require, pkgVersions, replacedPackages, errorPkgVer)
 	}
 
 	if len(errorPkgVer) > 0 {
@@ -294,6 +241,96 @@ func CheckPackageValues(ctx context.Context, pkgVersions map[string]*Package, mo
 		return fmt.Errorf("%w:\n%s", ErrValidationFailed, errorMsg.String())
 	}
 
+	return nil
+}
+
+// processReplaceDirective processes a single replace directive for package validation.
+func processReplaceDirective(log *clog.Logger, replace *modfile.Replace, pkgVersions map[string]*Package, replacedPackages map[string]bool, errorPkgVer map[string]pkgVersion) {
+	pkg, ok := pkgVersions[replace.New.Path]
+	if !ok {
+		return
+	}
+
+	pkg.Replace = true
+	if pkg.OldName == "" {
+		pkg.OldName = replace.Old.Path
+	}
+	// Mark that this package (Old.Path) has a replace directive
+	replacedPackages[replace.Old.Path] = true
+
+	if !semver.IsValid(pkg.Version) {
+		log.Warnf("Requesting pin to %s. This is not a valid SemVer, so skipping version check.", pkg.Version)
+		return
+	}
+
+	if semver.Compare(replace.New.Version, pkg.Version) > 0 {
+		errorPkgVer[replace.New.Path] = pkgVersion{
+			ReqVersion:       pkg.Version,
+			AvailableVersion: replace.New.Version,
+		}
+	}
+}
+
+// processRequireDirective processes a single require directive for package validation.
+func processRequireDirective(log *clog.Logger, require *modfile.Require, pkgVersions map[string]*Package, replacedPackages map[string]bool, errorPkgVer map[string]pkgVersion) {
+	pkg, ok := pkgVersions[require.Mod.Path]
+	if !ok {
+		return
+	}
+
+	// Skip if this package has a replace directive (replace takes precedence)
+	if replacedPackages[require.Mod.Path] {
+		return
+	}
+
+	pkg.Require = true
+
+	if !semver.IsValid(pkg.Version) {
+		log.Warnf("Requesting pin to %s. This is not a valid SemVer, so skipping version check.", pkg.Version)
+		return
+	}
+
+	if semver.Compare(require.Mod.Version, pkg.Version) <= 0 {
+		return
+	}
+
+	// Check if we need to update or add new error
+	if existingPkg, exists := errorPkgVer[require.Mod.Path]; exists {
+		if semver.Compare(require.Mod.Version, existingPkg.AvailableVersion) > 0 {
+			errorPkgVer[require.Mod.Path] = pkgVersion{
+				ReqVersion:       pkg.Version,
+				AvailableVersion: require.Mod.Version,
+			}
+		}
+	} else {
+		errorPkgVer[require.Mod.Path] = pkgVersion{
+			ReqVersion:       pkg.Version,
+			AvailableVersion: require.Mod.Version,
+		}
+	}
+}
+
+// updateRequirePackage updates a single require package using either AddRequire or go get.
+func updateRequirePackage(ctx context.Context, log *clog.Logger, pkg *Package, modFile *modfile.File, modroot string) error {
+	useDirectEdit := pkg.Require && semver.IsValid(pkg.Version)
+
+	if useDirectEdit {
+		log.Infof("Updating existing require with AddRequire ...")
+		if err := modFile.AddRequire(pkg.Name, pkg.Version); err != nil {
+			return fmt.Errorf("failed to update require for %s@%s: %w", pkg.Name, pkg.Version, err)
+		}
+		return nil
+	}
+
+	// For new dependencies or commit hashes, use go get
+	if !pkg.Require {
+		log.Infof("Running go get for new dependency ...")
+	} else {
+		log.Infof("Running go get for commit hash or non-semver version ...")
+	}
+	if output, err := GoGetModule(ctx, pkg.Name, pkg.Version, modroot); err != nil {
+		return fmt.Errorf("failed to run 'go get': %w with output: %v", err, output)
+	}
 	return nil
 }
 

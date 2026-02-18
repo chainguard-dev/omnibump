@@ -6,6 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 package omnibump
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -144,26 +145,10 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	// If dependencies are provided, recommend strategy
 	var strategy *analyzer.Strategy
 	if analyzeF.depsFile != "" || analyzeF.packages != "" {
-		// Load dependencies
-		var deps []analyzer.Dependency
-		if analyzeF.depsFile != "" {
-			cfg, err := config.LoadConfig(ctx, analyzeF.depsFile)
-			if err != nil {
-				return fmt.Errorf("failed to load deps file: %w", err)
-			}
-			deps = convertPackagesToAnalyzerDeps(cfg.Packages)
-		} else {
-			packages, err := config.ParseInlinePackages(analyzeF.packages)
-			if err != nil {
-				return fmt.Errorf("failed to parse packages: %w", err)
-			}
-			deps = convertPackagesToAnalyzerDeps(packages)
-		}
-
-		// Get strategy recommendation
-		strategy, err = projectAnalyzer.RecommendStrategy(ctx, analysis, deps)
+		var err error
+		strategy, err = loadDepsAndRecommendStrategy(ctx, projectAnalyzer, analysis, analyzeF.depsFile, analyzeF.packages)
 		if err != nil {
-			return fmt.Errorf("failed to recommend strategy: %w", err)
+			return err
 		}
 	}
 
@@ -326,6 +311,31 @@ func outputYAML(analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy) 
 	}
 	fmt.Println(string(data))
 	return nil
+}
+
+// loadDepsAndRecommendStrategy loads dependencies and gets a strategy recommendation.
+func loadDepsAndRecommendStrategy(ctx context.Context, projectAnalyzer analyzer.Analyzer, analysis *analyzer.AnalysisResult, depsFile, packages string) (*analyzer.Strategy, error) {
+	var deps []analyzer.Dependency
+	if depsFile != "" {
+		cfg, err := config.LoadConfig(ctx, depsFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load deps file: %w", err)
+		}
+		deps = convertPackagesToAnalyzerDeps(cfg.Packages)
+	} else {
+		pkgs, err := config.ParseInlinePackages(packages)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse packages: %w", err)
+		}
+		deps = convertPackagesToAnalyzerDeps(pkgs)
+	}
+
+	// Get strategy recommendation
+	strategy, err := projectAnalyzer.RecommendStrategy(ctx, analysis, deps)
+	if err != nil {
+		return nil, fmt.Errorf("failed to recommend strategy: %w", err)
+	}
+	return strategy, nil
 }
 
 func convertPackagesToAnalyzerDeps(packages []config.Package) []analyzer.Dependency {

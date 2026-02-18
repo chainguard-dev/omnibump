@@ -137,38 +137,11 @@ func (ga *GradleAnalyzer) RecommendStrategy(ctx context.Context, analysis *analy
 		log.Debugf("Checking dependency: %s @ %s", depKey, dep.Version)
 
 		// Check if this dependency uses a version catalog
-		if depInfo, exists := analysis.Dependencies[depKey]; exists && depInfo.UsesProperty {
-			catalogKey := depInfo.PropertyName
-			log.Debugf("  -> Dependency uses version catalog key: %s", catalogKey)
-
-			// Check if we already have this catalog key
-			if existingVersion, exists := strategy.PropertyUpdates[catalogKey]; exists {
-				log.Warnf("Catalog key %s already set to %s, requested %s for %s",
-					catalogKey, existingVersion, dep.Version, depKey)
-			} else {
-				strategy.PropertyUpdates[catalogKey] = dep.Version
-
-				// Track affected dependencies
-				affected := getAffectedDependenciesGradle(analysis, catalogKey)
-				strategy.AffectedDependencies[catalogKey] = affected
-
-				// Check if catalog key is actually defined
-				if currentValue, exists := analysis.Properties[catalogKey]; exists {
-					log.Infof("Will update version catalog key %s from %s to %s", catalogKey, currentValue, dep.Version)
-				} else {
-					log.Warnf("Catalog key %s is referenced but not found in version catalogs", catalogKey)
-					missingCatalogKeys = append(missingCatalogKeys, catalogKey)
-				}
-			}
+		depInfo, exists := analysis.Dependencies[depKey]
+		if exists && depInfo.UsesProperty {
+			handleCatalogUpdate(log, depKey, dep, depInfo, analysis, strategy, &missingCatalogKeys)
 		} else {
-			// Direct update in build file
-			if _, exists := analysis.Dependencies[depKey]; exists {
-				log.Debugf("  -> Dependency found but doesn't use version catalogs")
-			} else {
-				log.Debugf("  -> Dependency not found (may be transitive or new)")
-			}
-			strategy.DirectUpdates = append(strategy.DirectUpdates, dep)
-			log.Infof("Will directly update %s to %s", depKey, dep.Version)
+			handleDirectUpdate(log, depKey, dep, exists, strategy)
 		}
 	}
 
@@ -202,6 +175,45 @@ func analyzeVersionCatalogToml(ctx context.Context, path string, result *analyze
 	extractLibraryDefinitions(catalog, result, log)
 
 	return nil
+}
+
+// handleCatalogUpdate processes a dependency that uses a version catalog.
+func handleCatalogUpdate(log *clog.Logger, depKey string, dep analyzer.Dependency, depInfo *analyzer.DependencyInfo, analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy, missingKeys *[]string) {
+	catalogKey := depInfo.PropertyName
+	log.Debugf("  -> Dependency uses version catalog key: %s", catalogKey)
+
+	// Check if we already have this catalog key
+	if existingVersion, exists := strategy.PropertyUpdates[catalogKey]; exists {
+		log.Warnf("Catalog key %s already set to %s, requested %s for %s",
+			catalogKey, existingVersion, dep.Version, depKey)
+		return
+	}
+
+	strategy.PropertyUpdates[catalogKey] = dep.Version
+
+	// Track affected dependencies
+	affected := getAffectedDependenciesGradle(analysis, catalogKey)
+	strategy.AffectedDependencies[catalogKey] = affected
+
+	// Check if catalog key is actually defined
+	if currentValue, exists := analysis.Properties[catalogKey]; exists {
+		log.Infof("Will update version catalog key %s from %s to %s", catalogKey, currentValue, dep.Version)
+	} else {
+		log.Warnf("Catalog key %s is referenced but not found in version catalogs", catalogKey)
+		*missingKeys = append(*missingKeys, catalogKey)
+	}
+}
+
+// handleDirectUpdate processes a dependency that requires a direct update.
+func handleDirectUpdate(log *clog.Logger, depKey string, dep analyzer.Dependency, exists bool, strategy *analyzer.Strategy) {
+	// Direct update in build file
+	if exists {
+		log.Debugf("  -> Dependency found but doesn't use version catalogs")
+	} else {
+		log.Debugf("  -> Dependency not found (may be transitive or new)")
+	}
+	strategy.DirectUpdates = append(strategy.DirectUpdates, dep)
+	log.Infof("Will directly update %s to %s", depKey, dep.Version)
 }
 
 // extractVersionCatalogKeys extracts version keys from TOML catalog.
