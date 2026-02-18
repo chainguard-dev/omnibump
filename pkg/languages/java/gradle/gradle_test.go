@@ -434,7 +434,7 @@ func TestGradle_Update_MultiModule(t *testing.T) {
 
 	// Create subproject directory and build.gradle
 	subprojectDir := filepath.Join(tmpDir, "subproject")
-	if err := os.MkdirAll(subprojectDir, 0o755); err != nil {
+	if err := os.MkdirAll(subprojectDir, 0o750); err != nil {
 		t.Fatalf("failed to create subproject dir: %v", err)
 	}
 
@@ -448,7 +448,7 @@ func TestGradle_Update_MultiModule(t *testing.T) {
 
 	// Create nested subproject
 	nestedDir := filepath.Join(tmpDir, "subproject", "nested")
-	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+	if err := os.MkdirAll(nestedDir, 0o750); err != nil {
 		t.Fatalf("failed to create nested dir: %v", err)
 	}
 
@@ -647,7 +647,7 @@ func TestGradle_Update_VersionCatalogToml(t *testing.T) {
 
 	// Create gradle directory for libs.versions.toml
 	gradleDir := filepath.Join(tmpDir, "gradle")
-	if err := os.MkdirAll(gradleDir, 0o755); err != nil {
+	if err := os.MkdirAll(gradleDir, 0o750); err != nil {
 		t.Fatalf("failed to create gradle directory: %v", err)
 	}
 
@@ -731,7 +731,7 @@ func TestGradle_Update_VersionCatalogToml_NoVersionsSection(t *testing.T) {
 
 	// Create gradle directory for libs.versions.toml
 	gradleDir := filepath.Join(tmpDir, "gradle")
-	if err := os.MkdirAll(gradleDir, 0o755); err != nil {
+	if err := os.MkdirAll(gradleDir, 0o750); err != nil {
 		t.Fatalf("failed to create gradle directory: %v", err)
 	}
 
@@ -776,7 +776,7 @@ func TestGradle_Update_VersionCatalogToml_InvalidToml(t *testing.T) {
 
 	// Create gradle directory for libs.versions.toml
 	gradleDir := filepath.Join(tmpDir, "gradle")
-	if err := os.MkdirAll(gradleDir, 0o755); err != nil {
+	if err := os.MkdirAll(gradleDir, 0o750); err != nil {
 		t.Fatalf("failed to create gradle directory: %v", err)
 	}
 
@@ -874,7 +874,7 @@ func TestGradle_FindBuildFiles_SkipsHiddenDirs(t *testing.T) {
 
 	// Create .git/build.gradle (should be skipped)
 	gitDir := filepath.Join(tmpDir, ".git")
-	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+	if err := os.MkdirAll(gitDir, 0o750); err != nil {
 		t.Fatalf("failed to create .git directory: %v", err)
 	}
 	gitBuild := filepath.Join(gitDir, "build.gradle")
@@ -884,7 +884,7 @@ func TestGradle_FindBuildFiles_SkipsHiddenDirs(t *testing.T) {
 
 	// Create vendor/build.gradle (should be skipped)
 	vendorDir := filepath.Join(tmpDir, "vendor")
-	if err := os.MkdirAll(vendorDir, 0o755); err != nil {
+	if err := os.MkdirAll(vendorDir, 0o750); err != nil {
 		t.Fatalf("failed to create vendor directory: %v", err)
 	}
 	vendorBuild := filepath.Join(vendorDir, "build.gradle")
@@ -913,7 +913,7 @@ func TestGradleAnalyzer_Analyze_WithTomlCatalog(t *testing.T) {
 
 	// Create gradle directory
 	gradleDir := filepath.Join(tmpDir, "gradle")
-	if err := os.MkdirAll(gradleDir, 0o755); err != nil {
+	if err := os.MkdirAll(gradleDir, 0o750); err != nil {
 		t.Fatalf("failed to create gradle directory: %v", err)
 	}
 
@@ -1068,7 +1068,7 @@ func TestGradleAnalyzer_RecommendStrategy_CatalogUpdates(t *testing.T) {
 
 	// Create gradle directory
 	gradleDir := filepath.Join(tmpDir, "gradle")
-	if err := os.MkdirAll(gradleDir, 0o755); err != nil {
+	if err := os.MkdirAll(gradleDir, 0o750); err != nil {
 		t.Fatalf("failed to create gradle directory: %v", err)
 	}
 
@@ -1257,7 +1257,7 @@ func TestGradle_Validate_VersionCatalog(t *testing.T) {
 
 	// Create gradle directory for TOML catalog
 	gradleDir := filepath.Join(tmpDir, "gradle")
-	if err := os.MkdirAll(gradleDir, 0o755); err != nil {
+	if err := os.MkdirAll(gradleDir, 0o750); err != nil {
 		t.Fatalf("failed to create gradle directory: %v", err)
 	}
 
@@ -1304,7 +1304,7 @@ func TestGradle_Validate_VersionCatalogMismatch(t *testing.T) {
 
 	// Create gradle directory for TOML catalog
 	gradleDir := filepath.Join(tmpDir, "gradle")
-	if err := os.MkdirAll(gradleDir, 0o755); err != nil {
+	if err := os.MkdirAll(gradleDir, 0o750); err != nil {
 		t.Fatalf("failed to create gradle directory: %v", err)
 	}
 
@@ -1539,7 +1539,7 @@ func TestFindBuildFiles_SkipsSymlinks(t *testing.T) {
 
 	// Create a sensitive target file outside the project
 	sensitiveDir := filepath.Join(tmpDir, "sensitive")
-	if err := os.MkdirAll(sensitiveDir, 0o755); err != nil {
+	if err := os.MkdirAll(sensitiveDir, 0o750); err != nil {
 		t.Fatalf("failed to create sensitive directory: %v", err)
 	}
 	sensitiveFile := filepath.Join(sensitiveDir, "secrets.txt")

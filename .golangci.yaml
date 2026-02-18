@@ -5,54 +5,64 @@
 version: "2"
 
 linters:
+  # Exclude some linters from running on tests
+  exclusions:
+    rules:
+      - path: '(.+)_test\.go'
+        linters:
+          - goerr113
+          - gocyclo
+          - dupl
+          - gosec
+          - goconst
   enable:
     # Error handling
-    - errcheck      # Check for unchecked errors
-    - errorlint     # Find code that will cause problems with error wrapping
-    - err113        # Check errors handling expressions
+    - errcheck # Check for unchecked errors
+    - errorlint # Find code that will cause problems with error wrapping
+    - err113 # Check errors handling expressions
 
     # Security
-    - gosec         # Security-focused linter
+    - gosec # Security-focused linter
 
     # Code quality
-    - gocritic      # Comprehensive code quality checks
-    - revive        # Drop-in replacement for golint
-    - staticcheck   # Advanced static analysis
-    - unused        # Check for unused constants, variables, functions and types
-    - ineffassign   # Detect ineffectual assignments
+    - gocritic # Comprehensive code quality checks
+    - revive # Drop-in replacement for golint
+    - staticcheck # Advanced static analysis
+    - unused # Check for unused constants, variables, functions and types
+    - ineffassign # Detect ineffectual assignments
 
     # Bug detection
-    - bodyclose     # Check HTTP response body is closed
-    - nilerr        # Find code returning nil even if it checked that error is not nil
-    - nilnil        # Check no simultaneous return of nil error and invalid value
-    - noctx         # Find sending HTTP request without context.Context
+    - bodyclose # Check HTTP response body is closed
+    - nilerr # Find code returning nil even if it checked that error is not nil
+    - nilnil # Check no simultaneous return of nil error and invalid value
+    - noctx # Find sending HTTP request without context.Context
 
     # Best practices
-    - goconst       # Find repeated strings that could be constants
-    - gocyclo       # Compute cyclomatic complexity
-    - nestif        # Report deeply nested if statements
-    - dupl          # Detect code duplication
-    - unconvert     # Remove unnecessary type conversions
-    - unparam       # Report unused function parameters
-    - whitespace    # Detect leading and trailing whitespace
-    - misspell      # Fix commonly misspelled words
-    - prealloc      # Find slice declarations that could be preallocated
+    - goconst # Find repeated strings that could be constants
+    - gocyclo # Compute cyclomatic complexity
+    - nestif # Report deeply nested if statements
+    - dupl # Detect code duplication
+    - unconvert # Remove unnecessary type conversions
+    - unparam # Report unused function parameters
+    - whitespace # Detect leading and trailing whitespace
+    - misspell # Fix commonly misspelled words
+    - prealloc # Find slice declarations that could be preallocated
 
     # Comment and documentation
-    - godot         # Check comments end in period
+    - godot # Check comments end in period
 
     # Exhaustiveness checks
-    - exhaustive    # Check exhaustiveness of enum switch statements
+    - exhaustive # Check exhaustiveness of enum switch statements
 
     # Linting directives
-    - nolintlint    # Report ill-formed or insufficient nolint directives
+    - nolintlint # Report ill-formed or insufficient nolint directives
 
 formatters:
   enable:
-    - gofmt         # Check code formatting
-    - gofumpt       # Stricter gofmt
-    - goimports     # Check import formatting
-    - gci           # Control Go package import order
+    - gofmt # Check code formatting
+    - gofumpt # Stricter gofmt
+    - goimports # Check import formatting
+    - gci # Control Go package import order
 
 linters-settings:
   gci:
@@ -100,16 +110,6 @@ issues:
 
   # Maximum count of issues with the same text
   max-same-issues: 0
-
-  # Exclude some linters from running on tests
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - goerr113
-        - gocyclo
-        - dupl
-        - gosec
-        - goconst
 
 run:
   issues-exit-code: 1
