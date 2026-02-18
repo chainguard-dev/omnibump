@@ -455,7 +455,7 @@ func TestValidatePattern(t *testing.T) {
 	}
 }
 
-// TestSecurityScenarios tests specific security attack scenarios
+// TestSecurityScenarios tests specific security attack scenarios.
 func TestSecurityScenarios(t *testing.T) {
 	t.Run("git command injection via ref", func(t *testing.T) {
 		attacks := []string{

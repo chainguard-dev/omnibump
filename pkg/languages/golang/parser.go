@@ -15,7 +15,7 @@ import (
 )
 
 // ParseFile parses a YAML file containing package update specifications.
-// Ported from gobump/pkg/types/parse.go
+// Ported from gobump/pkg/types/parse.go.
 func ParseFile(bumpFile string) (map[string]*Package, error) {
 	if bumpFile == "" {
 		return nil, fmt.Errorf("no filename specified")

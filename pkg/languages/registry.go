@@ -12,7 +12,7 @@ import (
 )
 
 var (
-	// registry holds all registered language implementations
+	// registry holds all registered language implementations.
 	registry = make(map[string]Language)
 	mu       sync.RWMutex
 )

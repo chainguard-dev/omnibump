@@ -16,14 +16,13 @@ import (
 	"strings"
 
 	"github.com/chainguard-dev/clog"
-	"github.com/ghodss/yaml"
-	"github.com/google/go-github/v75/github"
-	"github.com/spf13/cobra"
-
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
 	"github.com/chainguard-dev/omnibump/pkg/config"
 	"github.com/chainguard-dev/omnibump/pkg/languages/golang"
 	"github.com/chainguard-dev/omnibump/pkg/remote"
+	"github.com/ghodss/yaml"
+	"github.com/google/go-github/v75/github"
+	"github.com/spf13/cobra"
 )
 
 type analyzeRemoteFlags struct {
@@ -235,7 +234,7 @@ func searchManifestFilesWithFallback(ctx context.Context, fetcher *remote.GitHub
 	return files, nil
 }
 
-// prioritizeGoModFiles filters files to prefer go.mod over vendor.mod in the same directory
+// prioritizeGoModFiles filters files to prefer go.mod over vendor.mod in the same directory.
 func prioritizeGoModFiles(files []remote.RemoteFile) []remote.RemoteFile {
 	// Build a map of directory -> files
 	dirFiles := make(map[string][]remote.RemoteFile)
@@ -472,7 +471,7 @@ func outputRemoteYAML(result *analyzer.RemoteAnalysisResult, strategies map[stri
 	return nil
 }
 
-// Simple GitHub client for remote analysis
+// Simple GitHub client for remote analysis.
 type githubClient struct {
 	client *github.Client
 }
@@ -492,7 +491,7 @@ func newGitHubClient(token string) *githubClient {
 	}
 }
 
-// tokenTransport adds Authorization header to requests
+// tokenTransport adds Authorization header to requests.
 type tokenTransport struct {
 	token string
 }

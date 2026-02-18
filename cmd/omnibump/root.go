@@ -14,15 +14,14 @@ import (
 	"strings"
 
 	"github.com/chainguard-dev/clog"
-	charmlog "github.com/charmbracelet/log"
-	"github.com/spf13/cobra"
-	"sigs.k8s.io/release-utils/version"
-
 	"github.com/chainguard-dev/omnibump/pkg/config"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/golang" // Register Go
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/java"   // Register Java (Maven, Gradle, etc.)
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/rust"   // Register Rust
+	charmlog "github.com/charmbracelet/log"
+	"github.com/spf13/cobra"
+	"sigs.k8s.io/release-utils/version"
 )
 
 type rootFlags struct {
@@ -115,7 +114,7 @@ func validateLogPath(path string) error {
 	// Get absolute path to normalize it
 	absPath, err := filepath.Abs(path)
 	if err != nil {
-		return fmt.Errorf("%w: failed to resolve absolute path: %v", ErrInvalidLogPath, err)
+		return fmt.Errorf("%w: failed to resolve absolute path: %w", ErrInvalidLogPath, err)
 	}
 
 	// Clean the path to remove any .. or . components
@@ -150,7 +149,7 @@ func setupLogging() error {
 				return fmt.Errorf("log-policy validation failed: %w", err)
 			}
 
-			f, err := os.OpenFile(filepath.Clean(policy), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+			f, err := os.OpenFile(filepath.Clean(policy), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 			if err != nil {
 				return fmt.Errorf("failed to create log writer: %w", err)
 			}

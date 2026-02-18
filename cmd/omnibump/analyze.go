@@ -11,15 +11,14 @@ import (
 	"os"
 
 	"github.com/chainguard-dev/clog"
-	"github.com/ghodss/yaml"
-	"github.com/spf13/cobra"
-
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
 	"github.com/chainguard-dev/omnibump/pkg/config"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 	"github.com/chainguard-dev/omnibump/pkg/languages/golang"
 	"github.com/chainguard-dev/omnibump/pkg/languages/java"
 	"github.com/chainguard-dev/omnibump/pkg/languages/rust"
+	"github.com/ghodss/yaml"
+	"github.com/spf13/cobra"
 )
 
 type analyzeFlags struct {
@@ -361,7 +360,7 @@ func writeDirectUpdatesFile(filename string, deps []analyzer.Dependency) error {
 		return err
 	}
 
-	return os.WriteFile(filename, data, 0600)
+	return os.WriteFile(filename, data, 0o600)
 }
 
 func writePropertiesFile(filename string, properties map[string]string) error {
@@ -382,5 +381,5 @@ func writePropertiesFile(filename string, properties map[string]string) error {
 		return err
 	}
 
-	return os.WriteFile(filename, data, 0600)
+	return os.WriteFile(filename, data, 0o600)
 }

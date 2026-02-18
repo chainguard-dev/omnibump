@@ -21,7 +21,7 @@ import (
 )
 
 // ParseGoModfile parses a go.mod file from the specified path.
-// Ported from gobump/pkg/update/update.go
+// Ported from gobump/pkg/update/update.go.
 func ParseGoModfile(path string) (*modfile.File, []byte, error) {
 	path = filepath.Clean(path)
 	content, err := os.ReadFile(path)
@@ -48,7 +48,7 @@ func ParseGoModfileFromContent(filename string, content []byte) (*modfile.File, 
 }
 
 // DoUpdate performs the actual update of Go module dependencies.
-// Ported from gobump/pkg/update/update.go:DoUpdate
+// Ported from gobump/pkg/update/update.go:DoUpdate.
 func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateConfig) (*modfile.File, error) {
 	log := clog.FromContext(ctx)
 
@@ -140,7 +140,7 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 		if err != nil {
 			return nil, fmt.Errorf("failed to format go.mod: %w", err)
 		}
-		if err := os.WriteFile(modpath, newContent, 0600); err != nil {
+		if err := os.WriteFile(modpath, newContent, 0o600); err != nil {
 			return nil, fmt.Errorf("failed to write go.mod: %w", err)
 		}
 		log.Infof("Updated go.mod file with new versions")
@@ -187,7 +187,7 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 }
 
 // CheckPackageValues validates that package versions to be updated are valid
-// Checks for main module bumps and downgrades in both replace and require directives
+// Checks for main module bumps and downgrades in both replace and require directives.
 func CheckPackageValues(pkgVersions map[string]*Package, modFile *modfile.File) error {
 	if _, ok := pkgVersions[modFile.Module.Mod.Path]; ok {
 		return fmt.Errorf("bumping the main module is not allowed '%s'", modFile.Module.Mod.Path)

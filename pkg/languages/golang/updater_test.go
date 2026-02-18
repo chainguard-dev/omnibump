@@ -180,7 +180,8 @@ func TestGoModTidy(t *testing.T) {
 			want: map[string]string{
 				"github.com/sirupsen/logrus": "v1.9.0",
 			},
-		}, {
+		},
+		{
 			name: "error when bumping main module",
 			pkgVersions: map[string]*Package{
 				"github.com/puerco/hello": {
@@ -267,7 +268,7 @@ func TestWorkFlagInUpdate(t *testing.T) {
 
 use .
 `
-				return os.WriteFile(filepath.Join(dir, "go.work"), []byte(workContent), 0600)
+				return os.WriteFile(filepath.Join(dir, "go.work"), []byte(workContent), 0o600)
 			},
 			want: map[string]string{
 				"github.com/google/uuid": "v1.4.0",
@@ -285,7 +286,7 @@ use .
 			setupFunc: func(dir string) error {
 				// Create vendor directory to trigger vendor command
 				vendorDir := filepath.Join(dir, "vendor")
-				return os.Mkdir(vendorDir, 0750)
+				return os.Mkdir(vendorDir, 0o750)
 			},
 			want: map[string]string{
 				"github.com/google/uuid": "v1.4.0",
@@ -312,7 +313,7 @@ go 1.21
 
 require github.com/google/uuid v1.3.0
 `
-			if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goModContent), 0600); err != nil {
+			if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goModContent), 0o600); err != nil {
 				t.Fatalf("Failed to create go.mod: %v", err)
 			}
 
@@ -504,7 +505,8 @@ func TestReplaces(t *testing.T) {
 					Name:    "github.com/fakefuzz",
 					Version: "v1.2.3",
 					Replace: true,
-				}},
+				},
+			},
 		},
 		{
 			name:     "replace - from file",
@@ -732,7 +734,7 @@ require (
 			goModPath := filepath.Join(tmpdir, "go.mod")
 
 			// Write initial go.mod
-			if err := os.WriteFile(goModPath, []byte(tc.initialGoMod), 0600); err != nil {
+			if err := os.WriteFile(goModPath, []byte(tc.initialGoMod), 0o600); err != nil {
 				t.Fatalf("Failed to write go.mod: %v", err)
 			}
 
@@ -825,7 +827,7 @@ go 1.23
 replace github.com/example/dependency => github.com/example/dependency v1.1.0
 require github.com/example/dependency v1.4.0
 `
-				if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goModContent), 0600); err != nil {
+				if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goModContent), 0o600); err != nil {
 					t.Fatalf("Failed to create go.mod: %v", err)
 				}
 			},

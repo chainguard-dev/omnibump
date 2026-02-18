@@ -16,6 +16,8 @@ import (
 )
 
 // RustAnalyzer implements the Analyzer interface for Rust projects.
+//
+//nolint:revive // Explicit name preferred for clarity
 type RustAnalyzer struct{}
 
 // Analyze performs dependency analysis on a Rust project.
@@ -98,6 +100,9 @@ func (ra *RustAnalyzer) Analyze(ctx context.Context, projectPath string) (*analy
 
 // AnalyzeRemote performs dependency analysis on remotely-fetched Rust files.
 // Not yet implemented for Rust - returns error.
+// TODO: Implement this function and use ctx for logging and files for analysis.
+//
+//nolint:revive // Parameters will be used when implementation is added
 func (ra *RustAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]byte) (*analyzer.RemoteAnalysisResult, error) {
 	return nil, fmt.Errorf("remote analysis not yet implemented for Rust")
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
 )
 
@@ -37,9 +38,15 @@ func (g *Golang) Name() string {
 
 // Detect checks if Go manifest files exist in the directory.
 func (g *Golang) Detect(ctx context.Context, dir string) (bool, error) {
+	log := clog.FromContext(ctx)
 	goModPath := filepath.Join(dir, "go.mod")
 	_, err := os.Stat(goModPath)
-	return err == nil, nil
+	if err == nil {
+		log.Debugf("Detected Go project at %s", dir)
+		return true, nil
+	}
+	log.Debugf("No Go project detected at %s", dir)
+	return false, nil
 }
 
 // GetManifestFiles returns Go manifest files.
@@ -237,17 +244,21 @@ func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package,
 	return filtered, nil
 }
 
-// isVersionQuery checks if a version string is a query (like @latest, @upgrade, @patch)
+// isVersionQuery checks if a version string is a query (like @latest, @upgrade, @patch).
 func isVersionQuery(version string) bool {
 	queries := []string{"latest", "upgrade", "patch"}
 	return slices.Contains(queries, version)
 }
 
-// resolveVersionQuery resolves a version query to an actual version using go list
+// resolveVersionQuery resolves a version query to an actual version using go list.
 func resolveVersionQuery(modulePath, query, modroot string) (string, error) {
-	modulePath = filepath.Clean(modulePath)
-	// Safe: modulePath comes from parsed go.mod (validated Go module paths) and query is a version string
-	//nolint:gosec // G204: Using exec.Command with variables from validated go.mod files
+	// Validate module path (module paths are not filesystem paths, don't use filepath.Clean)
+	if err := module.CheckPath(modulePath); err != nil {
+		return "", fmt.Errorf("invalid module path %q: %w", modulePath, err)
+	}
+
+	// Safe: modulePath validated above, query is a version string
+	//nolint:gosec // G204: Using exec.Command with validated module path
 	cmd := exec.Command("go", "list", "-m", fmt.Sprintf("%s@%s", modulePath, query))
 	cmd.Dir = modroot
 	// Override vendor mode to allow querying

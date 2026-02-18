@@ -16,6 +16,8 @@ import (
 )
 
 // GolangAnalyzer implements the Analyzer interface for Go projects.
+//
+//nolint:revive // Explicit name preferred for clarity
 type GolangAnalyzer struct{}
 
 // Analyze performs dependency analysis on a Go project.

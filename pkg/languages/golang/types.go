@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 package golang
 
 // Package represents a Go module package to be updated or replaced.
-// Ported from gobump/pkg/types/types.go
+// Ported from gobump/pkg/types/types.go.
 type Package struct {
 	OldName string
 	Name    string

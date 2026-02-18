@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-// TestValidateLogPath_ValidPaths tests that safe log paths are accepted
+// TestValidateLogPath_ValidPaths tests that safe log paths are accepted.
 func TestValidateLogPath_ValidPaths(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -33,7 +33,7 @@ func TestValidateLogPath_ValidPaths(t *testing.T) {
 	}
 }
 
-// TestValidateLogPath_DisallowedPaths tests that dangerous paths are rejected (FINDING-OMNIBUMP-004)
+// TestValidateLogPath_DisallowedPaths tests that dangerous paths are rejected (FINDING-OMNIBUMP-004).
 func TestValidateLogPath_DisallowedPaths(t *testing.T) {
 	disallowedPaths := []struct {
 		path string
@@ -90,7 +90,7 @@ func TestValidateLogPath_DisallowedPaths(t *testing.T) {
 	}
 }
 
-// TestValidateLogPath_PathTraversal tests that path traversal attacks are prevented
+// TestValidateLogPath_PathTraversal tests that path traversal attacks are prevented.
 func TestValidateLogPath_PathTraversal(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -118,7 +118,7 @@ func TestValidateLogPath_PathTraversal(t *testing.T) {
 	}
 }
 
-// TestValidateLogPath_CronInjection tests prevention of cron job injection
+// TestValidateLogPath_CronInjection tests prevention of cron job injection.
 func TestValidateLogPath_CronInjection(t *testing.T) {
 	cronPaths := []string{
 		"/var/spool/cron/root",
@@ -137,7 +137,7 @@ func TestValidateLogPath_CronInjection(t *testing.T) {
 	}
 }
 
-// TestValidateLogPath_SSHKeyInjection tests prevention of SSH key injection
+// TestValidateLogPath_SSHKeyInjection tests prevention of SSH key injection.
 func TestValidateLogPath_SSHKeyInjection(t *testing.T) {
 	sshPaths := []string{
 		"/root/.ssh/authorized_keys",
@@ -156,7 +156,7 @@ func TestValidateLogPath_SSHKeyInjection(t *testing.T) {
 	}
 }
 
-// TestSetupLogging_RejectsArbitraryFileWrite tests that setupLogging validates paths (FINDING-OMNIBUMP-004)
+// TestSetupLogging_RejectsArbitraryFileWrite tests that setupLogging validates paths (FINDING-OMNIBUMP-004).
 func TestSetupLogging_RejectsArbitraryFileWrite(t *testing.T) {
 	// Save original flags and restore after test
 	originalLogPolicy := flags.logPolicy
@@ -186,7 +186,7 @@ func TestSetupLogging_RejectsArbitraryFileWrite(t *testing.T) {
 	}
 }
 
-// TestSetupLogging_AllowsBuiltinStderr tests that builtin:stderr is always allowed
+// TestSetupLogging_AllowsBuiltinStderr tests that builtin:stderr is always allowed.
 func TestSetupLogging_AllowsBuiltinStderr(t *testing.T) {
 	// Save original flags and restore after test
 	originalLogPolicy := flags.logPolicy

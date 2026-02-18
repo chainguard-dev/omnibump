@@ -16,6 +16,8 @@ import (
 
 // RemoteFetcher defines the interface for fetching files from remote repositories.
 // Implementations can support different providers (GitHub, GitLab, Gitea, etc.)
+//
+//nolint:revive // Explicit name preferred for clarity in remote package
 type RemoteFetcher interface {
 	// SearchFiles searches for files matching the given patterns in a repository.
 	// Recursively searches the entire repository tree.
@@ -44,6 +46,8 @@ type RepositoryRef struct {
 }
 
 // RemoteFile represents a file fetched from a remote repository.
+//
+//nolint:revive // Explicit name preferred for clarity in remote package
 type RemoteFile struct {
 	// Path is the file path relative to repository root
 	// Examples: "go.mod", "api/go.mod", "pkg/server/go.mod"
@@ -79,22 +83,22 @@ const (
 var (
 	// validOwnerRegex validates GitHub owner/organization names.
 	// Matches: alphanumeric with hyphens/underscores, but not starting/ending with hyphen.
-	// Examples: "spiffe", "kubernetes-sigs", "my_org"
+	// Examples: "spiffe", "kubernetes-sigs", "my_org".
 	validOwnerRegex = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-_])*[a-zA-Z0-9]$|^[a-zA-Z0-9]$`)
 
 	// validRepoRegex validates GitHub repository names.
 	// Matches: alphanumeric with dots, hyphens, underscores.
-	// Examples: "spire", "go-github", "node.js"
+	// Examples: "spire", "go-github", "node.js".
 	validRepoRegex = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9._-])*$`)
 
 	// validRefRegex validates git references (tags, branches, commit SHAs).
 	// Matches: alphanumeric with dots, slashes, hyphens, plus signs.
-	// Examples: "v1.10.3", "main", "release/v1.0", "v1.35.0+rke2r1"
+	// Examples: "v1.10.3", "main", "release/v1.0", "v1.35.0+rke2r1".
 	validRefRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/+-]*$`)
 
 	// validHostRegex validates git host domain names.
 	// Matches: standard DNS hostname format.
-	// Examples: "github.com", "gitlab.example.com"
+	// Examples: "github.com", "gitlab.example.com".
 	validHostRegex = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9.-])*[a-zA-Z0-9]$`)
 
 	// dangerousShellChars are characters that could enable command injection.

@@ -19,17 +19,19 @@ import (
 )
 
 // GradleAnalyzer implements dependency analysis for Gradle projects.
+//
+//nolint:revive // Explicit name preferred for clarity
 type GradleAnalyzer struct{}
 
-// Regex patterns for parsing Gradle files
+// Regex patterns for parsing Gradle files.
 var (
-	// Pattern for inline version catalog declarations: version("key", "version")
+	// Pattern for inline version catalog declarations: version("key", "version").
 	inlineVersionCatalogPattern = regexp.MustCompile(`version\s*\(\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']\s*\)`)
 
-	// Pattern for string notation dependencies: implementation("group:artifact:version")
+	// Pattern for string notation dependencies: implementation("group:artifact:version").
 	stringDependencyPattern = regexp.MustCompile(`[a-zA-Z]+\s*\(\s*["']([^:]+):([^:]+):([^"']+)["']\s*\)`)
 
-	// Pattern for version catalog references: implementation(libs.foo.bar)
+	// Pattern for version catalog references: implementation(libs.foo.bar).
 	catalogReferencePattern = regexp.MustCompile(`[a-zA-Z]+\s*\(\s*libs\.([a-zA-Z0-9._-]+)\s*\)`)
 )
 
@@ -108,6 +110,9 @@ func (ga *GradleAnalyzer) Analyze(ctx context.Context, projectPath string) (*ana
 
 // AnalyzeRemote performs dependency analysis on remotely-fetched Gradle files.
 // Not yet implemented for Gradle - returns error.
+// TODO: Implement this function and use ctx for logging and files for analysis.
+//
+//nolint:revive // Parameters will be used when implementation is added
 func (ga *GradleAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]byte) (*analyzer.RemoteAnalysisResult, error) {
 	return nil, fmt.Errorf("remote analysis not yet implemented for Gradle")
 }

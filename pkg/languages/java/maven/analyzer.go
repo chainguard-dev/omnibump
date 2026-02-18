@@ -20,7 +20,9 @@ import (
 )
 
 // MavenAnalyzer implements the Analyzer interface for Maven projects.
-// Ported from pombump/pkg/analyzer.go
+// Ported from pombump/pkg/analyzer.go.
+//
+//nolint:revive // Explicit name preferred for clarity
 type MavenAnalyzer struct{}
 
 // Analyze performs dependency analysis on a Maven project.
@@ -93,6 +95,9 @@ func (ma *MavenAnalyzer) Analyze(ctx context.Context, projectPath string) (*anal
 
 // AnalyzeRemote performs dependency analysis on remotely-fetched Maven files.
 // Not yet implemented for Maven - returns error.
+// TODO: Implement this function and use ctx for logging and files for analysis.
+//
+//nolint:revive // Parameters will be used when implementation is added
 func (ma *MavenAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]byte) (*analyzer.RemoteAnalysisResult, error) {
 	return nil, fmt.Errorf("remote analysis not yet implemented for Maven")
 }
@@ -116,9 +121,9 @@ func (ma *MavenAnalyzer) RecommendStrategy(ctx context.Context, analysis *analyz
 		depKey := dep.Name
 		if depKey == "" {
 			// Try to construct from metadata
-			if groupId, ok := dep.Metadata["groupId"].(string); ok {
-				if artifactId, ok := dep.Metadata["artifactId"].(string); ok {
-					depKey = fmt.Sprintf("%s:%s", groupId, artifactId)
+			if groupID, ok := dep.Metadata["groupId"].(string); ok {
+				if artifactID, ok := dep.Metadata["artifactId"].(string); ok {
+					depKey = fmt.Sprintf("%s:%s", groupID, artifactID)
 				}
 			}
 		}
@@ -282,7 +287,6 @@ func searchForProperties(ctx context.Context, startDir string, excludePath strin
 
 		return nil
 	})
-
 	if err != nil {
 		log.Warnf("Error walking project tree: %v", err)
 	}

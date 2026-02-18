@@ -12,9 +12,9 @@ import (
 )
 
 // CargoUpdate runs 'cargo update' to refresh the Cargo.lock file.
-// Ported from cargobump/pkg/run/cargo.go
+// Ported from cargobump/pkg/run/cargo.go.
 func CargoUpdate(cargoRoot string) (string, error) {
-	cmd := exec.Command("cargo", "update") //nolint:gosec
+	cmd := exec.Command("cargo", "update")
 	cmd.Dir = cargoRoot
 	if bytes, err := cmd.CombinedOutput(); err != nil {
 		return strings.TrimSpace(string(bytes)), err
@@ -24,7 +24,7 @@ func CargoUpdate(cargoRoot string) (string, error) {
 
 // CargoUpdatePackage updates a specific package to a precise version.
 // Uses: cargo update --precise <newVersion> --package <name>@<oldVersion>
-// Ported from cargobump/pkg/run/cargo.go
+// Ported from cargobump/pkg/run/cargo.go.
 func CargoUpdatePackage(name, oldVersion, newVersion, cargoRoot string) (string, error) {
 	cmd := exec.Command("cargo", "update", "--precise", newVersion, "--package", fmt.Sprintf("%s@%s", name, oldVersion)) //nolint:gosec
 	cmd.Dir = cargoRoot

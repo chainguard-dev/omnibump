@@ -26,10 +26,10 @@ import (
 type Gradle struct{}
 
 const (
-	// File permissions for writing updated build files
-	gradleFilePerms = 0600
+	// File permissions for writing updated build files.
+	gradleFilePerms = 0o600
 
-	// Version group index constants for regex patterns
+	// Version group index constants for regex patterns.
 	versionGroupOne = 1
 	versionGroupTwo = 2
 )
@@ -77,6 +77,7 @@ func (g *Gradle) Name() string {
 
 // Detect checks if Gradle manifest files exist in the directory.
 func (g *Gradle) Detect(ctx context.Context, dir string) (bool, error) {
+	log := clog.FromContext(ctx)
 	// Check for build files in priority order
 	buildFiles := []string{
 		"build.gradle.kts", // Kotlin DSL (modern)
@@ -87,10 +88,12 @@ func (g *Gradle) Detect(ctx context.Context, dir string) (bool, error) {
 
 	for _, file := range buildFiles {
 		if _, err := os.Stat(filepath.Join(dir, file)); err == nil {
+			log.Debugf("Detected Gradle project at %s (found %s)", dir, file)
 			return true, nil
 		}
 	}
 
+	log.Debugf("No Gradle project detected at %s", dir)
 	return false, nil
 }
 
@@ -230,7 +233,7 @@ func validateDirectDependency(ctx context.Context, depKey, expectedVersion strin
 // Finds:
 // - build.gradle[.kts] - Direct dependency declarations
 // - settings.gradle[.kts] - Inline version catalogs
-// - gradle/libs.versions.toml - TOML version catalogs
+// - gradle/libs.versions.toml - TOML version catalogs.
 func findBuildFiles(root string) ([]string, error) {
 	var files []string
 
@@ -514,18 +517,13 @@ func updateVersionCatalogTomlContent(ctx context.Context, content string, cfg *l
 }
 
 // findVersionKeyForArtifact finds the version key for an artifact in the versions map.
-// Tries exact match first, then normalized match (e.g., "netty-all" contains "netty").
+// Only uses exact matching to avoid ambiguous matches.
+// For example, "netty-codec-http" could match both "netty" and "netty-codec",
+// leading to nondeterministic behavior due to map iteration order.
 func findVersionKeyForArtifact(artifactID string, versions map[string]any) string {
-	// Try exact match on artifactId
+	// Only use exact match on artifactId
 	if _, exists := versions[artifactID]; exists {
 		return artifactID
-	}
-
-	// Try normalized match (e.g., "netty-all" -> "netty")
-	for key := range versions {
-		if strings.Contains(artifactID, key) {
-			return key
-		}
 	}
 
 	return ""

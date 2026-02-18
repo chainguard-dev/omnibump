@@ -25,7 +25,7 @@ const (
 )
 
 // Patch represents a Maven dependency patch.
-// Ported from pombump/pkg/patch.go
+// Ported from pombump/pkg/patch.go.
 type Patch struct {
 	GroupID    string `json:"groupId" yaml:"groupId"`
 	ArtifactID string `json:"artifactId" yaml:"artifactId"`
@@ -78,7 +78,7 @@ func UpdatePom(ctx context.Context, pomPath string, patches []Patch, properties 
 }
 
 // PatchProject updates a gopom.Project with the given patches and properties.
-// Ported from pombump/pkg/patch.go:PatchProject
+// Ported from pombump/pkg/patch.go:PatchProject.
 func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, propertyPatches map[string]string) (*gopom.Project, error) {
 	log := clog.FromContext(ctx)
 
@@ -175,7 +175,7 @@ func ParsePom(pomPath string) (*gopom.Project, error) {
 }
 
 // parsePatches parses Maven patches from a file or inline string.
-// Ported from pombump/pkg/patch.go
+// Ported from pombump/pkg/patch.go.
 func parsePatches(ctx context.Context, patchFile, patchFlag string) ([]Patch, error) {
 	if patchFile != "" {
 		var patchList PatchList
@@ -231,7 +231,7 @@ func parsePatches(ctx context.Context, patchFile, patchFlag string) ([]Patch, er
 }
 
 // parseProperties parses Maven properties from a file or inline string.
-// Ported from pombump/pkg/patch.go
+// Ported from pombump/pkg/patch.go.
 func parseProperties(ctx context.Context, propertyFile, propertiesFlag string) (map[string]string, error) {
 	propertiesPatches := map[string]string{}
 	if propertyFile != "" {

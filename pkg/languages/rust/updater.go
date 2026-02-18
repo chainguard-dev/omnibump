@@ -15,7 +15,7 @@ import (
 )
 
 // DoUpdate performs the actual update of Rust package dependencies.
-// Ported from cargobump/pkg/update.go
+// Ported from cargobump/pkg/update.go.
 func DoUpdate(ctx context.Context, packages map[string]*Package, cargoPackages []CargoPackage, cfg *UpdateConfig) error {
 	log := clog.FromContext(ctx)
 

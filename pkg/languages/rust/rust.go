@@ -32,9 +32,15 @@ func (r *Rust) Name() string {
 
 // Detect checks if Rust manifest files exist in the directory.
 func (r *Rust) Detect(ctx context.Context, dir string) (bool, error) {
+	log := clog.FromContext(ctx)
 	cargoLockPath := filepath.Join(dir, "Cargo.lock")
 	_, err := os.Stat(cargoLockPath)
-	return err == nil, nil
+	if err == nil {
+		log.Debugf("Detected Rust project at %s", dir)
+		return true, nil
+	}
+	log.Debugf("No Rust project detected at %s", dir)
+	return false, nil
 }
 
 // GetManifestFiles returns Rust manifest files.

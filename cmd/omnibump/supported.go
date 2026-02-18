@@ -8,9 +8,8 @@ package omnibump
 import (
 	"fmt"
 
-	"github.com/spf13/cobra"
-
 	"github.com/chainguard-dev/omnibump/pkg/languages"
+	"github.com/spf13/cobra"
 )
 
 func supportedCmd() *cobra.Command {

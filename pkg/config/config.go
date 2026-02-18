@@ -254,7 +254,7 @@ func contains(slice []string, item string) bool {
 }
 
 // ParseInlinePackages parses inline package specifications from command line.
-// Format: "name@version" or "groupId@artifactId@version" (Maven)
+// Format: "name@version" or "groupId@artifactId@version" (Maven).
 func ParseInlinePackages(packagesStr string) ([]Package, error) {
 	if packagesStr == "" {
 		return nil, nil

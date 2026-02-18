@@ -14,10 +14,23 @@ import (
 	"strings"
 
 	versionutil "k8s.io/apimachinery/pkg/util/version"
+	"golang.org/x/mod/module"
 )
 
+// validateModulePath validates a Go module path to prevent injection attacks.
+// Uses module.CheckPath() from golang.org/x/mod/module to ensure the path is valid.
+func validateModulePath(path string) error {
+	if path == "" {
+		return fmt.Errorf("module path cannot be empty")
+	}
+	if err := module.CheckPath(path); err != nil {
+		return fmt.Errorf("invalid module path %q: %w", path, err)
+	}
+	return nil
+}
+
 // GoModTidy runs go mod tidy with the specified go version and compatibility settings.
-// Ported from gobump/pkg/run/gorun.go
+// Ported from gobump/pkg/run/gorun.go.
 func GoModTidy(modroot, goVersion, compat string) (string, error) {
 	if goVersion == "" {
 		goVersion = strings.TrimPrefix(runtime.Version(), "go")
@@ -102,11 +115,13 @@ func GoVendor(dir string, forceWork bool) (string, error) {
 	workPath := findGoWork(dir)
 	if forceWork || workPath != "" {
 		cmd := exec.Command("go", "work", "vendor")
+		cmd.Dir = dir
 		if bytes, err := cmd.CombinedOutput(); err != nil {
 			return strings.TrimSpace(string(bytes)), err
 		}
 	} else {
 		cmd := exec.Command("go", "mod", "vendor")
+		cmd.Dir = dir
 		if bytes, err := cmd.CombinedOutput(); err != nil {
 			return strings.TrimSpace(string(bytes)), err
 		}
@@ -117,6 +132,9 @@ func GoVendor(dir string, forceWork bool) (string, error) {
 
 // GoGetModule runs go get for a specific module and version.
 func GoGetModule(name, version, modroot string) (string, error) {
+	if err := validateModulePath(name); err != nil {
+		return "", err
+	}
 	cmd := exec.Command("go", "get", fmt.Sprintf("%s@%s", name, version)) //nolint:gosec
 	cmd.Dir = modroot
 	if bytes, err := cmd.CombinedOutput(); err != nil {
@@ -127,6 +145,13 @@ func GoGetModule(name, version, modroot string) (string, error) {
 
 // GoModEditReplaceModule edits go.mod to replace one module with another.
 func GoModEditReplaceModule(nameOld, nameNew, version, modroot string) (string, error) {
+	if err := validateModulePath(nameOld); err != nil {
+		return "", fmt.Errorf("invalid old module path: %w", err)
+	}
+	if err := validateModulePath(nameNew); err != nil {
+		return "", fmt.Errorf("invalid new module path: %w", err)
+	}
+
 	cmd := exec.Command("go", "mod", "edit", "-dropreplace", nameOld) //nolint:gosec
 	cmd.Dir = modroot
 	if bytes, err := cmd.CombinedOutput(); err != nil {
@@ -143,6 +168,9 @@ func GoModEditReplaceModule(nameOld, nameNew, version, modroot string) (string, 
 
 // GoModEditDropRequireModule drops a require directive from go.mod.
 func GoModEditDropRequireModule(name, modroot string) (string, error) {
+	if err := validateModulePath(name); err != nil {
+		return "", err
+	}
 	cmd := exec.Command("go", "mod", "edit", "-droprequire", name) //nolint:gosec
 	cmd.Dir = modroot
 	if bytes, err := cmd.CombinedOutput(); err != nil {

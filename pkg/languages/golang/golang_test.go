@@ -242,7 +242,7 @@ func TestResolveAndFilterPackages(t *testing.T) {
 	}
 }
 
-// resolveAndFilterPackagesForTest is a test version that doesn't call go list
+// resolveAndFilterPackagesForTest is a test version that doesn't call go list.
 func resolveAndFilterPackagesForTest(packages map[string]*Package, modFile *modfile.File) map[string]*Package {
 	filtered := make(map[string]*Package)
 
@@ -280,7 +280,7 @@ func resolveAndFilterPackagesForTest(packages map[string]*Package, modFile *modf
 	return filtered
 }
 
-// isNewer is a simple version comparison helper for tests
+// isNewer is a simple version comparison helper for tests.
 func isNewer(v1, v2 string) bool {
 	// Simple string comparison for test purposes
 	// In real code, use semver.Compare
@@ -482,7 +482,7 @@ func TestGolang_Detect(t *testing.T) {
 
 			for _, file := range tt.files {
 				path := filepath.Join(tmpDir, file)
-				err := os.WriteFile(path, []byte("module test"), 0600)
+				err := os.WriteFile(path, []byte("module test"), 0o600)
 				if err != nil {
 					t.Fatalf("Failed to create file: %v", err)
 				}
@@ -553,7 +553,7 @@ go 1.26
 require github.com/google/uuid v1.0.0
 `
 	goModPath := filepath.Join(tmpDir, "go.mod")
-	err := os.WriteFile(goModPath, []byte(goModContent), 0600)
+	err := os.WriteFile(goModPath, []byte(goModContent), 0o600)
 	if err != nil {
 		t.Fatalf("Failed to create go.mod: %v", err)
 	}
@@ -593,7 +593,7 @@ go 1.26
 require github.com/google/uuid v1.3.0
 `
 	goModPath := filepath.Join(tmpDir, "go.mod")
-	err := os.WriteFile(goModPath, []byte(goModContent), 0600)
+	err := os.WriteFile(goModPath, []byte(goModContent), 0o600)
 	if err != nil {
 		t.Fatalf("Failed to create go.mod: %v", err)
 	}
@@ -617,7 +617,7 @@ func TestGolang_Update_InvalidGoMod(t *testing.T) {
 
 	// Create invalid go.mod
 	goModPath := filepath.Join(tmpDir, "go.mod")
-	err := os.WriteFile(goModPath, []byte("invalid content"), 0600)
+	err := os.WriteFile(goModPath, []byte("invalid content"), 0o600)
 	if err != nil {
 		t.Fatalf("Failed to create go.mod: %v", err)
 	}
@@ -670,7 +670,7 @@ go 1.26
 require github.com/google/uuid v1.3.0
 `
 	goModPath := filepath.Join(tmpDir, "go.mod")
-	err := os.WriteFile(goModPath, []byte(goModContent), 0600)
+	err := os.WriteFile(goModPath, []byte(goModContent), 0o600)
 	if err != nil {
 		t.Fatalf("Failed to create go.mod: %v", err)
 	}
@@ -700,7 +700,7 @@ go 1.26
 require github.com/sirupsen/logrus v1.0.0
 `
 	goModPath := filepath.Join(tmpDir, "go.mod")
-	err := os.WriteFile(goModPath, []byte(goModContent), 0600)
+	err := os.WriteFile(goModPath, []byte(goModContent), 0o600)
 	if err != nil {
 		t.Fatalf("Failed to create go.mod: %v", err)
 	}
@@ -767,7 +767,7 @@ require (
 )
 `
 	goModPath := filepath.Join(tmpDir, "go.mod")
-	err := os.WriteFile(goModPath, []byte(goModContent), 0600)
+	err := os.WriteFile(goModPath, []byte(goModContent), 0o600)
 	if err != nil {
 		t.Fatalf("Failed to create go.mod: %v", err)
 	}
@@ -838,7 +838,7 @@ replace github.com/old/pkg => github.com/new/pkg v2.0.0
 replace github.com/another/pkg => github.com/forked/pkg v1.5.0
 `
 	goModPath := filepath.Join(tmpDir, "go.mod")
-	err := os.WriteFile(goModPath, []byte(goModContent), 0600)
+	err := os.WriteFile(goModPath, []byte(goModContent), 0o600)
 	if err != nil {
 		t.Fatalf("Failed to create go.mod: %v", err)
 	}
@@ -885,7 +885,7 @@ go 1.26
 require github.com/google/uuid v1.3.0
 `
 	goModPath := filepath.Join(tmpDir, "go.mod")
-	err := os.WriteFile(goModPath, []byte(goModContent), 0600)
+	err := os.WriteFile(goModPath, []byte(goModContent), 0o600)
 	if err != nil {
 		t.Fatalf("Failed to create go.mod: %v", err)
 	}
@@ -913,7 +913,7 @@ go 1.26
 require github.com/google/uuid v1.5.0
 `
 	goModPath := filepath.Join(tmpDir, "go.mod")
-	err := os.WriteFile(goModPath, []byte(goModContent), 0600)
+	err := os.WriteFile(goModPath, []byte(goModContent), 0o600)
 	if err != nil {
 		t.Fatalf("Failed to create go.mod: %v", err)
 	}
@@ -950,7 +950,7 @@ func TestGolang_Update_PackageNotInGoMod(t *testing.T) {
 go 1.26
 `
 	goModPath := filepath.Join(tmpDir, "go.mod")
-	err := os.WriteFile(goModPath, []byte(goModContent), 0600)
+	err := os.WriteFile(goModPath, []byte(goModContent), 0o600)
 	if err != nil {
 		t.Fatalf("Failed to create go.mod: %v", err)
 	}
@@ -975,7 +975,7 @@ func TestGolang_Validate_InvalidGoMod(t *testing.T) {
 
 	// Create invalid go.mod
 	goModPath := filepath.Join(tmpDir, "go.mod")
-	err := os.WriteFile(goModPath, []byte("invalid content"), 0600)
+	err := os.WriteFile(goModPath, []byte("invalid content"), 0o600)
 	if err != nil {
 		t.Fatalf("Failed to create go.mod: %v", err)
 	}
@@ -1008,7 +1008,7 @@ go 1.21
 require github.com/google/uuid v1.3.0
 `
 	goModPath := filepath.Join(tmpDir, "go.mod")
-	err := os.WriteFile(goModPath, []byte(goModContent), 0600)
+	err := os.WriteFile(goModPath, []byte(goModContent), 0o600)
 	if err != nil {
 		t.Fatalf("Failed to create go.mod: %v", err)
 	}
