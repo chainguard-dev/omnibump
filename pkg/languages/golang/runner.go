@@ -23,8 +23,6 @@ import (
 var ErrEmptyModulePath = errors.New("module path cannot be empty")
 
 // validateModulePath validates a Go module path to prevent injection attacks.
-// SECURITY: This prevents malicious inputs like "--flag-injection" or "name; rm -rf /"
-// from being passed to exec.Command as arguments.
 // Uses module.CheckPath() from golang.org/x/mod/module to ensure the path is valid.
 func validateModulePath(path string) error {
 	if path == "" {
@@ -32,6 +30,24 @@ func validateModulePath(path string) error {
 	}
 	if err := module.CheckPath(path); err != nil {
 		return fmt.Errorf("invalid module path %q: %w", path, err)
+	}
+	return nil
+}
+
+// validateVersionQuery validates a Go version query string before passing to commands.
+// Version queries can be: version numbers (v1.2.3), branch names, commit hashes, or special
+// queries like "latest", "upgrade", "patch". We validate the character set to prevent injection.
+func validateVersionQuery(query string) error {
+	if query == "" {
+		return fmt.Errorf("version query cannot be empty")
+	}
+	// Allow alphanumeric, dots, hyphens, underscores, slashes, plus signs, and tildes
+	// This covers semantic versions, branch names, commit hashes, and Go version queries
+	for _, r := range query {
+		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') &&
+			r != '.' && r != '-' && r != '_' && r != '/' && r != '+' && r != '~' && r != 'v' {
+			return fmt.Errorf("invalid character in version query %q: %c", query, r)
+		}
 	}
 	return nil
 }
@@ -140,12 +156,14 @@ func GoVendor(ctx context.Context, dir string, forceWork bool) (string, error) {
 
 // GoGetModule runs go get for a specific module and version.
 func GoGetModule(ctx context.Context, name, version, modroot string) (string, error) {
-	// SECURITY: Validate module path before exec.Command to prevent argument injection
-	// (e.g., names starting with "-" could be interpreted as flags)
+	// Validate module path before passing to command.
 	if err := validateModulePath(name); err != nil {
 		return "", err
 	}
-	// Safe: module path validated above
+	// Validate version query before passing to command.
+	if err := validateVersionQuery(version); err != nil {
+		return "", err
+	}
 	cmd := exec.CommandContext(ctx, "go", "get", fmt.Sprintf("%s@%s", name, version)) //nolint:gosec
 	cmd.Dir = modroot
 	if bytes, err := cmd.CombinedOutput(); err != nil {
@@ -156,22 +174,24 @@ func GoGetModule(ctx context.Context, name, version, modroot string) (string, er
 
 // GoModEditReplaceModule edits go.mod to replace one module with another.
 func GoModEditReplaceModule(ctx context.Context, nameOld, nameNew, version, modroot string) (string, error) {
-	// SECURITY: Validate both module paths before exec.Command to prevent argument injection
+	// Validate both module paths before passing to command.
 	if err := validateModulePath(nameOld); err != nil {
 		return "", fmt.Errorf("invalid old module path: %w", err)
 	}
 	if err := validateModulePath(nameNew); err != nil {
 		return "", fmt.Errorf("invalid new module path: %w", err)
 	}
+	// Validate version before passing to command.
+	if err := validateVersionQuery(version); err != nil {
+		return "", fmt.Errorf("invalid version: %w", err)
+	}
 
-	// Safe: both module paths validated above
 	cmd := exec.CommandContext(ctx, "go", "mod", "edit", "-dropreplace", nameOld) //nolint:gosec
 	cmd.Dir = modroot
 	if bytes, err := cmd.CombinedOutput(); err != nil {
 		return strings.TrimSpace(string(bytes)), fmt.Errorf("error running go command to drop replace modules: %w", err)
 	}
 
-	// Safe: both module paths validated above
 	cmd = exec.CommandContext(ctx, "go", "mod", "edit", "-replace", fmt.Sprintf("%s=%s@%s", nameOld, nameNew, version)) //nolint:gosec
 	cmd.Dir = modroot
 	if bytes, err := cmd.CombinedOutput(); err != nil {
