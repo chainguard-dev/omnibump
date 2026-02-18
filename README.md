@@ -1,6 +1,7 @@
 # omnibump
 
-=======
+![omnibump](docs/images/omnibump-linky.png)
+
 **Dependency version management tool**
 
 `omnibump` is a CLI tool for updating dependency versions across multiple language ecosystems with an easy-to-use interface with automatic language detection.

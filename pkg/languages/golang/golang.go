@@ -261,14 +261,16 @@ func isVersionQuery(version string) bool {
 
 // resolveVersionQuery resolves a version query to an actual version using go list.
 func resolveVersionQuery(ctx context.Context, modulePath, query, modroot string) (string, error) {
-	// SECURITY: Validate module path before exec.Command to prevent argument injection.
-	// Module paths are not filesystem paths - use module.CheckPath(), not filepath.Clean().
+	// Validate module path before passing to command.
 	if err := module.CheckPath(modulePath); err != nil {
 		return "", fmt.Errorf("invalid module path %q: %w", modulePath, err)
 	}
+	// Validate version query before passing to command.
+	if err := validateVersionQuery(query); err != nil {
+		return "", fmt.Errorf("invalid version query: %w", err)
+	}
 
-	// Safe: modulePath validated above, query is a version string
-	//nolint:gosec // G204: Using exec.Command with validated module path
+	//nolint:gosec // G204: Using exec.Command with validated module path and version query
 	cmd := exec.CommandContext(ctx, "go", "list", "-m", fmt.Sprintf("%s@%s", modulePath, query))
 	cmd.Dir = modroot
 	// Override vendor mode to allow querying

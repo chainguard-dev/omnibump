@@ -32,6 +32,9 @@ const (
 	// Version group index constants for regex patterns.
 	versionGroupOne = 1
 	versionGroupTwo = 2
+
+	// MaxManifestSize limits manifest file size to prevent resource exhaustion.
+	MaxManifestSize = 10 * 1024 * 1024 // 10 MB
 )
 
 var (
@@ -55,6 +58,9 @@ var (
 
 	// ErrUnknownFileType is returned when an unknown Gradle file type is encountered.
 	ErrUnknownFileType = errors.New("unknown Gradle file type")
+
+	// ErrManifestTooLarge is returned when a manifest file exceeds size limits.
+	ErrManifestTooLarge = errors.New("manifest file too large")
 )
 
 // gradleManifestFiles lists all files that can contain dependency versions.
@@ -335,6 +341,15 @@ func replaceRegexMatches(content string, matches [][]int, versionGroupIdx int, n
 // processFileUpdate handles the common pattern of reading a file, updating it, and writing it back.
 func processFileUpdate(ctx context.Context, path string, cfg *languages.UpdateConfig, updater updateFileFunc) error {
 	log := clog.FromContext(ctx)
+
+	// Check file size before reading to prevent resource exhaustion.
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("failed to stat %s: %w", path, err)
+	}
+	if fileInfo.Size() > MaxManifestSize {
+		return fmt.Errorf("%w: %s is %d bytes (max: %d)", ErrManifestTooLarge, path, fileInfo.Size(), MaxManifestSize)
+	}
 
 	// Read the file
 	content, err := os.ReadFile(filepath.Clean(path))
