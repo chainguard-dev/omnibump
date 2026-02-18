@@ -331,6 +331,8 @@ func updateRequirePackage(ctx context.Context, log *clog.Logger, pkg *Package, m
 
 // verifyAndFinalize verifies package versions and handles final tasks.
 func verifyAndFinalize(ctx context.Context, modpath string, pkgVersions map[string]*Package, originalContent []byte, cfg *UpdateConfig) (*modfile.File, error) {
+	log := clog.FromContext(ctx)
+
 	// Read the entire go.mod one more time into memory and check that all the version constraints are met
 	newModFile, newContent, err := ParseGoModfile(modpath)
 	if err != nil {
@@ -349,7 +351,7 @@ func verifyAndFinalize(ctx context.Context, modpath string, pkgVersions map[stri
 
 	if cfg.ShowDiff {
 		if diff := cmp.Diff(string(originalContent), string(newContent)); diff != "" {
-			fmt.Println(diff)
+			log.Info(diff)
 		}
 	}
 
