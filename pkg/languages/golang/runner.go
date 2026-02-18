@@ -22,6 +22,12 @@ import (
 // ErrEmptyModulePath is returned when a module path is empty.
 var ErrEmptyModulePath = errors.New("module path cannot be empty")
 
+// ErrEmptyVersionQuery is returned when a version query is empty.
+var ErrEmptyVersionQuery = errors.New("version query cannot be empty")
+
+// ErrInvalidVersionQueryChar is returned when a version query contains an invalid character.
+var ErrInvalidVersionQueryChar = errors.New("invalid character in version query")
+
 // validateModulePath validates a Go module path to prevent injection attacks.
 // Uses module.CheckPath() from golang.org/x/mod/module to ensure the path is valid.
 func validateModulePath(path string) error {
@@ -39,14 +45,14 @@ func validateModulePath(path string) error {
 // queries like "latest", "upgrade", "patch". We validate the character set to prevent injection.
 func validateVersionQuery(query string) error {
 	if query == "" {
-		return fmt.Errorf("version query cannot be empty")
+		return ErrEmptyVersionQuery
 	}
 	// Allow alphanumeric, dots, hyphens, underscores, slashes, plus signs, and tildes
 	// This covers semantic versions, branch names, commit hashes, and Go version queries
 	for _, r := range query {
-		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') &&
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') &&
 			r != '.' && r != '-' && r != '_' && r != '/' && r != '+' && r != '~' && r != 'v' {
-			return fmt.Errorf("invalid character in version query %q: %c", query, r)
+			return fmt.Errorf("%w: %q contains %c", ErrInvalidVersionQueryChar, query, r)
 		}
 	}
 	return nil
