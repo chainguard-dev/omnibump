@@ -238,14 +238,15 @@ func findBuildFiles(root string) ([]string, error) {
 	var files []string
 
 	// Walk directory tree looking for build files
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+	// Use WalkDir instead of Walk - it doesn't follow symlinks and provides type info directly
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
 		// Skip hidden directories and common non-build directories
-		if info.IsDir() {
-			name := info.Name()
+		if d.IsDir() {
+			name := d.Name()
 			if name[0] == '.' || skipDirs[name] {
 				return filepath.SkipDir
 			}
@@ -253,17 +254,13 @@ func findBuildFiles(root string) ([]string, error) {
 		}
 
 		// Skip symlinks to prevent arbitrary file corruption via symlink attacks
-		// Use Lstat to check the file itself, not what it points to
-		fileInfo, err := os.Lstat(path)
-		if err != nil {
-			return err
-		}
-		if fileInfo.Mode()&os.ModeSymlink != 0 {
+		// WalkDir provides type info directly without needing Lstat
+		if d.Type()&os.ModeSymlink != 0 {
 			return nil // Skip symlinks
 		}
 
 		// Check if this is a file that can contain dependency versions
-		if gradleManifestFiles[info.Name()] {
+		if gradleManifestFiles[d.Name()] {
 			files = append(files, path)
 		}
 
