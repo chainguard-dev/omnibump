@@ -6,6 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 package golang
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -38,7 +39,7 @@ func TestGoWork(t *testing.T) {
 			{
 				name: "finds go.work in current directory",
 				setupFunc: func(dir string) error {
-					return os.WriteFile(filepath.Join(dir, "go.work"), []byte("go 1.21\n"), 0600)
+					return os.WriteFile(filepath.Join(dir, "go.work"), []byte("go 1.21\n"), 0o600)
 				},
 				goWorkEnv:    "",
 				expectedPath: "go.work",
@@ -47,10 +48,10 @@ func TestGoWork(t *testing.T) {
 				name: "finds go.work in parent directory",
 				setupFunc: func(dir string) error {
 					subdir := filepath.Join(dir, "subdir")
-					if err := os.Mkdir(subdir, 0750); err != nil {
+					if err := os.Mkdir(subdir, 0o750); err != nil {
 						return err
 					}
-					return os.WriteFile(filepath.Join(dir, "go.work"), []byte("go 1.22\n"), 0600)
+					return os.WriteFile(filepath.Join(dir, "go.work"), []byte("go 1.22\n"), 0o600)
 				},
 				goWorkEnv:    "",
 				expectedPath: "../go.work",
@@ -64,7 +65,7 @@ func TestGoWork(t *testing.T) {
 			{
 				name: "GOWORK=off disables workspace",
 				setupFunc: func(dir string) error {
-					return os.WriteFile(filepath.Join(dir, "go.work"), []byte("go 1.23\n"), 0600)
+					return os.WriteFile(filepath.Join(dir, "go.work"), []byte("go 1.23\n"), 0o600)
 				},
 				goWorkEnv:    "off",
 				expectedPath: "",
@@ -168,19 +169,19 @@ replace example.com/old => ./new`,
 				tmpDir := t.TempDir()
 				workPath := filepath.Join(tmpDir, "go.work")
 
-				if err := os.WriteFile(workPath, []byte(tc.initialWork), 0600); err != nil {
+				if err := os.WriteFile(workPath, []byte(tc.initialWork), 0o600); err != nil {
 					t.Fatalf("Failed to create go.work: %v", err)
 				}
 
 				// Create minimal go.mod for valid workspace
 				modPath := filepath.Join(tmpDir, "go.mod")
-				if err := os.WriteFile(modPath, []byte("module test\n\ngo 1.19\n"), 0600); err != nil {
+				if err := os.WriteFile(modPath, []byte("module test\n\ngo 1.19\n"), 0o600); err != nil {
 					t.Fatalf("Failed to create go.mod: %v", err)
 				}
 
 				// For tests, we call UpdateGoWorkVersion with the directory containing go.work
 				// and forceWork=true since we know we want to update it
-				err := UpdateGoWorkVersion(filepath.Dir(workPath), true, tc.goVersion)
+				err := UpdateGoWorkVersion(context.Background(), filepath.Dir(workPath), true, tc.goVersion)
 				if err != nil {
 					t.Fatalf("Failed to update go.work: %v", err)
 				}
@@ -259,7 +260,7 @@ replace example.com/old => ./new`,
 				modContent := `module test
 go 1.19
 require github.com/google/uuid v1.3.0`
-				if err := os.WriteFile(modPath, []byte(modContent), 0600); err != nil {
+				if err := os.WriteFile(modPath, []byte(modContent), 0o600); err != nil {
 					t.Fatalf("Failed to create go.mod: %v", err)
 				}
 
@@ -267,22 +268,169 @@ require github.com/google/uuid v1.3.0`
 					workPath := filepath.Join(tmpDir, "go.work")
 					workContent := `go 1.25
 use .`
-					if err := os.WriteFile(workPath, []byte(workContent), 0600); err != nil {
+					if err := os.WriteFile(workPath, []byte(workContent), 0o600); err != nil {
 						t.Fatalf("Failed to create go.work: %v", err)
 					}
 				}
 
 				// Create vendor directory
 				vendorDir := filepath.Join(tmpDir, "vendor")
-				if err := os.Mkdir(vendorDir, 0750); err != nil {
+				if err := os.Mkdir(vendorDir, 0o750); err != nil {
 					t.Fatalf("Failed to create vendor directory: %v", err)
 				}
 
 				// Call GoVendor
-				_, _ = GoVendor(tmpDir, tc.forceWork)
+				_, _ = GoVendor(context.Background(), tmpDir, tc.forceWork)
 
 				// Test passes if no panic (we can't easily test the actual command executed)
 			})
 		}
+
+		t.Run("sets correct working directory", func(t *testing.T) {
+			// This test verifies the bug fix where cmd.Dir wasn't being set
+			tmpDir := t.TempDir()
+			subDir := filepath.Join(tmpDir, "subproject")
+			if err := os.Mkdir(subDir, 0o750); err != nil {
+				t.Fatalf("Failed to create subdirectory: %v", err)
+			}
+
+			// Create go.mod in subdirectory
+			modPath := filepath.Join(subDir, "go.mod")
+			modContent := `module testproject
+go 1.21
+require github.com/google/uuid v1.3.0`
+			if err := os.WriteFile(modPath, []byte(modContent), 0o600); err != nil {
+				t.Fatalf("Failed to create go.mod: %v", err)
+			}
+
+			// Create go.sum
+			sumPath := filepath.Join(subDir, "go.sum")
+			sumContent := `github.com/google/uuid v1.3.0 h1:t6JiXgmwXMjEs8VusXIJk2BXHsn+wx8BZdTaoZ5fu7I=
+github.com/google/uuid v1.3.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=`
+			if err := os.WriteFile(sumPath, []byte(sumContent), 0o600); err != nil {
+				t.Fatalf("Failed to create go.sum: %v", err)
+			}
+
+			// Call GoVendor - if cmd.Dir isn't set, vendor would be in wrong place
+			_, _ = GoVendor(context.Background(), subDir, false)
+
+			// Verify vendor wasn't created in parent (wrong) directory
+			vendorInParent := filepath.Join(tmpDir, "vendor")
+			if _, err := os.Stat(vendorInParent); err == nil {
+				t.Errorf("vendor directory incorrectly created in parent directory %s", vendorInParent)
+			}
+		})
 	})
+}
+
+// TestValidateModulePath tests module path validation against injection attacks.
+func TestValidateModulePath(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		// Valid paths
+		{name: "valid github path", path: "github.com/google/uuid", wantErr: false},
+		{name: "valid golang.org path", path: "golang.org/x/mod", wantErr: false},
+		{name: "valid nested path", path: "github.com/chainguard-dev/omnibump/pkg/languages", wantErr: false},
+		{name: "valid with dashes", path: "github.com/some-org/some-repo", wantErr: false},
+
+		// Invalid/Injection paths
+		{name: "empty string", path: "", wantErr: true},
+		{name: "flag injection", path: "--flag-injection", wantErr: true},
+		{name: "semicolon injection", path: "name; rm -rf /", wantErr: true},
+		{name: "pipe injection", path: "name | cat /etc/passwd", wantErr: true},
+		{name: "dollar sign", path: "name$USER", wantErr: true},
+		{name: "backtick injection", path: "name`whoami`", wantErr: true},
+		{name: "newline injection", path: "name\nrm -rf /", wantErr: true},
+		{name: "carriage return", path: "name\rmalicious", wantErr: true},
+		{name: "relative path", path: "../../../etc/passwd", wantErr: true},
+		{name: "absolute path", path: "/usr/local/go", wantErr: true},
+		{name: "spaces", path: "github.com/name with spaces", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateModulePath(tt.path)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateModulePath() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestGoGetModule_RejectsInvalidPath tests that GoGetModule rejects invalid paths.
+func TestGoGetModule_RejectsInvalidPath(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	invalidPaths := []string{
+		"--flag-injection",
+		"name; rm -rf /",
+		"",
+		"name | cat /etc/passwd",
+	}
+
+	for _, invalidPath := range invalidPaths {
+		t.Run(invalidPath, func(t *testing.T) {
+			_, err := GoGetModule(context.Background(), invalidPath, "v1.0.0", tmpDir)
+			if err == nil {
+				t.Errorf("GoGetModule should reject invalid path %q", invalidPath)
+			}
+			errMsg := err.Error()
+			if !strings.Contains(errMsg, "invalid module path") && !strings.Contains(errMsg, "cannot be empty") {
+				t.Errorf("Expected 'invalid module path' or 'cannot be empty' error, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestGoModEditReplaceModule_RejectsInvalidPath tests that GoModEditReplaceModule rejects invalid paths.
+func TestGoModEditReplaceModule_RejectsInvalidPath(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	tests := []struct {
+		name    string
+		nameOld string
+		nameNew string
+	}{
+		{"invalid old path", "--flag-injection", "github.com/valid/repo"},
+		{"invalid new path", "github.com/valid/repo", "name; rm -rf /"},
+		{"both invalid", "--flag", "name | cat"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := GoModEditReplaceModule(context.Background(), tt.nameOld, tt.nameNew, "v1.0.0", tmpDir)
+			if err == nil {
+				t.Errorf("GoModEditReplaceModule should reject invalid paths")
+			}
+			if !strings.Contains(err.Error(), "invalid") {
+				t.Errorf("Expected 'invalid' error, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestGoModEditDropRequireModule_RejectsInvalidPath tests that GoModEditDropRequireModule rejects invalid paths.
+func TestGoModEditDropRequireModule_RejectsInvalidPath(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	invalidPaths := []string{
+		"--flag-injection",
+		"name; rm -rf /",
+		"",
+	}
+
+	for _, invalidPath := range invalidPaths {
+		t.Run(invalidPath, func(t *testing.T) {
+			_, err := GoModEditDropRequireModule(context.Background(), invalidPath, tmpDir)
+			if err == nil {
+				t.Errorf("GoModEditDropRequireModule should reject invalid path %q", invalidPath)
+			}
+			if !strings.Contains(err.Error(), "invalid module path") && !strings.Contains(err.Error(), "cannot be empty") {
+				t.Errorf("Expected 'invalid module path' error, got: %v", err)
+			}
+		})
+	}
 }

@@ -20,7 +20,9 @@ import (
 )
 
 // MavenAnalyzer implements the Analyzer interface for Maven projects.
-// Ported from pombump/pkg/analyzer.go
+// Ported from pombump/pkg/analyzer.go.
+//
+//nolint:revive // Explicit name preferred for clarity
 type MavenAnalyzer struct{}
 
 // Analyze performs dependency analysis on a Maven project.
@@ -93,8 +95,11 @@ func (ma *MavenAnalyzer) Analyze(ctx context.Context, projectPath string) (*anal
 
 // AnalyzeRemote performs dependency analysis on remotely-fetched Maven files.
 // Not yet implemented for Maven - returns error.
+// TODO: Implement this function and use ctx for logging and files for analysis.
+//
+//nolint:revive // Parameters will be used when implementation is added
 func (ma *MavenAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]byte) (*analyzer.RemoteAnalysisResult, error) {
-	return nil, fmt.Errorf("remote analysis not yet implemented for Maven")
+	return nil, fmt.Errorf("%w for Maven", ErrRemoteAnalysisNotImplemented)
 }
 
 // RecommendStrategy suggests whether to use properties or direct patches.
@@ -116,9 +121,9 @@ func (ma *MavenAnalyzer) RecommendStrategy(ctx context.Context, analysis *analyz
 		depKey := dep.Name
 		if depKey == "" {
 			// Try to construct from metadata
-			if groupId, ok := dep.Metadata["groupId"].(string); ok {
-				if artifactId, ok := dep.Metadata["artifactId"].(string); ok {
-					depKey = fmt.Sprintf("%s:%s", groupId, artifactId)
+			if groupID, ok := dep.Metadata["groupId"].(string); ok {
+				if artifactID, ok := dep.Metadata["artifactId"].(string); ok {
+					depKey = fmt.Sprintf("%s:%s", groupID, artifactID)
 				}
 			}
 		}
@@ -126,38 +131,11 @@ func (ma *MavenAnalyzer) RecommendStrategy(ctx context.Context, analysis *analyz
 		log.Debugf("Checking dependency: %s @ %s", depKey, dep.Version)
 
 		// Check if this dependency uses a property
-		if depInfo, exists := analysis.Dependencies[depKey]; exists && depInfo.UsesProperty {
-			propertyName := depInfo.PropertyName
-			log.Debugf("  -> Dependency uses property ${%s}", propertyName)
-
-			// Check if we already have this property
-			if existingVersion, exists := strategy.PropertyUpdates[propertyName]; exists {
-				log.Warnf("Property %s already set to %s, requested %s for %s",
-					propertyName, existingVersion, dep.Version, depKey)
-			} else {
-				strategy.PropertyUpdates[propertyName] = dep.Version
-
-				// Track affected dependencies
-				affected := getAffectedDependencies(analysis, propertyName)
-				strategy.AffectedDependencies[propertyName] = affected
-
-				// Check if property is actually defined
-				if currentValue, exists := analysis.Properties[propertyName]; exists {
-					log.Infof("Will update property %s from %s to %s", propertyName, currentValue, dep.Version)
-				} else {
-					log.Warnf("Property %s is referenced but not found - may be in external parent POM", propertyName)
-					missingProperties = append(missingProperties, propertyName)
-				}
-			}
+		depInfo, exists := analysis.Dependencies[depKey]
+		if exists && depInfo.UsesProperty {
+			handlePropertyUpdate(log, depKey, dep, depInfo, analysis, strategy, &missingProperties)
 		} else {
-			// Direct patch
-			if _, exists := analysis.Dependencies[depKey]; exists {
-				log.Debugf("  -> Dependency found but doesn't use properties")
-			} else {
-				log.Debugf("  -> Dependency not found (may be from BOM or new)")
-			}
-			strategy.DirectUpdates = append(strategy.DirectUpdates, dep)
-			log.Infof("Will directly patch %s to %s", depKey, dep.Version)
+			handleDirectPatch(log, depKey, dep, exists, strategy)
 		}
 	}
 
@@ -170,6 +148,45 @@ func (ma *MavenAnalyzer) RecommendStrategy(ctx context.Context, analysis *analyz
 	log.Infof("Strategy: %d direct patches, %d property updates", len(strategy.DirectUpdates), len(strategy.PropertyUpdates))
 
 	return strategy, nil
+}
+
+// handlePropertyUpdate processes a dependency that uses a Maven property.
+func handlePropertyUpdate(log *clog.Logger, depKey string, dep analyzer.Dependency, depInfo *analyzer.DependencyInfo, analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy, missingProps *[]string) {
+	propertyName := depInfo.PropertyName
+	log.Debugf("  -> Dependency uses property ${%s}", propertyName)
+
+	// Check if we already have this property
+	if existingVersion, exists := strategy.PropertyUpdates[propertyName]; exists {
+		log.Warnf("Property %s already set to %s, requested %s for %s",
+			propertyName, existingVersion, dep.Version, depKey)
+		return
+	}
+
+	strategy.PropertyUpdates[propertyName] = dep.Version
+
+	// Track affected dependencies
+	affected := getAffectedDependencies(analysis, propertyName)
+	strategy.AffectedDependencies[propertyName] = affected
+
+	// Check if property is actually defined
+	if currentValue, exists := analysis.Properties[propertyName]; exists {
+		log.Infof("Will update property %s from %s to %s", propertyName, currentValue, dep.Version)
+	} else {
+		log.Warnf("Property %s is referenced but not found - may be in external parent POM", propertyName)
+		*missingProps = append(*missingProps, propertyName)
+	}
+}
+
+// handleDirectPatch processes a dependency that requires a direct patch.
+func handleDirectPatch(log *clog.Logger, depKey string, dep analyzer.Dependency, exists bool, strategy *analyzer.Strategy) {
+	// Direct patch
+	if exists {
+		log.Debugf("  -> Dependency found but doesn't use properties")
+	} else {
+		log.Debugf("  -> Dependency not found (may be from BOM or new)")
+	}
+	strategy.DirectUpdates = append(strategy.DirectUpdates, dep)
+	log.Infof("Will directly patch %s to %s", depKey, dep.Version)
 }
 
 // analyzeDependency analyzes a single Maven dependency.
@@ -243,21 +260,28 @@ func searchForProperties(ctx context.Context, startDir string, excludePath strin
 
 	pomFilesChecked := 0
 
-	err := filepath.Walk(projectRoot, func(path string, info os.FileInfo, err error) error {
+	// Use WalkDir instead of Walk - it doesn't follow symlinks and provides type info directly
+	err := filepath.WalkDir(projectRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // Intentionally skip directories with errors
 		}
 
 		// Skip directories
-		if info.IsDir() {
-			if isSkippableDirectory(info.Name()) {
+		if d.IsDir() {
+			if isSkippableDirectory(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 
+		// Skip symlinks to prevent following malicious symlinks
+		// WalkDir provides type info directly without needing Lstat
+		if d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+
 		// Only process XML files
-		if !strings.HasSuffix(info.Name(), ".xml") {
+		if !strings.HasSuffix(d.Name(), ".xml") {
 			return nil
 		}
 
@@ -269,7 +293,8 @@ func searchForProperties(ctx context.Context, startDir string, excludePath strin
 		// Try to parse as POM
 		project, err := gopom.Parse(path)
 		if err != nil {
-			return nil
+			// Not a valid POM file, skip it
+			return nil //nolint:nilerr // Intentionally skip non-POM XML files
 		}
 
 		pomFilesChecked++
@@ -282,7 +307,6 @@ func searchForProperties(ctx context.Context, startDir string, excludePath strin
 
 		return nil
 	})
-
 	if err != nil {
 		log.Warnf("Error walking project tree: %v", err)
 	}

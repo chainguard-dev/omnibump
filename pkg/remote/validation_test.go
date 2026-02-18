@@ -68,7 +68,7 @@ func TestRepositoryRef_Validate(t *testing.T) {
 				Ref:   "v1.10.3",
 			},
 			wantErr: true,
-			errMsg:  "owner cannot be empty",
+			errMsg:  "cannot be empty",
 		},
 		{
 			name: "empty repo",
@@ -78,7 +78,7 @@ func TestRepositoryRef_Validate(t *testing.T) {
 				Ref:   "v1.10.3",
 			},
 			wantErr: true,
-			errMsg:  "repo cannot be empty",
+			errMsg:  "cannot be empty",
 		},
 		{
 			name: "empty ref",
@@ -88,7 +88,7 @@ func TestRepositoryRef_Validate(t *testing.T) {
 				Ref:   "",
 			},
 			wantErr: true,
-			errMsg:  "ref cannot be empty",
+			errMsg:  "cannot be empty",
 		},
 		{
 			name: "owner with invalid characters",
@@ -455,7 +455,7 @@ func TestValidatePattern(t *testing.T) {
 	}
 }
 
-// TestSecurityScenarios tests specific security attack scenarios
+// TestSecurityScenarios tests specific security attack scenarios.
 func TestSecurityScenarios(t *testing.T) {
 	t.Run("git command injection via ref", func(t *testing.T) {
 		attacks := []string{

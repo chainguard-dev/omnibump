@@ -158,7 +158,7 @@ func TestMavenUpdate(t *testing.T) {
 			pomPath := filepath.Join(tmpDir, "pom.xml")
 
 			// Write initial POM
-			if err := os.WriteFile(pomPath, []byte(tc.initialPom), 0644); err != nil {
+			if err := os.WriteFile(pomPath, []byte(tc.initialPom), 0o600); err != nil {
 				t.Fatalf("Failed to write test pom.xml: %v", err)
 			}
 
@@ -262,13 +262,13 @@ func TestMavenDetect(t *testing.T) {
   <artifactId>test</artifactId>
   <version>1.0.0</version>
 </project>`
-				return os.WriteFile(filepath.Join(dir, "pom.xml"), []byte(pomContent), 0644)
+				return os.WriteFile(filepath.Join(dir, "pom.xml"), []byte(pomContent), 0o600)
 			},
 			want: true,
 		},
 		{
 			name: "no pom.xml",
-			setupFunc: func(dir string) error {
+			setupFunc: func(_ string) error { // dir not needed for empty test case
 				return nil
 			},
 			want: false,
@@ -276,7 +276,7 @@ func TestMavenDetect(t *testing.T) {
 		{
 			name: "only go.mod exists",
 			setupFunc: func(dir string) error {
-				return os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test\n"), 0644)
+				return os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test\n"), 0o600)
 			},
 			want: false,
 		},
@@ -312,7 +312,7 @@ func TestMavenGetManifestFiles(t *testing.T) {
   <version>1.0.0</version>
 </project>`
 
-	if err := os.WriteFile(pomPath, []byte(pomContent), 0644); err != nil {
+	if err := os.WriteFile(pomPath, []byte(pomContent), 0o600); err != nil {
 		t.Fatalf("Failed to create pom.xml: %v", err)
 	}
 

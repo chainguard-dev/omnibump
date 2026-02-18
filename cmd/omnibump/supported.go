@@ -8,9 +8,8 @@ package omnibump
 import (
 	"fmt"
 
-	"github.com/spf13/cobra"
-
 	"github.com/chainguard-dev/omnibump/pkg/languages"
+	"github.com/spf13/cobra"
 )
 
 func supportedCmd() *cobra.Command {
@@ -28,7 +27,7 @@ projects can be bumped with omnibump.`,
 	return cmd
 }
 
-func runSupported(cmd *cobra.Command, args []string) error {
+func runSupported(_ *cobra.Command, _ []string) error { // Both unused but required by cobra interface
 	fmt.Println()
 	fmt.Println("Supported Languages and Build Systems")
 	fmt.Println("=====================================")

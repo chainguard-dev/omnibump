@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/chainguard-dev/gopom"
+	"github.com/chainguard-dev/omnibump/pkg/languages"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 )
@@ -361,7 +362,7 @@ func TestParseProperties(t *testing.T) {
 	}
 }
 
-// TestParsePatches_NonExistentFile tests error handling for missing patch files (FINDING-003)
+// TestParsePatches_NonExistentFile tests error handling for missing patch files (FINDING-003).
 func TestParsePatches_NonExistentFile(t *testing.T) {
 	_, err := parsePatches(context.Background(), "testdata/non-existent-patches.yaml", "")
 	if err == nil {
@@ -372,7 +373,7 @@ func TestParsePatches_NonExistentFile(t *testing.T) {
 	}
 }
 
-// TestParseProperties_NonExistentFile tests error handling for missing property files (FINDING-003)
+// TestParseProperties_NonExistentFile tests error handling for missing property files (FINDING-003).
 func TestParseProperties_NonExistentFile(t *testing.T) {
 	_, err := parseProperties(context.Background(), "testdata/non-existent-properties.yaml", "")
 	if err == nil {
@@ -383,7 +384,7 @@ func TestParseProperties_NonExistentFile(t *testing.T) {
 	}
 }
 
-// TestParsePatches_InvalidYAML tests error handling for invalid YAML in patch files
+// TestParsePatches_InvalidYAML tests error handling for invalid YAML in patch files.
 func TestParsePatches_InvalidYAML(t *testing.T) {
 	// Create a temporary file with invalid YAML
 	tmpFile, err := os.CreateTemp("", "invalid-patches-*.yaml")
@@ -408,7 +409,7 @@ func TestParsePatches_InvalidYAML(t *testing.T) {
 	}
 }
 
-// TestParseProperties_InvalidYAML tests error handling for invalid YAML in property files
+// TestParseProperties_InvalidYAML tests error handling for invalid YAML in property files.
 func TestParseProperties_InvalidYAML(t *testing.T) {
 	// Create a temporary file with invalid YAML
 	tmpFile, err := os.CreateTemp("", "invalid-properties-*.yaml")
@@ -430,5 +431,144 @@ func TestParseProperties_InvalidYAML(t *testing.T) {
 	_, err = parseProperties(context.Background(), tmpFile.Name(), "")
 	if err == nil {
 		t.Fatal("parseProperties should return error for invalid YAML")
+	}
+}
+
+// TestValidateVersion_ValidVersions tests that valid version strings pass validation.
+func TestValidateVersion_ValidVersions(t *testing.T) {
+	validVersions := []string{
+		"1.0.0",
+		"2.3.4-SNAPSHOT",
+		"1.2.3.4",
+		"5.0.0.Final",
+		"1.0-alpha",
+		"2.0+build.123",
+		"3.0_rc1",
+		"1.0.0-rc1+build.456",
+	}
+
+	for _, version := range validVersions {
+		t.Run(version, func(t *testing.T) {
+			err := validateVersion(version)
+			if err != nil {
+				t.Errorf("validateVersion(%q) should be valid, got error: %v", version, err)
+			}
+		})
+	}
+}
+
+// TestValidateVersion_InvalidVersions tests that invalid version strings are rejected.
+// This includes XML injection payloads and other malicious strings.
+func TestValidateVersion_InvalidVersions(t *testing.T) {
+	tests := []struct {
+		version string
+		desc    string
+	}{
+		// XML injection payloads
+		{`<script>alert(1)</script>`, "XSS payload"},
+		{`"><script>alert(1)</script>`, "XSS with quote escape"},
+		{`1.0.0" /><!--`, "XML comment injection"},
+		{`1.0.0"><dependency><groupId>evil`, "XML tag injection"},
+		{`${env.SECRET}`, "Property expansion injection"},
+
+		// Command injection attempts
+		{`1.0.0; rm -rf /`, "Command injection"},
+		{`1.0.0 && malicious`, "Command chaining"},
+		{`1.0.0|cat /etc/passwd`, "Pipe injection"},
+		{"`whoami`", "Backtick injection"},
+
+		// Path traversal and special characters
+		{`../../../etc/passwd`, "Path traversal"},
+		{`C:\Windows\System32`, "Windows path"},
+		{`1.0.0\n<evil/>`, "Newline injection"},
+		{`1.0.0\r\n<evil/>`, "CRLF injection"},
+
+		// Quotes and braces (XML special characters)
+		{`1.0.0"`, "Double quote"},
+		{`1.0.0'`, "Single quote"},
+		{`1.0.0{}`, "Curly braces"},
+		{`1.0.0[]`, "Square brackets"},
+		{`1.0.0()`, "Parentheses"},
+		{`1.0.0<>`, "Angle brackets"},
+
+		// Whitespace and control characters
+		{`1.0.0 with spaces`, "Spaces"},
+		{`1.0.0	tab`, "Tab character"},
+		{"1.0.0\n", "Newline"},
+		{"1.0.0\r", "Carriage return"},
+		{"1.0.0\x00", "Null byte"},
+
+		// Empty and special values
+		{"", "Empty string"},
+		{" ", "Space only"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			err := validateVersion(tt.version)
+			if err == nil {
+				t.Errorf("validateVersion(%q) should be invalid for: %s", tt.version, tt.desc)
+			}
+			if err != nil && err.Error() == "" {
+				t.Errorf("validateVersion(%q) error should have a message", tt.version)
+			}
+		})
+	}
+}
+
+// TestMaven_Update_RejectsInvalidVersion verifies that Maven.Update() rejects invalid versions
+// and leaves the POM file unchanged.
+func TestMaven_Update_RejectsInvalidVersion(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create initial POM with known content
+	initialPOM := `<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>test-project</artifactID>
+  <version>1.0.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>org.example</groupId>
+      <artifactId>test-dep</artifactId>
+      <version>1.0.0</version>
+    </dependency>
+  </dependencies>
+</project>`
+
+	pomPath := fmt.Sprintf("%s/pom.xml", tmpDir)
+	if err := os.WriteFile(pomPath, []byte(initialPOM), 0o600); err != nil {
+		t.Fatalf("Failed to write initial POM: %v", err)
+	}
+
+	// Attempt to update with invalid version
+	m := &Maven{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{
+				Name:    "org.example:test-dep",
+				Version: `1.0.0"><script>alert(1)</script>`, // XML injection attempt
+				Metadata: map[string]any{
+					"groupId":    "org.example",
+					"artifactId": "test-dep",
+				},
+			},
+		},
+	}
+
+	err := m.Update(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("Maven.Update() should reject invalid version")
+	}
+
+	// Verify POM file is unchanged
+	updatedContent, err := os.ReadFile(pomPath)
+	if err != nil {
+		t.Fatalf("Failed to read POM after update attempt: %v", err)
+	}
+
+	if string(updatedContent) != initialPOM {
+		t.Error("POM file should be unchanged after rejected update")
 	}
 }

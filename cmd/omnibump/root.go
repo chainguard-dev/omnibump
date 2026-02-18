@@ -3,6 +3,7 @@ Copyright 2026 Chainguard, Inc.
 SPDX-License-Identifier: Apache-2.0
 */
 
+// Package omnibump implements the omnibump CLI for unified dependency version bumping.
 package omnibump
 
 import (
@@ -14,15 +15,14 @@ import (
 	"strings"
 
 	"github.com/chainguard-dev/clog"
-	charmlog "github.com/charmbracelet/log"
-	"github.com/spf13/cobra"
-	"sigs.k8s.io/release-utils/version"
-
 	"github.com/chainguard-dev/omnibump/pkg/config"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/golang" // Register Go
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/java"   // Register Java (Maven, Gradle, etc.)
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/rust"   // Register Rust
+	charmlog "github.com/charmbracelet/log"
+	"github.com/spf13/cobra"
+	"sigs.k8s.io/release-utils/version"
 )
 
 type rootFlags struct {
@@ -41,6 +41,9 @@ type rootFlags struct {
 
 var flags rootFlags
 
+// logFileHandle stores the log file handle so it can be closed on exit.
+var logFileHandle *os.File
+
 // New creates the root omnibump command.
 func New() *cobra.Command {
 	cmd := &cobra.Command{
@@ -50,6 +53,14 @@ func New() *cobra.Command {
 		SilenceUsage: true,
 		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
 			return setupLogging()
+		},
+		PersistentPostRunE: func(_ *cobra.Command, _ []string) error { // _ unused but required by cobra interface
+			if logFileHandle != nil {
+				if err := logFileHandle.Close(); err != nil {
+					return fmt.Errorf("failed to close log file: %w", err)
+				}
+			}
+			return nil
 		},
 		RunE: runUpdate,
 	}
@@ -92,6 +103,12 @@ var (
 	// ErrInvalidLogPath is returned when a log-policy path fails validation.
 	ErrInvalidLogPath = errors.New("invalid log-policy path")
 
+	// ErrMissingInput is returned when neither --deps nor --packages is specified.
+	ErrMissingInput = errors.New("missing input")
+
+	// ErrConflictingInput is returned when both --deps and --packages are specified.
+	ErrConflictingInput = errors.New("conflicting input")
+
 	// disallowedLogPaths lists sensitive paths that should never be written to.
 	disallowedLogPaths = []string{
 		"/etc/",
@@ -115,7 +132,7 @@ func validateLogPath(path string) error {
 	// Get absolute path to normalize it
 	absPath, err := filepath.Abs(path)
 	if err != nil {
-		return fmt.Errorf("%w: failed to resolve absolute path: %v", ErrInvalidLogPath, err)
+		return fmt.Errorf("%w: failed to resolve absolute path: %w", ErrInvalidLogPath, err)
 	}
 
 	// Clean the path to remove any .. or . components
@@ -150,11 +167,12 @@ func setupLogging() error {
 				return fmt.Errorf("log-policy validation failed: %w", err)
 			}
 
-			f, err := os.OpenFile(filepath.Clean(policy), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+			f, err := os.OpenFile(filepath.Clean(policy), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 			if err != nil {
 				return fmt.Errorf("failed to create log writer: %w", err)
 			}
 			out = f
+			logFileHandle = f // Store handle for cleanup in PersistentPostRunE
 			break
 		}
 	}
@@ -182,17 +200,17 @@ func setupLogging() error {
 	return nil
 }
 
-func runUpdate(cmd *cobra.Command, args []string) error {
+func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but required by cobra interface
 	ctx := cmd.Context()
 	log := clog.FromContext(ctx)
 
 	// Validate input
 	if flags.depsFile == "" && flags.packages == "" {
-		return fmt.Errorf("either --deps or --packages must be specified")
+		return fmt.Errorf("%w: either --deps or --packages must be specified", ErrMissingInput)
 	}
 
 	if flags.depsFile != "" && flags.packages != "" {
-		return fmt.Errorf("cannot use both --deps and --packages")
+		return fmt.Errorf("%w: cannot use both --deps and --packages", ErrConflictingInput)
 	}
 
 	// Load configuration
@@ -224,12 +242,12 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	detectedLang := flags.language
 
 	// Handle backward compatibility: "maven" -> "java"
-	if detectedLang == "maven" {
+	if detectedLang == languageMaven {
 		log.Warnf("Language 'maven' is deprecated, use 'java' instead")
-		detectedLang = "java"
+		detectedLang = languageJava
 	}
 
-	if detectedLang == "auto" || detectedLang == "" {
+	if detectedLang == languageAuto || detectedLang == "" {
 		detectedLang, err = languages.DetectLanguage(ctx, flags.rootDir)
 		if err != nil {
 			return fmt.Errorf("failed to detect language: %w (try specifying --language explicitly)", err)

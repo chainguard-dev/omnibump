@@ -7,6 +7,7 @@ package maven
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,14 +19,31 @@ import (
 	"github.com/ghodss/yaml"
 )
 
+var (
+	// ErrProjectNil is returned when a POM project is nil.
+	ErrProjectNil = errors.New("project is nil")
+
+	// ErrFileTooLarge is returned when a file exceeds size limits.
+	ErrFileTooLarge = errors.New("file too large")
+
+	// ErrInvalidDependencyFormat is returned when a dependency string has invalid format.
+	ErrInvalidDependencyFormat = errors.New("invalid dependencies format")
+
+	// ErrInvalidPropertyFormat is returned when a property string has invalid format.
+	ErrInvalidPropertyFormat = errors.New("invalid properties format")
+)
+
 // Default scope and type for a dependency.
 const (
 	defaultScope = "import"
 	defaultType  = "jar"
+
+	// MaxPatchFileSize limits patch/properties file size to prevent resource exhaustion.
+	MaxPatchFileSize = 10 * 1024 * 1024 // 10 MB
 )
 
 // Patch represents a Maven dependency patch.
-// Ported from pombump/pkg/patch.go
+// Ported from pombump/pkg/patch.go.
 type Patch struct {
 	GroupID    string `json:"groupId" yaml:"groupId"`
 	ArtifactID string `json:"artifactId" yaml:"artifactId"`
@@ -78,12 +96,12 @@ func UpdatePom(ctx context.Context, pomPath string, patches []Patch, properties 
 }
 
 // PatchProject updates a gopom.Project with the given patches and properties.
-// Ported from pombump/pkg/patch.go:PatchProject
+// Ported from pombump/pkg/patch.go:PatchProject.
 func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, propertyPatches map[string]string) (*gopom.Project, error) {
 	log := clog.FromContext(ctx)
 
 	if project == nil {
-		return nil, fmt.Errorf("project is nil")
+		return nil, ErrProjectNil
 	}
 
 	// Track dependencies that weren't found (will be added to DependencyManagement)
@@ -146,20 +164,25 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 	}
 
 	// Update properties
-	if len(propertyPatches) > 0 {
-		if project.Properties == nil {
-			project.Properties = &gopom.Properties{Entries: propertyPatches}
+	if len(propertyPatches) == 0 {
+		return project, nil
+	}
+
+	// Initialize properties if nil
+	if project.Properties == nil {
+		project.Properties = &gopom.Properties{Entries: propertyPatches}
+		return project, nil
+	}
+
+	// Update existing properties
+	for k, v := range propertyPatches {
+		val, exists := project.Properties.Entries[k]
+		if exists {
+			log.Infof("Updating property: %s from %s to %s", k, val, v)
 		} else {
-			for k, v := range propertyPatches {
-				val, exists := project.Properties.Entries[k]
-				if exists {
-					log.Infof("Updating property: %s from %s to %s", k, val, v)
-				} else {
-					log.Infof("Creating property: %s = %s", k, v)
-				}
-				project.Properties.Entries[k] = v
-			}
+			log.Infof("Creating property: %s = %s", k, v)
 		}
+		project.Properties.Entries[k] = v
 	}
 
 	return project, nil
@@ -174,37 +197,48 @@ func ParsePom(pomPath string) (*gopom.Project, error) {
 	return project, nil
 }
 
+// parsePatchesFromFile reads and parses patches from a YAML file.
+func parsePatchesFromFile(ctx context.Context, patchFile string) ([]Patch, error) {
+	var patchList PatchList
+	// filepath.Clean sanitizes the path to prevent traversal attacks
+	file, err := os.Open(filepath.Clean(patchFile)) //nolint:gosec // G703: filepath.Clean() sanitizes user input
+	if err != nil {
+		return nil, fmt.Errorf("failed reading file: %w", err)
+	}
+	// Ensure we handle err from file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			clog.FromContext(ctx).Warnf("failed to close file: %v", err)
+		}
+	}()
+	// Limit file size to prevent resource exhaustion
+	byteValue, err := io.ReadAll(io.LimitReader(file, MaxPatchFileSize))
+	if err != nil {
+		return nil, fmt.Errorf("reading file: %w", err)
+	}
+	// Check if file was truncated (too large)
+	if len(byteValue) >= MaxPatchFileSize {
+		return nil, fmt.Errorf("%w: patch file (max: %d bytes)", ErrFileTooLarge, MaxPatchFileSize)
+	}
+	if err := yaml.Unmarshal(byteValue, &patchList); err != nil {
+		return nil, err
+	}
+	for i := range patchList.Patches {
+		if patchList.Patches[i].Scope == "" {
+			patchList.Patches[i].Scope = defaultScope
+		}
+		if patchList.Patches[i].Type == "" {
+			patchList.Patches[i].Type = defaultType
+		}
+	}
+	return patchList.Patches, nil
+}
+
 // parsePatches parses Maven patches from a file or inline string.
-// Ported from pombump/pkg/patch.go
+// Ported from pombump/pkg/patch.go.
 func parsePatches(ctx context.Context, patchFile, patchFlag string) ([]Patch, error) {
 	if patchFile != "" {
-		var patchList PatchList
-		file, err := os.Open(filepath.Clean(patchFile))
-		if err != nil {
-			return nil, fmt.Errorf("failed reading file: %w", err)
-		}
-		// Ensure we handle err from file.Close()
-		defer func() {
-			if err := file.Close(); err != nil {
-				clog.FromContext(ctx).Warnf("failed to close file: %v", err)
-			}
-		}()
-		byteValue, err := io.ReadAll(file)
-		if err != nil {
-			return nil, fmt.Errorf("reading file: %w", err)
-		}
-		if err := yaml.Unmarshal(byteValue, &patchList); err != nil {
-			return nil, err
-		}
-		for i := range patchList.Patches {
-			if patchList.Patches[i].Scope == "" {
-				patchList.Patches[i].Scope = defaultScope
-			}
-			if patchList.Patches[i].Type == "" {
-				patchList.Patches[i].Type = defaultType
-			}
-		}
-		return patchList.Patches, nil
+		return parsePatchesFromFile(ctx, patchFile)
 	}
 	dependencies := strings.Split(patchFlag, " ")
 	patches := []Patch{}
@@ -214,7 +248,7 @@ func parsePatches(ctx context.Context, patchFile, patchFlag string) ([]Patch, er
 		}
 		parts := strings.Split(dep, "@")
 		if len(parts) < 3 {
-			return nil, fmt.Errorf("invalid dependencies format (%s). Each dependency should be in the format <groupID@artifactID@version[@scope]>", dep)
+			return nil, fmt.Errorf("%w (%s): each dependency should be in the format <groupID@artifactID@version[@scope]>", ErrInvalidDependencyFormat, dep)
 		}
 		// Default scope
 		scope := defaultScope
@@ -230,42 +264,54 @@ func parsePatches(ctx context.Context, patchFile, patchFlag string) ([]Patch, er
 	return patches, nil
 }
 
+// parsePropertiesFromFile reads and parses properties from a YAML file.
+func parsePropertiesFromFile(ctx context.Context, propertyFile string) (map[string]string, error) {
+	var propertyList PropertyList
+	// filepath.Clean sanitizes the path to prevent traversal attacks
+	file, err := os.Open(filepath.Clean(propertyFile)) //nolint:gosec // G703: filepath.Clean() sanitizes user input
+	if err != nil {
+		return nil, fmt.Errorf("failed reading file: %w", err)
+	}
+	// Ensure we handle err from file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			clog.FromContext(ctx).Warnf("failed to close file: %v", err)
+		}
+	}()
+	// Limit file size to prevent resource exhaustion
+	byteValue, err := io.ReadAll(io.LimitReader(file, MaxPatchFileSize))
+	if err != nil {
+		return nil, fmt.Errorf("reading file: %w", err)
+	}
+	// Check if file was truncated (too large)
+	if len(byteValue) >= MaxPatchFileSize {
+		return nil, fmt.Errorf("%w: properties file (max: %d bytes)", ErrFileTooLarge, MaxPatchFileSize)
+	}
+	if err := yaml.Unmarshal(byteValue, &propertyList); err != nil {
+		return nil, err
+	}
+	propertiesPatches := make(map[string]string)
+	for _, v := range propertyList.Properties {
+		propertiesPatches[v.Property] = v.Value
+	}
+	return propertiesPatches, nil
+}
+
 // parseProperties parses Maven properties from a file or inline string.
-// Ported from pombump/pkg/patch.go
+// Ported from pombump/pkg/patch.go.
 func parseProperties(ctx context.Context, propertyFile, propertiesFlag string) (map[string]string, error) {
-	propertiesPatches := map[string]string{}
 	if propertyFile != "" {
-		var propertyList PropertyList
-		file, err := os.Open(filepath.Clean(propertyFile))
-		if err != nil {
-			return nil, fmt.Errorf("failed reading file: %w", err)
-		}
-		// Ensure we handle err from file.Close()
-		defer func() {
-			if err := file.Close(); err != nil {
-				clog.FromContext(ctx).Warnf("failed to close file: %v", err)
-			}
-		}()
-		byteValue, err := io.ReadAll(file)
-		if err != nil {
-			return nil, fmt.Errorf("reading file: %w", err)
-		}
-		if err := yaml.Unmarshal(byteValue, &propertyList); err != nil {
-			return nil, err
-		}
-		for _, v := range propertyList.Properties {
-			propertiesPatches[v.Property] = v.Value
-		}
-		return propertiesPatches, nil
+		return parsePropertiesFromFile(ctx, propertyFile)
 	}
 
+	propertiesPatches := make(map[string]string)
 	for prop := range strings.SplitSeq(propertiesFlag, " ") {
 		if prop == "" {
 			continue
 		}
 		parts := strings.Split(prop, "@")
 		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid properties format. Each dependency should be in the format <property@value>")
+			return nil, fmt.Errorf("%w: each property should be in the format <property@value>", ErrInvalidPropertyFormat)
 		}
 		propertiesPatches[parts[0]] = parts[1]
 	}

@@ -48,11 +48,12 @@ func TestParseFile(t *testing.T) {
 	}, {
 		name:     "file",
 		bumpFile: testFile,
-		want: map[string]*Package{"name-1": {
-			Name:    "name-1",
-			Version: "version-1",
-			Index:   0,
-		},
+		want: map[string]*Package{
+			"name-1": {
+				Name:    "name-1",
+				Version: "version-1",
+				Index:   0,
+			},
 			"name-2": {
 				Name:    "name-2",
 				Version: "version-2",
@@ -62,7 +63,8 @@ func TestParseFile(t *testing.T) {
 				Name:    "name-3",
 				Version: "version-3",
 				Index:   2,
-			}},
+			},
+		},
 	}}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -84,7 +86,7 @@ func TestParseFile(t *testing.T) {
 }
 
 // TestParseFile_IOReadError tests that io.ReadAll errors are properly propagated
-// This test ensures FINDING-OMNIBUMP-003 is fixed
+// This test ensures FINDING-OMNIBUMP-003 is fixed.
 func TestParseFile_IOReadError(t *testing.T) {
 	// Test that a non-existent file returns a proper error
 	_, err := ParseFile("testdata-parser/non-existent-file.yaml")

@@ -9,13 +9,35 @@ package maven
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
+)
+
+var (
+	// versionValidationRegex defines the allowlist for valid version strings.
+	// Only allows alphanumeric characters, dots, underscores, hyphens, and plus signs.
+	// This prevents injection of quotes, braces, newlines, and other
+	// characters that could be used for XML injection in Maven POM files.
+	versionValidationRegex = regexp.MustCompile(`^[a-zA-Z0-9._+-]+$`)
+
+	// ErrInvalidVersion is returned when a version string fails validation.
+	ErrInvalidVersion = errors.New("invalid version string")
+
+	// ErrPomNotFound is returned when pom.xml is not found.
+	ErrPomNotFound = errors.New("pom.xml not found")
+
+	// ErrPropertyValidationFailed is returned when property validation fails.
+	ErrPropertyValidationFailed = errors.New("property validation failed")
+
+	// ErrRemoteAnalysisNotImplemented is returned when remote analysis is not implemented.
+	ErrRemoteAnalysisNotImplemented = errors.New("remote analysis not yet implemented")
 )
 
 // Maven implements the BuildTool interface for Maven projects.
@@ -28,14 +50,30 @@ func (m *Maven) Name() string {
 
 // Detect checks if Maven manifest files exist in the directory.
 func (m *Maven) Detect(ctx context.Context, dir string) (bool, error) {
+	log := clog.FromContext(ctx)
 	pomPath := filepath.Join(dir, "pom.xml")
 	_, err := os.Stat(pomPath)
-	return err == nil, nil
+	if err == nil {
+		log.Debugf("Detected Maven project at %s", dir)
+		return true, nil
+	}
+	log.Debugf("No Maven project detected at %s", dir)
+	return false, nil
 }
 
 // GetManifestFiles returns Maven manifest files.
 func (m *Maven) GetManifestFiles() []string {
 	return []string{"pom.xml"}
+}
+
+// validateVersion checks if a version string contains only safe characters.
+// Returns an error if the version contains characters that could be used for
+// XML injection (quotes, braces, newlines, etc.).
+func validateVersion(version string) error {
+	if !versionValidationRegex.MatchString(version) {
+		return fmt.Errorf("%w: %q (allowed characters: a-zA-Z0-9._+-)", ErrInvalidVersion, version)
+	}
+	return nil
 }
 
 // GetAnalyzer returns the Maven analyzer.
@@ -51,10 +89,24 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	log.Infof("Dependencies to update: %d", len(cfg.Dependencies))
 	log.Infof("Properties to update: %d", len(cfg.Properties))
 
+	// Validate all dependency versions before any file writes (fail-fast)
+	for _, dep := range cfg.Dependencies {
+		if err := validateVersion(dep.Version); err != nil {
+			return fmt.Errorf("dependency %s: %w", dep.Name, err)
+		}
+	}
+
+	// Validate all property values before any file writes (fail-fast)
+	for propName, propValue := range cfg.Properties {
+		if err := validateVersion(propValue); err != nil {
+			return fmt.Errorf("property %s: %w", propName, err)
+		}
+	}
+
 	// Find pom.xml
 	pomPath := filepath.Join(cfg.RootDir, "pom.xml")
 	if _, err := os.Stat(pomPath); os.IsNotExist(err) {
-		return fmt.Errorf("pom.xml not found in: %s", cfg.RootDir)
+		return fmt.Errorf("%w in: %s", ErrPomNotFound, cfg.RootDir)
 	}
 
 	// Convert unified dependencies to Maven patches
@@ -72,7 +124,7 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	}
 
 	// Write updated POM back to file
-	if err := os.WriteFile(pomPath, updatedPom, 0600); err != nil {
+	if err := os.WriteFile(pomPath, updatedPom, 0o600); err != nil {
 		return fmt.Errorf("failed to write updated pom.xml: %w", err)
 	}
 
@@ -102,8 +154,8 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 		if dep.Name != "" {
 			searchKey = dep.Name
 		} else {
-			// Maven format: groupId:artifactId
-			searchKey = fmt.Sprintf("%s:%s", extractGroupId(dep), extractArtifactId(dep))
+			// Maven format: groupID:artifactID
+			searchKey = fmt.Sprintf("%s:%s", extractGroupID(dep), extractArtifactID(dep))
 		}
 
 		// Check in dependencies
@@ -138,7 +190,7 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 		for propName, expectedValue := range cfg.Properties {
 			if actualValue, exists := project.Properties.Entries[propName]; exists {
 				if actualValue != expectedValue {
-					return fmt.Errorf("property %s has value %s, expected %s", propName, actualValue, expectedValue)
+					return fmt.Errorf("%w: property %s has value %s, expected %s", ErrPropertyValidationFailed, propName, actualValue, expectedValue)
 				}
 			} else {
 				log.Warnf("Property not found: %s", propName)
@@ -163,16 +215,16 @@ func convertDependenciesToPatches(deps []languages.Dependency) []Patch {
 
 		// Handle different input formats
 		if dep.Name != "" {
-			// Simple name format (might be groupId:artifactId)
-			patch.GroupID = extractGroupId(dep)
-			patch.ArtifactID = extractArtifactId(dep)
+			// Simple name format (might be groupID:artifactID)
+			patch.GroupID = extractGroupID(dep)
+			patch.ArtifactID = extractArtifactID(dep)
 		} else {
 			// Use metadata if available
-			if groupId, ok := dep.Metadata["groupId"].(string); ok {
-				patch.GroupID = groupId
+			if groupID, ok := dep.Metadata["groupID"].(string); ok {
+				patch.GroupID = groupID
 			}
-			if artifactId, ok := dep.Metadata["artifactId"].(string); ok {
-				patch.ArtifactID = artifactId
+			if artifactID, ok := dep.Metadata["artifactID"].(string); ok {
+				patch.ArtifactID = artifactID
 			}
 		}
 
@@ -190,12 +242,12 @@ func convertDependenciesToPatches(deps []languages.Dependency) []Patch {
 	return patches
 }
 
-// extractGroupId extracts groupId from a dependency.
-func extractGroupId(dep languages.Dependency) string {
-	if groupId, ok := dep.Metadata["groupId"].(string); ok {
-		return groupId
+// extractGroupID extracts groupID from a dependency.
+func extractGroupID(dep languages.Dependency) string {
+	if groupID, ok := dep.Metadata["groupID"].(string); ok {
+		return groupID
 	}
-	// Try to extract from Name if it's in groupId:artifactId format
+	// Try to extract from Name if it's in groupID:artifactID format
 	if dep.Name != "" {
 		parts := splitMavenCoordinate(dep.Name)
 		if len(parts) >= 1 {
@@ -205,12 +257,12 @@ func extractGroupId(dep languages.Dependency) string {
 	return ""
 }
 
-// extractArtifactId extracts artifactId from a dependency.
-func extractArtifactId(dep languages.Dependency) string {
-	if artifactId, ok := dep.Metadata["artifactId"].(string); ok {
-		return artifactId
+// extractArtifactID extracts artifactID from a dependency.
+func extractArtifactID(dep languages.Dependency) string {
+	if artifactID, ok := dep.Metadata["artifactID"].(string); ok {
+		return artifactID
 	}
-	// Try to extract from Name if it's in groupId:artifactId format
+	// Try to extract from Name if it's in groupID:artifactID format
 	if dep.Name != "" {
 		parts := splitMavenCoordinate(dep.Name)
 		if len(parts) >= 2 {
@@ -220,7 +272,7 @@ func extractArtifactId(dep languages.Dependency) string {
 	return ""
 }
 
-// splitMavenCoordinate splits a Maven coordinate like "groupId:artifactId" or "groupId:artifactId:version".
+// splitMavenCoordinate splits a Maven coordinate like "groupID:artifactID" or "groupID:artifactID:version".
 func splitMavenCoordinate(coordinate string) []string {
 	// Use a simple colon split for Maven coordinates
 	var result []string

@@ -15,14 +15,14 @@ import (
 )
 
 // DoUpdate performs the actual update of Rust package dependencies.
-// Ported from cargobump/pkg/update.go
+// Ported from cargobump/pkg/update.go.
 func DoUpdate(ctx context.Context, packages map[string]*Package, cargoPackages []CargoPackage, cfg *UpdateConfig) error {
 	log := clog.FromContext(ctx)
 
 	// Run 'cargo update' prior to upgrading any dependency
 	if cfg.Update {
 		log.Infof("Running 'cargo update'...")
-		if output, err := CargoUpdate(cfg.CargoRoot); err != nil {
+		if output, err := CargoUpdate(ctx, cfg.CargoRoot); err != nil {
 			return fmt.Errorf("failed to run 'cargo update': %w with output: %v", err, output)
 		}
 	}
@@ -32,6 +32,10 @@ func DoUpdate(ctx context.Context, packages map[string]*Package, cargoPackages [
 
 	for _, pkgName := range orderedPackages {
 		pkg := packages[pkgName]
+		if pkg == nil {
+			log.Warnf("Package %s has nil entry in packages map, skipping", pkgName)
+			continue
+		}
 
 		// Find matching package(s) in Cargo.lock
 		matchingPackages := findMatchingPackages(pkgName, cargoPackages)
@@ -70,7 +74,7 @@ func updatePackage(ctx context.Context, pkg *Package, cargoPkg CargoPackage, cfg
 
 	log.Infof("Updating package %s from version %s to %s", pkg.Name, cargoPkg.Version, pkg.Version)
 
-	if output, err := CargoUpdatePackage(pkg.Name, cargoPkg.Version, pkg.Version, cfg.CargoRoot); err != nil {
+	if output, err := CargoUpdatePackage(ctx, pkg.Name, cargoPkg.Version, pkg.Version, cfg.CargoRoot); err != nil {
 		return fmt.Errorf("failed to run cargo update for package '%s' from version '%s' to '%s': %w with output: %v",
 			pkg.Name, cargoPkg.Version, pkg.Version, err, output)
 	}

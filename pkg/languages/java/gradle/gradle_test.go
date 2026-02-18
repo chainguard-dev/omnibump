@@ -69,7 +69,7 @@ func TestGradle_Detect(t *testing.T) {
 			// Create test files
 			for _, file := range tt.files {
 				path := filepath.Join(tmpDir, file)
-				if err := os.WriteFile(path, []byte("# test"), 0600); err != nil {
+				if err := os.WriteFile(path, []byte("# test"), 0o600); err != nil {
 					t.Fatalf("failed to create test file: %v", err)
 				}
 			}
@@ -109,47 +109,32 @@ func TestGradle_GetManifestFiles(t *testing.T) {
 	}
 }
 
-func TestGradle_Update_StringNotation(t *testing.T) {
-	// Use the existing testdata
-	testdataDir := filepath.Join("testdata", "simple-kotlin")
+// Helper function to reduce test duplication.
+func runGradleUpdateTest(t *testing.T, testdataDir, buildFile string, deps []languages.Dependency, expectedVersions map[string]string) {
+	t.Helper()
 
-	// Create a temporary copy
 	tmpDir := t.TempDir()
-	srcFile := filepath.Join(testdataDir, "build.gradle.kts")
-	dstFile := filepath.Join(tmpDir, "build.gradle.kts")
+	srcFile := filepath.Join(testdataDir, buildFile)
+	dstFile := filepath.Join(tmpDir, buildFile)
 
 	content, err := os.ReadFile(srcFile)
 	if err != nil {
 		t.Fatalf("failed to read testdata: %v", err)
 	}
-	if err := os.WriteFile(dstFile, content, 0600); err != nil {
+	if err := os.WriteFile(dstFile, content, 0o600); err != nil {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
 	g := &Gradle{}
 	cfg := &languages.UpdateConfig{
-		RootDir: tmpDir,
-		Dependencies: []languages.Dependency{
-			{
-				Name:    "org.apache.commons:commons-lang3",
-				Version: "3.14.0",
-			},
-			{
-				Name:    "io.netty:netty-all",
-				Version: "4.1.101.Final",
-			},
-			{
-				Name:    "junit:junit",
-				Version: "4.13.3",
-			},
-		},
+		RootDir:      tmpDir,
+		Dependencies: deps,
 	}
 
 	if err := g.Update(context.Background(), cfg); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
-	// Read updated file
 	updated, err := os.ReadFile(dstFile)
 	if err != nil {
 		t.Fatalf("failed to read updated file: %v", err)
@@ -157,22 +142,27 @@ func TestGradle_Update_StringNotation(t *testing.T) {
 
 	updatedStr := string(updated)
 
-	// Verify updates
-	tests := []struct {
-		dep     string
-		version string
-	}{
-		{"org.apache.commons:commons-lang3", "3.14.0"},
-		{"io.netty:netty-all", "4.1.101.Final"},
-		{"junit:junit", "4.13.3"},
-	}
-
-	for _, tt := range tests {
-		expected := tt.dep + ":" + tt.version
+	for dep, version := range expectedVersions {
+		expected := dep + ":" + version
 		if !strings.Contains(updatedStr, expected) {
 			t.Errorf("Updated file should contain %q, but doesn't.\nContent:\n%s", expected, updatedStr)
 		}
 	}
+}
+
+func TestGradle_Update_StringNotation(t *testing.T) {
+	testdataDir := filepath.Join("testdata", "simple-kotlin")
+	deps := []languages.Dependency{
+		{Name: "org.apache.commons:commons-lang3", Version: "3.14.0"},
+		{Name: "io.netty:netty-all", Version: "4.1.101.Final"},
+		{Name: "junit:junit", Version: "4.13.3"},
+	}
+	expected := map[string]string{
+		"org.apache.commons:commons-lang3": "3.14.0",
+		"io.netty:netty-all":               "4.1.101.Final",
+		"junit:junit":                      "4.13.3",
+	}
+	runGradleUpdateTest(t, testdataDir, "build.gradle.kts", deps, expected)
 }
 
 func TestGradle_Update_LibraryFunction(t *testing.T) {
@@ -188,7 +178,7 @@ func TestGradle_Update_LibraryFunction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read testdata: %v", err)
 	}
-	if err := os.WriteFile(dstFile, content, 0600); err != nil {
+	if err := os.WriteFile(dstFile, content, 0o600); err != nil {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
@@ -247,7 +237,7 @@ func TestGradle_Update_DryRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read testdata: %v", err)
 	}
-	if err := os.WriteFile(dstFile, originalContent, 0600); err != nil {
+	if err := os.WriteFile(dstFile, originalContent, 0o600); err != nil {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
@@ -309,7 +299,7 @@ func TestGradle_Update_NonExistentDependency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read testdata: %v", err)
 	}
-	if err := os.WriteFile(dstFile, content, 0600); err != nil {
+	if err := os.WriteFile(dstFile, content, 0o600); err != nil {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
@@ -415,69 +405,18 @@ func TestBuildDependencyPatterns(t *testing.T) {
 // Integration tests based on real enterprise packages
 
 func TestGradle_Update_KafkaStyle(t *testing.T) {
-	// Real-world test based on enterprise-packages/kafka-3.8
-	// Tests string notation in build.gradle (Groovy DSL)
 	testdataDir := filepath.Join("testdata", "kafka-style")
-
-	tmpDir := t.TempDir()
-	srcFile := filepath.Join(testdataDir, "build.gradle")
-	dstFile := filepath.Join(tmpDir, "build.gradle")
-
-	content, err := os.ReadFile(srcFile)
-	if err != nil {
-		t.Fatalf("failed to read testdata: %v", err)
+	deps := []languages.Dependency{
+		{Name: "org.apache.commons:commons-lang3", Version: "3.18.0"},
+		{Name: "commons-beanutils:commons-beanutils", Version: "1.11.0"},
+		{Name: "io.netty:netty-all", Version: "4.1.101.Final"},
 	}
-	if err := os.WriteFile(dstFile, content, 0600); err != nil {
-		t.Fatalf("failed to write test file: %v", err)
+	expected := map[string]string{
+		"org.apache.commons:commons-lang3":    "3.18.0",
+		"commons-beanutils:commons-beanutils": "1.11.0",
+		"io.netty:netty-all":                  "4.1.101.Final",
 	}
-
-	g := &Gradle{}
-	cfg := &languages.UpdateConfig{
-		RootDir: tmpDir,
-		Dependencies: []languages.Dependency{
-			{
-				Name:    "org.apache.commons:commons-lang3",
-				Version: "3.18.0", // CVE remediation from real package
-			},
-			{
-				Name:    "commons-beanutils:commons-beanutils",
-				Version: "1.11.0", // CVE remediation from real package
-			},
-			{
-				Name:    "io.netty:netty-all",
-				Version: "4.1.101.Final",
-			},
-		},
-	}
-
-	if err := g.Update(context.Background(), cfg); err != nil {
-		t.Fatalf("Update() error = %v", err)
-	}
-
-	// Read updated file
-	updated, err := os.ReadFile(dstFile)
-	if err != nil {
-		t.Fatalf("failed to read updated file: %v", err)
-	}
-
-	updatedStr := string(updated)
-
-	// Verify updates match real CVE remediations
-	tests := []struct {
-		dep     string
-		version string
-	}{
-		{"org.apache.commons:commons-lang3", "3.18.0"},
-		{"commons-beanutils:commons-beanutils", "1.11.0"},
-		{"io.netty:netty-all", "4.1.101.Final"},
-	}
-
-	for _, tt := range tests {
-		expected := tt.dep + ":" + tt.version
-		if !strings.Contains(updatedStr, expected) {
-			t.Errorf("Updated file should contain %q, but doesn't.\nContent:\n%s", expected, updatedStr)
-		}
-	}
+	runGradleUpdateTest(t, testdataDir, "build.gradle", deps, expected)
 }
 
 func TestGradle_Update_MultiModule(t *testing.T) {
@@ -489,13 +428,13 @@ func TestGradle_Update_MultiModule(t *testing.T) {
 	rootContent := `dependencies {
     implementation("org.apache.commons:commons-lang3:3.12.0")
 }`
-	if err := os.WriteFile(rootBuild, []byte(rootContent), 0600); err != nil {
+	if err := os.WriteFile(rootBuild, []byte(rootContent), 0o600); err != nil {
 		t.Fatalf("failed to create root build.gradle: %v", err)
 	}
 
 	// Create subproject directory and build.gradle
 	subprojectDir := filepath.Join(tmpDir, "subproject")
-	if err := os.MkdirAll(subprojectDir, 0755); err != nil {
+	if err := os.MkdirAll(subprojectDir, 0o750); err != nil {
 		t.Fatalf("failed to create subproject dir: %v", err)
 	}
 
@@ -503,13 +442,13 @@ func TestGradle_Update_MultiModule(t *testing.T) {
 	subContent := `dependencies {
     implementation("io.netty:netty-all:4.1.100.Final")
 }`
-	if err := os.WriteFile(subBuild, []byte(subContent), 0600); err != nil {
+	if err := os.WriteFile(subBuild, []byte(subContent), 0o600); err != nil {
 		t.Fatalf("failed to create subproject build.gradle.kts: %v", err)
 	}
 
 	// Create nested subproject
 	nestedDir := filepath.Join(tmpDir, "subproject", "nested")
-	if err := os.MkdirAll(nestedDir, 0755); err != nil {
+	if err := os.MkdirAll(nestedDir, 0o750); err != nil {
 		t.Fatalf("failed to create nested dir: %v", err)
 	}
 
@@ -517,7 +456,7 @@ func TestGradle_Update_MultiModule(t *testing.T) {
 	nestedContent := `dependencies {
     testImplementation("junit:junit:4.13.2")
 }`
-	if err := os.WriteFile(nestedBuild, []byte(nestedContent), 0600); err != nil {
+	if err := os.WriteFile(nestedBuild, []byte(nestedContent), 0o600); err != nil {
 		t.Fatalf("failed to create nested build.gradle: %v", err)
 	}
 
@@ -585,7 +524,7 @@ func TestGradle_Update_SpringBootReal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read testdata: %v", err)
 	}
-	if err := os.WriteFile(dstFile, content, 0600); err != nil {
+	if err := os.WriteFile(dstFile, content, 0o600); err != nil {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
@@ -652,7 +591,7 @@ dependencyResolutionManagement {
     }
 }
 `
-	if err := os.WriteFile(settingsFile, []byte(settingsContent), 0600); err != nil {
+	if err := os.WriteFile(settingsFile, []byte(settingsContent), 0o600); err != nil {
 		t.Fatalf("failed to write settings.gradle: %v", err)
 	}
 
@@ -708,7 +647,7 @@ func TestGradle_Update_VersionCatalogToml(t *testing.T) {
 
 	// Create gradle directory for libs.versions.toml
 	gradleDir := filepath.Join(tmpDir, "gradle")
-	if err := os.MkdirAll(gradleDir, 0755); err != nil {
+	if err := os.MkdirAll(gradleDir, 0o750); err != nil {
 		t.Fatalf("failed to create gradle directory: %v", err)
 	}
 
@@ -724,7 +663,7 @@ netty-all = { module = "io.netty:netty-all", version.ref = "netty-all" }
 commons-lang3 = { module = "org.apache.commons:commons-lang3", version.ref = "commons-lang3" }
 junit-junit = { module = "junit:junit", version.ref = "junit" }
 `
-	if err := os.WriteFile(tomlFile, []byte(tomlContent), 0600); err != nil {
+	if err := os.WriteFile(tomlFile, []byte(tomlContent), 0o600); err != nil {
 		t.Fatalf("failed to write libs.versions.toml: %v", err)
 	}
 
@@ -792,7 +731,7 @@ func TestGradle_Update_VersionCatalogToml_NoVersionsSection(t *testing.T) {
 
 	// Create gradle directory for libs.versions.toml
 	gradleDir := filepath.Join(tmpDir, "gradle")
-	if err := os.MkdirAll(gradleDir, 0755); err != nil {
+	if err := os.MkdirAll(gradleDir, 0o750); err != nil {
 		t.Fatalf("failed to create gradle directory: %v", err)
 	}
 
@@ -801,7 +740,7 @@ func TestGradle_Update_VersionCatalogToml_NoVersionsSection(t *testing.T) {
 	tomlContent := `[libraries]
 netty-all = { module = "io.netty:netty-all", version = "4.1.100.Final" }
 `
-	if err := os.WriteFile(tomlFile, []byte(tomlContent), 0600); err != nil {
+	if err := os.WriteFile(tomlFile, []byte(tomlContent), 0o600); err != nil {
 		t.Fatalf("failed to write libs.versions.toml: %v", err)
 	}
 
@@ -837,7 +776,7 @@ func TestGradle_Update_VersionCatalogToml_InvalidToml(t *testing.T) {
 
 	// Create gradle directory for libs.versions.toml
 	gradleDir := filepath.Join(tmpDir, "gradle")
-	if err := os.MkdirAll(gradleDir, 0755); err != nil {
+	if err := os.MkdirAll(gradleDir, 0o750); err != nil {
 		t.Fatalf("failed to create gradle directory: %v", err)
 	}
 
@@ -846,7 +785,7 @@ func TestGradle_Update_VersionCatalogToml_InvalidToml(t *testing.T) {
 	tomlContent := `[versions
 this is not valid TOML
 `
-	if err := os.WriteFile(tomlFile, []byte(tomlContent), 0600); err != nil {
+	if err := os.WriteFile(tomlFile, []byte(tomlContent), 0o600); err != nil {
 		t.Fatalf("failed to write libs.versions.toml: %v", err)
 	}
 
@@ -882,7 +821,7 @@ func TestGradle_Update_MapNotation(t *testing.T) {
     testImplementation group = "junit", name = "junit", version = "4.13.2"
 }
 `
-	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0o600); err != nil {
 		t.Fatalf("failed to write build.gradle: %v", err)
 	}
 
@@ -929,27 +868,27 @@ func TestGradle_FindBuildFiles_SkipsHiddenDirs(t *testing.T) {
 
 	// Create build.gradle in root
 	rootBuild := filepath.Join(tmpDir, "build.gradle")
-	if err := os.WriteFile(rootBuild, []byte(""), 0600); err != nil {
+	if err := os.WriteFile(rootBuild, []byte(""), 0o600); err != nil {
 		t.Fatalf("failed to write root build.gradle: %v", err)
 	}
 
 	// Create .git/build.gradle (should be skipped)
 	gitDir := filepath.Join(tmpDir, ".git")
-	if err := os.MkdirAll(gitDir, 0755); err != nil {
+	if err := os.MkdirAll(gitDir, 0o750); err != nil {
 		t.Fatalf("failed to create .git directory: %v", err)
 	}
 	gitBuild := filepath.Join(gitDir, "build.gradle")
-	if err := os.WriteFile(gitBuild, []byte(""), 0600); err != nil {
+	if err := os.WriteFile(gitBuild, []byte(""), 0o600); err != nil {
 		t.Fatalf("failed to write .git/build.gradle: %v", err)
 	}
 
 	// Create vendor/build.gradle (should be skipped)
 	vendorDir := filepath.Join(tmpDir, "vendor")
-	if err := os.MkdirAll(vendorDir, 0755); err != nil {
+	if err := os.MkdirAll(vendorDir, 0o750); err != nil {
 		t.Fatalf("failed to create vendor directory: %v", err)
 	}
 	vendorBuild := filepath.Join(vendorDir, "build.gradle")
-	if err := os.WriteFile(vendorBuild, []byte(""), 0600); err != nil {
+	if err := os.WriteFile(vendorBuild, []byte(""), 0o600); err != nil {
 		t.Fatalf("failed to write vendor/build.gradle: %v", err)
 	}
 
@@ -974,7 +913,7 @@ func TestGradleAnalyzer_Analyze_WithTomlCatalog(t *testing.T) {
 
 	// Create gradle directory
 	gradleDir := filepath.Join(tmpDir, "gradle")
-	if err := os.MkdirAll(gradleDir, 0755); err != nil {
+	if err := os.MkdirAll(gradleDir, 0o750); err != nil {
 		t.Fatalf("failed to create gradle directory: %v", err)
 	}
 
@@ -988,7 +927,7 @@ commons-lang3 = "3.12.0"
 netty-all = { module = "io.netty:netty-all", version.ref = "netty-all" }
 commons-lang3 = { module = "org.apache.commons:commons-lang3", version.ref = "commons-lang3" }
 `
-	if err := os.WriteFile(tomlFile, []byte(tomlContent), 0600); err != nil {
+	if err := os.WriteFile(tomlFile, []byte(tomlContent), 0o600); err != nil {
 		t.Fatalf("failed to write libs.versions.toml: %v", err)
 	}
 
@@ -999,7 +938,7 @@ commons-lang3 = { module = "org.apache.commons:commons-lang3", version.ref = "co
     implementation("org.apache.commons:commons-lang3:3.12.0")
 }
 `
-	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0o600); err != nil {
 		t.Fatalf("failed to write build.gradle: %v", err)
 	}
 
@@ -1045,7 +984,7 @@ dependencyResolutionManagement {
     }
 }
 `
-	if err := os.WriteFile(settingsFile, []byte(settingsContent), 0600); err != nil {
+	if err := os.WriteFile(settingsFile, []byte(settingsContent), 0o600); err != nil {
 		t.Fatalf("failed to write settings.gradle: %v", err)
 	}
 
@@ -1055,7 +994,7 @@ dependencyResolutionManagement {
     implementation("io.netty:netty-all:4.1.100.Final")
 }
 `
-	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0o600); err != nil {
 		t.Fatalf("failed to write build.gradle: %v", err)
 	}
 
@@ -1086,7 +1025,7 @@ func TestGradleAnalyzer_RecommendStrategy_DirectUpdates(t *testing.T) {
     implementation("org.apache.commons:commons-lang3:3.12.0")
 }
 `
-	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0o600); err != nil {
 		t.Fatalf("failed to write build.gradle: %v", err)
 	}
 
@@ -1129,7 +1068,7 @@ func TestGradleAnalyzer_RecommendStrategy_CatalogUpdates(t *testing.T) {
 
 	// Create gradle directory
 	gradleDir := filepath.Join(tmpDir, "gradle")
-	if err := os.MkdirAll(gradleDir, 0755); err != nil {
+	if err := os.MkdirAll(gradleDir, 0o750); err != nil {
 		t.Fatalf("failed to create gradle directory: %v", err)
 	}
 
@@ -1141,7 +1080,7 @@ netty = "4.1.100.Final"
 [libraries]
 netty-all = { module = "io.netty:netty-all", version.ref = "netty" }
 `
-	if err := os.WriteFile(tomlFile, []byte(tomlContent), 0600); err != nil {
+	if err := os.WriteFile(tomlFile, []byte(tomlContent), 0o600); err != nil {
 		t.Fatalf("failed to write libs.versions.toml: %v", err)
 	}
 
@@ -1151,7 +1090,7 @@ netty-all = { module = "io.netty:netty-all", version.ref = "netty" }
     // Would actually be implementation(libs.netty.all) in real project
 }
 `
-	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0o600); err != nil {
 		t.Fatalf("failed to write build.gradle: %v", err)
 	}
 
@@ -1200,7 +1139,7 @@ func TestGradleAnalyzer_Analyze_EmptyProject(t *testing.T) {
 
 	// Create empty build.gradle
 	buildFile := filepath.Join(tmpDir, "build.gradle")
-	if err := os.WriteFile(buildFile, []byte(""), 0600); err != nil {
+	if err := os.WriteFile(buildFile, []byte(""), 0o600); err != nil {
 		t.Fatalf("failed to write build.gradle: %v", err)
 	}
 
@@ -1231,7 +1170,7 @@ dependencies {
     implementation("io.netty:netty-all:4.1.101.Final")
 }
 `
-	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0o600); err != nil {
 		t.Fatalf("failed to write build.gradle.kts: %v", err)
 	}
 
@@ -1260,7 +1199,7 @@ dependencies {
     implementation("org.apache.commons:commons-lang3:3.12.0")
 }
 `
-	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0o600); err != nil {
 		t.Fatalf("failed to write build.gradle.kts: %v", err)
 	}
 
@@ -1291,7 +1230,7 @@ func TestGradle_Validate_DependencyNotFound(t *testing.T) {
 dependencies {
 }
 `
-	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0o600); err != nil {
 		t.Fatalf("failed to write build.gradle.kts: %v", err)
 	}
 
@@ -1318,7 +1257,7 @@ func TestGradle_Validate_VersionCatalog(t *testing.T) {
 
 	// Create gradle directory for TOML catalog
 	gradleDir := filepath.Join(tmpDir, "gradle")
-	if err := os.MkdirAll(gradleDir, 0755); err != nil {
+	if err := os.MkdirAll(gradleDir, 0o750); err != nil {
 		t.Fatalf("failed to create gradle directory: %v", err)
 	}
 
@@ -1330,7 +1269,7 @@ netty-all = "4.1.101.Final"
 [libraries]
 netty-all = { module = "io.netty:netty-all", version.ref = "netty-all" }
 `
-	if err := os.WriteFile(tomlFile, []byte(tomlContent), 0600); err != nil {
+	if err := os.WriteFile(tomlFile, []byte(tomlContent), 0o600); err != nil {
 		t.Fatalf("failed to write libs.versions.toml: %v", err)
 	}
 
@@ -1341,7 +1280,7 @@ dependencies {
     implementation(libs.netty.all)
 }
 `
-	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0o600); err != nil {
 		t.Fatalf("failed to write build.gradle.kts: %v", err)
 	}
 
@@ -1365,7 +1304,7 @@ func TestGradle_Validate_VersionCatalogMismatch(t *testing.T) {
 
 	// Create gradle directory for TOML catalog
 	gradleDir := filepath.Join(tmpDir, "gradle")
-	if err := os.MkdirAll(gradleDir, 0755); err != nil {
+	if err := os.MkdirAll(gradleDir, 0o750); err != nil {
 		t.Fatalf("failed to create gradle directory: %v", err)
 	}
 
@@ -1377,7 +1316,7 @@ netty-all = "4.1.100.Final"
 [libraries]
 netty-all = { module = "io.netty:netty-all", version.ref = "netty-all" }
 `
-	if err := os.WriteFile(tomlFile, []byte(tomlContent), 0600); err != nil {
+	if err := os.WriteFile(tomlFile, []byte(tomlContent), 0o600); err != nil {
 		t.Fatalf("failed to write libs.versions.toml: %v", err)
 	}
 
@@ -1388,7 +1327,7 @@ dependencies {
     implementation(libs.netty.all)
 }
 `
-	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0o600); err != nil {
 		t.Fatalf("failed to write build.gradle.kts: %v", err)
 	}
 
@@ -1535,7 +1474,7 @@ func TestGradle_Update_RejectsCodeInjection(t *testing.T) {
     implementation("org.apache.commons:commons-lang3:3.12.0")
 }
 `
-	if err := os.WriteFile(buildFile, []byte(buildContent), 0600); err != nil {
+	if err := os.WriteFile(buildFile, []byte(buildContent), 0o600); err != nil {
 		t.Fatalf("failed to write build.gradle: %v", err)
 	}
 
@@ -1594,17 +1533,17 @@ func TestFindBuildFiles_SkipsSymlinks(t *testing.T) {
 
 	// Create real build.gradle
 	realBuildFile := filepath.Join(tmpDir, "build.gradle")
-	if err := os.WriteFile(realBuildFile, []byte("real file"), 0600); err != nil {
+	if err := os.WriteFile(realBuildFile, []byte("real file"), 0o600); err != nil {
 		t.Fatalf("failed to write real build.gradle: %v", err)
 	}
 
 	// Create a sensitive target file outside the project
 	sensitiveDir := filepath.Join(tmpDir, "sensitive")
-	if err := os.MkdirAll(sensitiveDir, 0755); err != nil {
+	if err := os.MkdirAll(sensitiveDir, 0o750); err != nil {
 		t.Fatalf("failed to create sensitive directory: %v", err)
 	}
 	sensitiveFile := filepath.Join(sensitiveDir, "secrets.txt")
-	if err := os.WriteFile(sensitiveFile, []byte("SECRET DATA"), 0600); err != nil {
+	if err := os.WriteFile(sensitiveFile, []byte("SECRET DATA"), 0o600); err != nil {
 		t.Fatalf("failed to write sensitive file: %v", err)
 	}
 
@@ -1646,7 +1585,7 @@ func TestFindBuildFiles_SkipsSymlinks(t *testing.T) {
 	}
 }
 
-// TestFindVersionKeyForArtifact_EdgeCases tests edge cases for version catalog key lookup
+// TestFindVersionKeyForArtifact_EdgeCases tests edge cases for version catalog key lookup.
 func TestFindVersionKeyForArtifact_EdgeCases(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -1682,6 +1621,23 @@ func TestFindVersionKeyForArtifact_EdgeCases(t *testing.T) {
 			versions:   nil,
 			expected:   "",
 		},
+		{
+			name:       "ambiguous artifact requires exact match",
+			artifactID: "netty-codec-http",
+			versions: map[string]any{
+				"netty":       "4.1.90.Final",
+				"netty-codec": "4.1.91.Final",
+			},
+			expected: "", // No fuzzy matching - must be exact
+		},
+		{
+			name:       "no fuzzy match - artifact contains version key",
+			artifactID: "netty-all",
+			versions: map[string]any{
+				"netty": "4.1.90.Final",
+			},
+			expected: "", // Previously would match "netty", now requires exact match
+		},
 	}
 
 	for _, tt := range tests {
@@ -1694,7 +1650,7 @@ func TestFindVersionKeyForArtifact_EdgeCases(t *testing.T) {
 	}
 }
 
-// TestGradleAnalyzer_AnalyzeRemote tests the unimplemented remote analysis
+// TestGradleAnalyzer_AnalyzeRemote tests the unimplemented remote analysis.
 func TestGradleAnalyzer_AnalyzeRemote(t *testing.T) {
 	ga := &GradleAnalyzer{}
 	files := map[string][]byte{
@@ -1710,7 +1666,7 @@ func TestGradleAnalyzer_AnalyzeRemote(t *testing.T) {
 	}
 }
 
-// TestAnalyzeVersionCatalogToml_EmptyFile tests empty TOML file handling
+// TestAnalyzeVersionCatalogToml_EmptyFile tests empty TOML file handling.
 func TestAnalyzeVersionCatalogToml_EmptyFile(t *testing.T) {
 	result := &analyzer.AnalysisResult{
 		Dependencies: make(map[string]*analyzer.DependencyInfo),
@@ -1723,7 +1679,7 @@ func TestAnalyzeVersionCatalogToml_EmptyFile(t *testing.T) {
 	}
 }
 
-// TestAnalyzeVersionCatalogToml_InvalidToml tests invalid TOML handling
+// TestAnalyzeVersionCatalogToml_InvalidToml tests invalid TOML handling.
 func TestAnalyzeVersionCatalogToml_InvalidToml(t *testing.T) {
 	result := &analyzer.AnalysisResult{
 		Dependencies: make(map[string]*analyzer.DependencyInfo),

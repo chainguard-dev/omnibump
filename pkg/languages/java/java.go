@@ -9,6 +9,7 @@ package java
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/chainguard-dev/clog"
@@ -16,6 +17,9 @@ import (
 	"github.com/chainguard-dev/omnibump/pkg/languages/java/gradle"
 	"github.com/chainguard-dev/omnibump/pkg/languages/java/maven"
 )
+
+// ErrNoBuildToolFound is returned when no supported build tool is detected.
+var ErrNoBuildToolFound = errors.New("no supported Java build tool found")
 
 // Java implements the Language interface for Java projects.
 // It auto-detects the build tool (Maven, Gradle, etc.) and delegates to it.
@@ -73,7 +77,7 @@ func (j *Java) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	if j.buildTool == nil {
 		buildTool := detectBuildTool(ctx, cfg.RootDir)
 		if buildTool == nil {
-			return fmt.Errorf("no supported Java build tool found in: %s", cfg.RootDir)
+			return fmt.Errorf("%w in: %s", ErrNoBuildToolFound, cfg.RootDir)
 		}
 		j.buildTool = buildTool
 	}
@@ -90,7 +94,7 @@ func (j *Java) Validate(ctx context.Context, cfg *languages.UpdateConfig) error 
 	if j.buildTool == nil {
 		buildTool := detectBuildTool(ctx, cfg.RootDir)
 		if buildTool == nil {
-			return fmt.Errorf("no supported Java build tool found in: %s", cfg.RootDir)
+			return fmt.Errorf("%w in: %s", ErrNoBuildToolFound, cfg.RootDir)
 		}
 		j.buildTool = buildTool
 	}
@@ -108,7 +112,7 @@ func (j *Java) GetBuildTool(ctx context.Context, dir string) (BuildTool, error) 
 
 	buildTool := detectBuildTool(ctx, dir)
 	if buildTool == nil {
-		return nil, fmt.Errorf("no supported Java build tool found in: %s", dir)
+		return nil, fmt.Errorf("%w in: %s", ErrNoBuildToolFound, dir)
 	}
 
 	j.buildTool = buildTool

@@ -26,10 +26,10 @@ import (
 type Gradle struct{}
 
 const (
-	// File permissions for writing updated build files
-	gradleFilePerms = 0600
+	// File permissions for writing updated build files.
+	gradleFilePerms = 0o600
 
-	// Version group index constants for regex patterns
+	// Version group index constants for regex patterns.
 	versionGroupOne = 1
 	versionGroupTwo = 2
 )
@@ -43,6 +43,18 @@ var (
 
 	// ErrInvalidVersion is returned when a version string fails validation.
 	ErrInvalidVersion = errors.New("invalid version string: contains disallowed characters")
+
+	// ErrRemoteAnalysisNotImplemented is returned when remote analysis is not implemented.
+	ErrRemoteAnalysisNotImplemented = errors.New("remote analysis not yet implemented")
+
+	// ErrNoBuildFiles is returned when no build.gradle files are found.
+	ErrNoBuildFiles = errors.New("no build.gradle or build.gradle.kts files found")
+
+	// ErrValidationFailed is returned when dependency validation fails.
+	ErrValidationFailed = errors.New("validation failed")
+
+	// ErrUnknownFileType is returned when an unknown Gradle file type is encountered.
+	ErrUnknownFileType = errors.New("unknown Gradle file type")
 )
 
 // gradleManifestFiles lists all files that can contain dependency versions.
@@ -77,6 +89,7 @@ func (g *Gradle) Name() string {
 
 // Detect checks if Gradle manifest files exist in the directory.
 func (g *Gradle) Detect(ctx context.Context, dir string) (bool, error) {
+	log := clog.FromContext(ctx)
 	// Check for build files in priority order
 	buildFiles := []string{
 		"build.gradle.kts", // Kotlin DSL (modern)
@@ -87,10 +100,12 @@ func (g *Gradle) Detect(ctx context.Context, dir string) (bool, error) {
 
 	for _, file := range buildFiles {
 		if _, err := os.Stat(filepath.Join(dir, file)); err == nil {
+			log.Debugf("Detected Gradle project at %s (found %s)", dir, file)
 			return true, nil
 		}
 	}
 
+	log.Debugf("No Gradle project detected at %s", dir)
 	return false, nil
 }
 
@@ -129,7 +144,7 @@ func (g *Gradle) Update(ctx context.Context, cfg *languages.UpdateConfig) error 
 	}
 
 	if len(buildFiles) == 0 {
-		return fmt.Errorf("no build.gradle or build.gradle.kts files found")
+		return ErrNoBuildFiles
 	}
 
 	log.Infof("Found %d build file(s)", len(buildFiles))
@@ -166,8 +181,8 @@ func (g *Gradle) Validate(ctx context.Context, cfg *languages.UpdateConfig) erro
 	}
 
 	if len(failures) > 0 {
-		return fmt.Errorf("validation failed for %d dependencies:\n  - %s",
-			len(failures), strings.Join(failures, "\n  - "))
+		return fmt.Errorf("%w for %d dependencies:\n  - %s",
+			ErrValidationFailed, len(failures), strings.Join(failures, "\n  - "))
 	}
 
 	log.Infof("Validation successful: all %d dependencies updated correctly", len(cfg.Dependencies))
@@ -230,19 +245,20 @@ func validateDirectDependency(ctx context.Context, depKey, expectedVersion strin
 // Finds:
 // - build.gradle[.kts] - Direct dependency declarations
 // - settings.gradle[.kts] - Inline version catalogs
-// - gradle/libs.versions.toml - TOML version catalogs
+// - gradle/libs.versions.toml - TOML version catalogs.
 func findBuildFiles(root string) ([]string, error) {
 	var files []string
 
 	// Walk directory tree looking for build files
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+	// Use WalkDir instead of Walk - it doesn't follow symlinks and provides type info directly
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
 		// Skip hidden directories and common non-build directories
-		if info.IsDir() {
-			name := info.Name()
+		if d.IsDir() {
+			name := d.Name()
 			if name[0] == '.' || skipDirs[name] {
 				return filepath.SkipDir
 			}
@@ -250,17 +266,13 @@ func findBuildFiles(root string) ([]string, error) {
 		}
 
 		// Skip symlinks to prevent arbitrary file corruption via symlink attacks
-		// Use Lstat to check the file itself, not what it points to
-		fileInfo, err := os.Lstat(path)
-		if err != nil {
-			return err
-		}
-		if fileInfo.Mode()&os.ModeSymlink != 0 {
+		// WalkDir provides type info directly without needing Lstat
+		if d.Type()&os.ModeSymlink != 0 {
 			return nil // Skip symlinks
 		}
 
 		// Check if this is a file that can contain dependency versions
-		if gradleManifestFiles[info.Name()] {
+		if gradleManifestFiles[d.Name()] {
 			files = append(files, path)
 		}
 
@@ -286,7 +298,7 @@ func updateBuildFile(ctx context.Context, path string, cfg *languages.UpdateConf
 	case "build.gradle", "build.gradle.kts":
 		return updateBuildGradle(ctx, path, cfg)
 	default:
-		return fmt.Errorf("unknown Gradle file type: %s", filename)
+		return fmt.Errorf("%w: %s", ErrUnknownFileType, filename)
 	}
 }
 
@@ -514,18 +526,13 @@ func updateVersionCatalogTomlContent(ctx context.Context, content string, cfg *l
 }
 
 // findVersionKeyForArtifact finds the version key for an artifact in the versions map.
-// Tries exact match first, then normalized match (e.g., "netty-all" contains "netty").
+// Only uses exact matching to avoid ambiguous matches.
+// For example, "netty-codec-http" could match both "netty" and "netty-codec",
+// leading to nondeterministic behavior due to map iteration order.
 func findVersionKeyForArtifact(artifactID string, versions map[string]any) string {
-	// Try exact match on artifactId
+	// Only use exact match on artifactId
 	if _, exists := versions[artifactID]; exists {
 		return artifactID
-	}
-
-	// Try normalized match (e.g., "netty-all" -> "netty")
-	for key := range versions {
-		if strings.Contains(artifactID, key) {
-			return key
-		}
 	}
 
 	return ""

@@ -7,6 +7,7 @@ package golang
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,7 +16,16 @@ import (
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
 )
 
+const (
+	updateStrategyReplace = "replace"
+)
+
+// ErrNoFilesProvided is returned when no files are provided for analysis.
+var ErrNoFilesProvided = errors.New("no files provided for analysis")
+
 // GolangAnalyzer implements the Analyzer interface for Go projects.
+//
+//nolint:revive // Explicit name preferred for clarity
 type GolangAnalyzer struct{}
 
 // Analyze performs dependency analysis on a Go project.
@@ -83,13 +93,13 @@ func (ga *GolangAnalyzer) Analyze(ctx context.Context, projectPath string) (*ana
 			info.Metadata["replaced"] = true
 			info.Metadata["replacedWith"] = repl.New.Path
 			info.Metadata["replaceVersion"] = repl.New.Version
-			info.UpdateStrategy = "replace"
+			info.UpdateStrategy = updateStrategyReplace
 		} else {
 			// Create entry for replaced dependency
 			info := &analyzer.DependencyInfo{
 				Name:           repl.Old.Path,
 				Version:        repl.Old.Version,
-				UpdateStrategy: "replace",
+				UpdateStrategy: updateStrategyReplace,
 				Metadata: map[string]any{
 					"replaced":       true,
 					"replacedWith":   repl.New.Path,
@@ -166,13 +176,13 @@ func (ga *GolangAnalyzer) AnalyzeFromContent(ctx context.Context, filename strin
 			info.Metadata["replaced"] = true
 			info.Metadata["replacedWith"] = repl.New.Path
 			info.Metadata["replaceVersion"] = repl.New.Version
-			info.UpdateStrategy = "replace"
+			info.UpdateStrategy = updateStrategyReplace
 		} else {
 			// Create entry for replaced dependency
 			info := &analyzer.DependencyInfo{
 				Name:           repl.Old.Path,
 				Version:        repl.Old.Version,
-				UpdateStrategy: "replace",
+				UpdateStrategy: updateStrategyReplace,
 				Metadata: map[string]any{
 					"replaced":       true,
 					"replacedWith":   repl.New.Path,
@@ -195,7 +205,7 @@ func (ga *GolangAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]
 	log := clog.FromContext(ctx)
 
 	if len(files) == 0 {
-		return nil, fmt.Errorf("no files provided for analysis")
+		return nil, ErrNoFilesProvided
 	}
 
 	result := &analyzer.RemoteAnalysisResult{

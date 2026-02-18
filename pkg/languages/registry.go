@@ -7,14 +7,21 @@ package languages
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 )
 
 var (
-	// registry holds all registered language implementations
+	// registry holds all registered language implementations.
 	registry = make(map[string]Language)
 	mu       sync.RWMutex
+
+	// ErrLanguageNotRegistered is returned when a language is not found in the registry.
+	ErrLanguageNotRegistered = errors.New("language not registered")
+
+	// ErrNoLanguageDetected is returned when no supported language is detected.
+	ErrNoLanguageDetected = errors.New("no supported language detected")
 )
 
 // Register adds a language implementation to the registry.
@@ -31,7 +38,7 @@ func Get(name string) (Language, error) {
 	defer mu.RUnlock()
 	lang, ok := registry[name]
 	if !ok {
-		return nil, fmt.Errorf("language %q not registered", name)
+		return nil, fmt.Errorf("%w: %q", ErrLanguageNotRegistered, name)
 	}
 	return lang, nil
 }
@@ -63,7 +70,7 @@ func DetectLanguage(ctx context.Context, dir string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("no supported language detected in directory: %s", dir)
+	return "", fmt.Errorf("%w in directory: %s", ErrNoLanguageDetected, dir)
 }
 
 // DetectLanguages returns all languages detected in the given directory.
@@ -84,7 +91,7 @@ func DetectLanguages(ctx context.Context, dir string) ([]string, error) {
 	}
 
 	if len(detected) == 0 {
-		return nil, fmt.Errorf("no supported language detected in directory: %s", dir)
+		return nil, fmt.Errorf("%w in directory: %s", ErrNoLanguageDetected, dir)
 	}
 
 	return detected, nil

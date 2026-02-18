@@ -6,20 +6,38 @@ SPDX-License-Identifier: Apache-2.0
 package omnibump
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/chainguard-dev/clog"
-	"github.com/ghodss/yaml"
-	"github.com/spf13/cobra"
-
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
 	"github.com/chainguard-dev/omnibump/pkg/config"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 	"github.com/chainguard-dev/omnibump/pkg/languages/golang"
 	"github.com/chainguard-dev/omnibump/pkg/languages/java"
 	"github.com/chainguard-dev/omnibump/pkg/languages/rust"
+	"github.com/ghodss/yaml"
+	"github.com/spf13/cobra"
+)
+
+const (
+	languageAuto  = "auto"
+	languageJava  = "java"
+	languageMaven = "maven" // Deprecated, use java
+)
+
+var (
+	// ErrAnalyzerNotAvailable is returned when an analyzer is not available for a build tool.
+	ErrAnalyzerNotAvailable = errors.New("analyzer not available")
+
+	// ErrAnalysisNotImplemented is returned when analysis is not yet implemented for a language.
+	ErrAnalysisNotImplemented = errors.New("analysis not yet implemented")
+
+	// ErrUnsupportedOutputFormat is returned when an invalid output format is specified.
+	ErrUnsupportedOutputFormat = errors.New("unsupported output format")
 )
 
 type analyzeFlags struct {
@@ -82,12 +100,12 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	detectedLang := analyzeF.language
 
 	// Handle backward compatibility: "maven" -> "java"
-	if detectedLang == "maven" {
+	if detectedLang == languageMaven {
 		log.Warnf("Language 'maven' is deprecated, use 'java' instead")
-		detectedLang = "java"
+		detectedLang = languageJava
 	}
 
-	if detectedLang == "auto" || detectedLang == "" {
+	if detectedLang == languageAuto || detectedLang == "" {
 		var err error
 		detectedLang, err = languages.DetectLanguage(ctx, projectPath)
 		if err != nil {
@@ -99,7 +117,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	// Get analyzer implementation
 	var projectAnalyzer analyzer.Analyzer
 	switch detectedLang {
-	case "java":
+	case languageJava:
 		// Get the Java language and detect build tool
 		javaLang := &java.Java{}
 		buildTool, err := javaLang.GetBuildTool(ctx, projectPath)
@@ -108,14 +126,14 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		}
 		projectAnalyzer = buildTool.GetAnalyzer()
 		if projectAnalyzer == nil {
-			return fmt.Errorf("analyzer not available for build tool: %s", buildTool.Name())
+			return fmt.Errorf("%w for build tool: %s", ErrAnalyzerNotAvailable, buildTool.Name())
 		}
 	case "go":
 		projectAnalyzer = &golang.GolangAnalyzer{}
 	case "rust":
 		projectAnalyzer = &rust.RustAnalyzer{}
 	default:
-		return fmt.Errorf("analysis not yet implemented for language: %s", detectedLang)
+		return fmt.Errorf("%w for language: %s", ErrAnalysisNotImplemented, detectedLang)
 	}
 
 	// Perform analysis
@@ -127,26 +145,10 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	// If dependencies are provided, recommend strategy
 	var strategy *analyzer.Strategy
 	if analyzeF.depsFile != "" || analyzeF.packages != "" {
-		// Load dependencies
-		var deps []analyzer.Dependency
-		if analyzeF.depsFile != "" {
-			cfg, err := config.LoadConfig(ctx, analyzeF.depsFile)
-			if err != nil {
-				return fmt.Errorf("failed to load deps file: %w", err)
-			}
-			deps = convertPackagesToAnalyzerDeps(cfg.Packages)
-		} else {
-			packages, err := config.ParseInlinePackages(analyzeF.packages)
-			if err != nil {
-				return fmt.Errorf("failed to parse packages: %w", err)
-			}
-			deps = convertPackagesToAnalyzerDeps(packages)
-		}
-
-		// Get strategy recommendation
-		strategy, err = projectAnalyzer.RecommendStrategy(ctx, analysis, deps)
+		var err error
+		strategy, err = loadDepsAndRecommendStrategy(ctx, projectAnalyzer, analysis, analyzeF.depsFile, analyzeF.packages)
 		if err != nil {
-			return fmt.Errorf("failed to recommend strategy: %w", err)
+			return err
 		}
 	}
 
@@ -182,7 +184,7 @@ func outputAnalysisResults(analysis *analyzer.AnalysisResult, strategy *analyzer
 	case "text":
 		return outputText(analysis, strategy)
 	default:
-		return fmt.Errorf("unsupported output format: %s", format)
+		return fmt.Errorf("%w: %s", ErrUnsupportedOutputFormat, format)
 	}
 }
 
@@ -223,55 +225,7 @@ func outputText(analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy) 
 
 	// Show strategy if provided
 	if strategy != nil {
-		fmt.Println("Update Strategy")
-		fmt.Println("===============")
-		fmt.Println()
-
-		if len(strategy.PropertyUpdates) > 0 {
-			fmt.Println("Property Updates:")
-			fmt.Println("-----------------")
-			for prop, version := range strategy.PropertyUpdates {
-				currentValue := analysis.Properties[prop]
-				if currentValue != "" {
-					fmt.Printf("  %s: %s -> %s\n", prop, currentValue, version)
-				} else {
-					fmt.Printf("  %s: (new) -> %s\n", prop, version)
-				}
-
-				// Show affected dependencies
-				if affected, ok := strategy.AffectedDependencies[prop]; ok && len(affected) > 0 {
-					fmt.Printf("    Affects %d dependencies:\n", len(affected))
-					for _, dep := range affected {
-						fmt.Printf("      - %s\n", dep)
-					}
-				}
-			}
-			fmt.Println()
-		}
-
-		if len(strategy.DirectUpdates) > 0 {
-			fmt.Println("Direct Dependency Updates:")
-			fmt.Println("--------------------------")
-			for _, dep := range strategy.DirectUpdates {
-				depKey := dep.Name
-				if depInfo, exists := analysis.Dependencies[depKey]; exists {
-					fmt.Printf("  %s: %s -> %s\n", depKey, depInfo.Version, dep.Version)
-				} else {
-					fmt.Printf("  %s: (new) -> %s\n", depKey, dep.Version)
-				}
-			}
-			fmt.Println()
-		}
-
-		if len(strategy.Warnings) > 0 {
-			fmt.Println("Warnings:")
-			fmt.Println("---------")
-			for _, warning := range strategy.Warnings {
-				fmt.Printf("  ⚠ %s\n", warning)
-			}
-			fmt.Println()
-		}
-
+		printUpdateStrategy(analysis, strategy)
 		fmt.Printf("Summary: %d property updates, %d direct dependency updates\n",
 			len(strategy.PropertyUpdates), len(strategy.DirectUpdates))
 	}
@@ -311,6 +265,31 @@ func outputYAML(analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy) 
 	return nil
 }
 
+// loadDepsAndRecommendStrategy loads dependencies and gets a strategy recommendation.
+func loadDepsAndRecommendStrategy(ctx context.Context, projectAnalyzer analyzer.Analyzer, analysis *analyzer.AnalysisResult, depsFile, packages string) (*analyzer.Strategy, error) {
+	var deps []analyzer.Dependency
+	if depsFile != "" {
+		cfg, err := config.LoadConfig(ctx, depsFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load deps file: %w", err)
+		}
+		deps = convertPackagesToAnalyzerDeps(cfg.Packages)
+	} else {
+		pkgs, err := config.ParseInlinePackages(packages)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse packages: %w", err)
+		}
+		deps = convertPackagesToAnalyzerDeps(pkgs)
+	}
+
+	// Get strategy recommendation
+	strategy, err := projectAnalyzer.RecommendStrategy(ctx, analysis, deps)
+	if err != nil {
+		return nil, fmt.Errorf("failed to recommend strategy: %w", err)
+	}
+	return strategy, nil
+}
+
 func convertPackagesToAnalyzerDeps(packages []config.Package) []analyzer.Dependency {
 	deps := make([]analyzer.Dependency, 0, len(packages))
 	for _, pkg := range packages {
@@ -345,11 +324,11 @@ func writeDirectUpdatesFile(filename string, deps []analyzer.Dependency) error {
 			Type:    dep.Type,
 		}
 
-		if groupId, ok := dep.Metadata["groupId"].(string); ok {
-			pkg.GroupID = groupId
+		if groupID, ok := dep.Metadata["groupId"].(string); ok {
+			pkg.GroupID = groupID
 		}
-		if artifactId, ok := dep.Metadata["artifactId"].(string); ok {
-			pkg.ArtifactID = artifactId
+		if artifactID, ok := dep.Metadata["artifactId"].(string); ok {
+			pkg.ArtifactID = artifactID
 		}
 
 		packages = append(packages, pkg)
@@ -361,7 +340,7 @@ func writeDirectUpdatesFile(filename string, deps []analyzer.Dependency) error {
 		return err
 	}
 
-	return os.WriteFile(filename, data, 0600)
+	return os.WriteFile(filename, data, 0o600)
 }
 
 func writePropertiesFile(filename string, properties map[string]string) error {
@@ -382,5 +361,72 @@ func writePropertiesFile(filename string, properties map[string]string) error {
 		return err
 	}
 
-	return os.WriteFile(filename, data, 0600)
+	return os.WriteFile(filename, data, 0o600)
+}
+
+// printUpdateStrategy prints the update strategy in human-readable format.
+func printUpdateStrategy(analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy) {
+	fmt.Println("Update Strategy")
+	fmt.Println("===============")
+	fmt.Println()
+
+	if len(strategy.PropertyUpdates) > 0 {
+		printPropertyUpdates(analysis, strategy)
+	}
+
+	if len(strategy.DirectUpdates) > 0 {
+		printDirectUpdates(analysis, strategy)
+	}
+
+	if len(strategy.Warnings) > 0 {
+		printStrategyWarnings(strategy)
+	}
+}
+
+// printPropertyUpdates prints property-based updates.
+func printPropertyUpdates(analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy) {
+	fmt.Println("Property Updates:")
+	fmt.Println("-----------------")
+	for prop, version := range strategy.PropertyUpdates {
+		currentValue := analysis.Properties[prop]
+		if currentValue != "" {
+			fmt.Printf("  %s: %s -> %s\n", prop, currentValue, version)
+		} else {
+			fmt.Printf("  %s: (new) -> %s\n", prop, version)
+		}
+
+		// Show affected dependencies
+		if affected, ok := strategy.AffectedDependencies[prop]; ok && len(affected) > 0 {
+			fmt.Printf("    Affects %d dependencies:\n", len(affected))
+			for _, dep := range affected {
+				fmt.Printf("      - %s\n", dep)
+			}
+		}
+	}
+	fmt.Println()
+}
+
+// printDirectUpdates prints direct dependency updates.
+func printDirectUpdates(analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy) {
+	fmt.Println("Direct Dependency Updates:")
+	fmt.Println("--------------------------")
+	for _, dep := range strategy.DirectUpdates {
+		depKey := dep.Name
+		if depInfo, exists := analysis.Dependencies[depKey]; exists {
+			fmt.Printf("  %s: %s -> %s\n", depKey, depInfo.Version, dep.Version)
+		} else {
+			fmt.Printf("  %s: (new) -> %s\n", depKey, dep.Version)
+		}
+	}
+	fmt.Println()
+}
+
+// printStrategyWarnings prints strategy warnings.
+func printStrategyWarnings(strategy *analyzer.Strategy) {
+	fmt.Println("Warnings:")
+	fmt.Println("---------")
+	for _, warning := range strategy.Warnings {
+		fmt.Printf("  ⚠ %s\n", warning)
+	}
+	fmt.Println()
 }

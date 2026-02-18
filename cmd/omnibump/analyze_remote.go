@@ -8,6 +8,7 @@ package omnibump
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -16,14 +17,33 @@ import (
 	"strings"
 
 	"github.com/chainguard-dev/clog"
-	"github.com/ghodss/yaml"
-	"github.com/google/go-github/v75/github"
-	"github.com/spf13/cobra"
-
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
 	"github.com/chainguard-dev/omnibump/pkg/config"
 	"github.com/chainguard-dev/omnibump/pkg/languages/golang"
 	"github.com/chainguard-dev/omnibump/pkg/remote"
+	"github.com/ghodss/yaml"
+	"github.com/google/go-github/v75/github"
+	"github.com/spf13/cobra"
+)
+
+var (
+	// ErrGitRefRequired is returned when a git reference is not provided.
+	ErrGitRefRequired = errors.New("git reference required")
+
+	// ErrGitHubTokenRequired is returned when a GitHub token is not provided.
+	ErrGitHubTokenRequired = errors.New("GitHub token required")
+
+	// ErrRemoteAnalysisNotImplemented is returned when remote analysis is not implemented for a language.
+	ErrRemoteAnalysisNotImplemented = errors.New("remote analysis not yet implemented")
+
+	// ErrNoManifestFilesFound is returned when no manifest files are found.
+	ErrNoManifestFilesFound = errors.New("no manifest files found")
+
+	// ErrInvalidGitHubURL is returned when a GitHub URL cannot be parsed.
+	ErrInvalidGitHubURL = errors.New("invalid GitHub URL format")
+
+	// ErrFileContentNil is returned when file content is unexpectedly nil.
+	ErrFileContentNil = errors.New("file content is nil")
 )
 
 type analyzeRemoteFlags struct {
@@ -101,7 +121,7 @@ func runAnalyzeRemote(cmd *cobra.Command, args []string) error {
 	}
 
 	if ref == "" {
-		return fmt.Errorf("git reference required: use --ref flag or include in URL (e.g., /tree/v1.0.0)")
+		return fmt.Errorf("%w: use --ref flag or include in URL (e.g., /tree/v1.0.0)", ErrGitRefRequired)
 	}
 
 	// Get GitHub token (required for Code Search API)
@@ -110,7 +130,7 @@ func runAnalyzeRemote(cmd *cobra.Command, args []string) error {
 		token = os.Getenv("GITHUB_TOKEN")
 	}
 	if token == "" {
-		return fmt.Errorf("GitHub token required: set GITHUB_TOKEN environment variable (e.g., export GITHUB_TOKEN=$(gh auth token)) or use --github-token flag")
+		return fmt.Errorf("%w: set GITHUB_TOKEN environment variable (e.g., export GITHUB_TOKEN=$(gh auth token)) or use --github-token flag", ErrGitHubTokenRequired)
 	}
 
 	// Create GitHub client and fetcher
@@ -142,7 +162,7 @@ func runAnalyzeRemote(cmd *cobra.Command, args []string) error {
 		}
 		projectAnalyzer = &golang.GolangAnalyzer{}
 	default:
-		return fmt.Errorf("remote analysis not yet implemented for language: %s", analyzeRemoteF.language)
+		return fmt.Errorf("%w for language: %s", ErrRemoteAnalysisNotImplemented, analyzeRemoteF.language)
 	}
 
 	// Search for manifest files with fallback
@@ -171,33 +191,10 @@ func runAnalyzeRemote(cmd *cobra.Command, args []string) error {
 	// If packages are provided, recommend update strategy
 	var strategies map[string]*analyzer.Strategy
 	if analyzeRemoteF.depsFile != "" || analyzeRemoteF.packages != "" {
-		// Load dependencies
-		var deps []analyzer.Dependency
-		if analyzeRemoteF.depsFile != "" {
-			cfg, err := config.LoadConfig(ctx, analyzeRemoteF.depsFile)
-			if err != nil {
-				return fmt.Errorf("failed to load deps file: %w", err)
-			}
-			deps = convertPackagesToAnalyzerDeps(cfg.Packages)
-		} else {
-			packages, err := config.ParseInlinePackages(analyzeRemoteF.packages)
-			if err != nil {
-				return fmt.Errorf("failed to parse packages: %w", err)
-			}
-			deps = convertPackagesToAnalyzerDeps(packages)
-		}
-
-		log.Infof("Checking %d package(s) for update recommendations", len(deps))
-
-		// Get strategy recommendation for each file
-		strategies = make(map[string]*analyzer.Strategy)
-		for _, fa := range result.FileAnalyses {
-			strategy, err := projectAnalyzer.RecommendStrategy(ctx, fa.Analysis, deps)
-			if err != nil {
-				log.Warnf("Failed to recommend strategy for %s: %v", fa.FilePath, err)
-				continue
-			}
-			strategies[fa.FilePath] = strategy
+		var err error
+		strategies, err = loadRemoteDepsAndRecommendStrategies(ctx, projectAnalyzer, result, analyzeRemoteF.depsFile, analyzeRemoteF.packages)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -223,7 +220,7 @@ func searchManifestFilesWithFallback(ctx context.Context, fetcher *remote.GitHub
 	}
 
 	if len(files) == 0 {
-		return nil, fmt.Errorf("no manifest files found for language: %s (tried: %v)", language, patterns)
+		return nil, fmt.Errorf("%w for language: %s (tried: %v)", ErrNoManifestFilesFound, language, patterns)
 	}
 
 	// For Go projects, prioritize go.mod over vendor.mod when both exist in same directory
@@ -235,7 +232,41 @@ func searchManifestFilesWithFallback(ctx context.Context, fetcher *remote.GitHub
 	return files, nil
 }
 
-// prioritizeGoModFiles filters files to prefer go.mod over vendor.mod in the same directory
+// prioritizeGoModFiles filters files to prefer go.mod over vendor.mod in the same directory.
+// loadRemoteDepsAndRecommendStrategies loads dependencies and recommends strategies for each file.
+func loadRemoteDepsAndRecommendStrategies(ctx context.Context, projectAnalyzer analyzer.Analyzer, result *analyzer.RemoteAnalysisResult, depsFile, packages string) (map[string]*analyzer.Strategy, error) {
+	log := clog.FromContext(ctx)
+
+	var deps []analyzer.Dependency
+	if depsFile != "" {
+		cfg, err := config.LoadConfig(ctx, depsFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load deps file: %w", err)
+		}
+		deps = convertPackagesToAnalyzerDeps(cfg.Packages)
+	} else {
+		pkgs, err := config.ParseInlinePackages(packages)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse packages: %w", err)
+		}
+		deps = convertPackagesToAnalyzerDeps(pkgs)
+	}
+
+	log.Infof("Checking %d package(s) for update recommendations", len(deps))
+
+	// Get strategy recommendation for each file
+	strategies := make(map[string]*analyzer.Strategy)
+	for _, fa := range result.FileAnalyses {
+		strategy, err := projectAnalyzer.RecommendStrategy(ctx, fa.Analysis, deps)
+		if err != nil {
+			log.Warnf("Failed to recommend strategy for %s: %v", fa.FilePath, err)
+			continue
+		}
+		strategies[fa.FilePath] = strategy
+	}
+	return strategies, nil
+}
+
 func prioritizeGoModFiles(files []remote.RemoteFile) []remote.RemoteFile {
 	// Build a map of directory -> files
 	dirFiles := make(map[string][]remote.RemoteFile)
@@ -300,7 +331,7 @@ func parseGitHubURL(url string) (owner, repo, ref string, err error) {
 	matches := re.FindStringSubmatch(url)
 
 	if len(matches) < 3 {
-		return "", "", "", fmt.Errorf("invalid GitHub URL format: %s", url)
+		return "", "", "", fmt.Errorf("%w: %s", ErrInvalidGitHubURL, url)
 	}
 
 	owner = matches[1]
@@ -321,7 +352,7 @@ func outputRemoteAnalysisResults(result *analyzer.RemoteAnalysisResult, strategi
 	case "text":
 		return outputRemoteText(result, strategies)
 	default:
-		return fmt.Errorf("unsupported output format: %s", format)
+		return fmt.Errorf("%w: %s", ErrUnsupportedOutputFormat, format)
 	}
 }
 
@@ -366,67 +397,11 @@ func outputRemoteText(result *analyzer.RemoteAnalysisResult, strategies map[stri
 
 		fmt.Println()
 
-		// Show strategy if provided
+		// Show strategy or key dependencies
 		if strategies != nil {
-			if strategy, ok := strategies[fa.FilePath]; ok {
-				fmt.Println("  Update Strategy:")
-				fmt.Println("  ----------------")
-
-				if len(strategy.DirectUpdates) > 0 {
-					fmt.Println("  Direct Updates:")
-					for _, dep := range strategy.DirectUpdates {
-						if depInfo, exists := analysis.Dependencies[dep.Name]; exists {
-							fmt.Printf("    %s: %s -> %s\n", dep.Name, depInfo.Version, dep.Version)
-						} else {
-							fmt.Printf("    %s: (not found) -> %s\n", dep.Name, dep.Version)
-						}
-					}
-				}
-
-				if len(strategy.PropertyUpdates) > 0 {
-					fmt.Println("  Property Updates:")
-					for prop, version := range strategy.PropertyUpdates {
-						currentValue := analysis.Properties[prop]
-						if currentValue != "" {
-							fmt.Printf("    %s: %s -> %s\n", prop, currentValue, version)
-						} else {
-							fmt.Printf("    %s: (new) -> %s\n", prop, version)
-						}
-					}
-				}
-
-				if len(strategy.Warnings) > 0 {
-					fmt.Println("  Warnings:")
-					for _, warning := range strategy.Warnings {
-						fmt.Printf("    ⚠ %s\n", warning)
-					}
-				}
-				fmt.Println()
-			}
-		}
-
-		// Show some key dependencies (if no strategy shown)
-		if strategies == nil && len(analysis.Dependencies) > 0 {
-			fmt.Println("  Key Dependencies:")
-			count := 0
-			for name, dep := range analysis.Dependencies {
-				if count >= 10 {
-					fmt.Printf("  ... and %d more\n", len(analysis.Dependencies)-10)
-					break
-				}
-				flags := ""
-				if dep.Transitive {
-					flags += " (indirect)"
-				}
-				if dep.UpdateStrategy == "replace" {
-					if replacedWith, ok := dep.Metadata["replacedWith"].(string); ok {
-						flags += fmt.Sprintf(" [replaced with %s]", replacedWith)
-					}
-				}
-				fmt.Printf("    - %s@%s%s\n", name, dep.Version, flags)
-				count++
-			}
-			fmt.Println()
+			printFileStrategy(fa, analysis, strategies)
+		} else if len(analysis.Dependencies) > 0 {
+			printKeyDependencies(analysis)
 		}
 	}
 
@@ -472,7 +447,7 @@ func outputRemoteYAML(result *analyzer.RemoteAnalysisResult, strategies map[stri
 	return nil
 }
 
-// Simple GitHub client for remote analysis
+// Simple GitHub client for remote analysis.
 type githubClient struct {
 	client *github.Client
 }
@@ -492,7 +467,7 @@ func newGitHubClient(token string) *githubClient {
 	}
 }
 
-// tokenTransport adds Authorization header to requests
+// tokenTransport adds Authorization header to requests.
 type tokenTransport struct {
 	token string
 }
@@ -537,7 +512,7 @@ func (c *githubClient) GetFileContent(ctx context.Context, owner, repo, path, re
 	}
 
 	if fileContent == nil {
-		return nil, fmt.Errorf("file content is nil")
+		return nil, ErrFileContentNil
 	}
 
 	content, err := fileContent.GetContent()
@@ -546,4 +521,70 @@ func (c *githubClient) GetFileContent(ctx context.Context, owner, repo, path, re
 	}
 
 	return []byte(content), nil
+}
+
+// printFileStrategy prints the update strategy for a specific file.
+func printFileStrategy(fa analyzer.FileAnalysis, analysis *analyzer.AnalysisResult, strategies map[string]*analyzer.Strategy) {
+	strategy, ok := strategies[fa.FilePath]
+	if !ok {
+		return
+	}
+
+	fmt.Println("  Update Strategy:")
+	fmt.Println("  ----------------")
+
+	if len(strategy.DirectUpdates) > 0 {
+		fmt.Println("  Direct Updates:")
+		for _, dep := range strategy.DirectUpdates {
+			if depInfo, exists := analysis.Dependencies[dep.Name]; exists {
+				fmt.Printf("    %s: %s -> %s\n", dep.Name, depInfo.Version, dep.Version)
+			} else {
+				fmt.Printf("    %s: (not found) -> %s\n", dep.Name, dep.Version)
+			}
+		}
+	}
+
+	if len(strategy.PropertyUpdates) > 0 {
+		fmt.Println("  Property Updates:")
+		for prop, version := range strategy.PropertyUpdates {
+			currentValue := analysis.Properties[prop]
+			if currentValue != "" {
+				fmt.Printf("    %s: %s -> %s\n", prop, currentValue, version)
+			} else {
+				fmt.Printf("    %s: (new) -> %s\n", prop, version)
+			}
+		}
+	}
+
+	if len(strategy.Warnings) > 0 {
+		fmt.Println("  Warnings:")
+		for _, warning := range strategy.Warnings {
+			fmt.Printf("    ⚠ %s\n", warning)
+		}
+	}
+	fmt.Println()
+}
+
+// printKeyDependencies prints a summary of key dependencies.
+func printKeyDependencies(analysis *analyzer.AnalysisResult) {
+	fmt.Println("  Key Dependencies:")
+	count := 0
+	for name, dep := range analysis.Dependencies {
+		if count >= 10 {
+			fmt.Printf("  ... and %d more\n", len(analysis.Dependencies)-10)
+			break
+		}
+		flags := ""
+		if dep.Transitive {
+			flags += " (indirect)"
+		}
+		if dep.UpdateStrategy == "replace" {
+			if replacedWith, ok := dep.Metadata["replacedWith"].(string); ok {
+				flags += fmt.Sprintf(" [replaced with %s]", replacedWith)
+			}
+		}
+		fmt.Printf("    - %s@%s%s\n", name, dep.Version, flags)
+		count++
+	}
+	fmt.Println()
 }

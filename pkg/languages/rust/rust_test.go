@@ -63,7 +63,7 @@ func TestRust_Detect(t *testing.T) {
 			// Create test files
 			for _, file := range tt.files {
 				path := filepath.Join(tmpDir, file)
-				err := os.WriteFile(path, []byte("# test content"), 0600)
+				err := os.WriteFile(path, []byte("# test content"), 0o600)
 				require.NoError(t, err)
 			}
 
@@ -96,7 +96,7 @@ func TestRust_Update_IOReadError(t *testing.T) {
 
 	// Create an empty Cargo.lock (will fail to parse)
 	cargoLockPath := filepath.Join(tmpDir, "Cargo.lock")
-	err := os.WriteFile(cargoLockPath, []byte("invalid content"), 0600)
+	err := os.WriteFile(cargoLockPath, []byte("invalid content"), 0o600)
 	require.NoError(t, err)
 
 	r := &Rust{}
@@ -133,7 +133,7 @@ func TestRust_Validate_IOReadError(t *testing.T) {
 
 	// Create an invalid Cargo.lock
 	cargoLockPath := filepath.Join(tmpDir, "Cargo.lock")
-	err := os.WriteFile(cargoLockPath, []byte("invalid toml content"), 0600)
+	err := os.WriteFile(cargoLockPath, []byte("invalid toml content"), 0o600)
 	require.NoError(t, err)
 
 	r := &Rust{}
@@ -256,7 +256,7 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 `
 	cargoLockPath := filepath.Join(tmpDir, "Cargo.lock")
-	err := os.WriteFile(cargoLockPath, []byte(cargoLockContent), 0600)
+	err := os.WriteFile(cargoLockPath, []byte(cargoLockContent), 0o600)
 	require.NoError(t, err)
 
 	r := &Rust{}
@@ -285,7 +285,7 @@ version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 `
 	cargoLockPath := filepath.Join(tmpDir, "Cargo.lock")
-	err := os.WriteFile(cargoLockPath, []byte(cargoLockContent), 0600)
+	err := os.WriteFile(cargoLockPath, []byte(cargoLockContent), 0o600)
 	require.NoError(t, err)
 
 	r := &Rust{}
@@ -313,7 +313,7 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 `
 	cargoLockPath := filepath.Join(tmpDir, "Cargo.lock")
-	err := os.WriteFile(cargoLockPath, []byte(cargoLockContent), 0600)
+	err := os.WriteFile(cargoLockPath, []byte(cargoLockContent), 0o600)
 	require.NoError(t, err)
 
 	r := &Rust{}
@@ -342,7 +342,7 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 `
 	cargoLockPath := filepath.Join(tmpDir, "Cargo.lock")
-	err := os.WriteFile(cargoLockPath, []byte(cargoLockContent), 0600)
+	err := os.WriteFile(cargoLockPath, []byte(cargoLockContent), 0o600)
 	require.NoError(t, err)
 
 	r := &Rust{}
@@ -371,7 +371,7 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 `
 	cargoLockPath := filepath.Join(tmpDir, "Cargo.lock")
-	err := os.WriteFile(cargoLockPath, []byte(cargoLockContent), 0600)
+	err := os.WriteFile(cargoLockPath, []byte(cargoLockContent), 0o600)
 	require.NoError(t, err)
 
 	analyzer := &RustAnalyzer{}

@@ -6,6 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 package omnibump
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -63,7 +64,7 @@ func TestTokenTransport_OnlyAddsHeaderForGitHubAPI(t *testing.T) {
 			defer server.Close()
 
 			// Create request with the test URL's host
-			req, err := http.NewRequest("GET", tt.requestURL, nil)
+			req, err := http.NewRequestWithContext(context.Background(), "GET", tt.requestURL, nil)
 			if err != nil {
 				t.Fatalf("failed to create request: %v", err)
 			}
@@ -84,10 +85,15 @@ func TestTokenTransport_OnlyAddsHeaderForGitHubAPI(t *testing.T) {
 			}
 
 			client := &http.Client{Transport: testTransport}
-			_, err = client.Do(req)
+			resp, err := client.Do(req)
 			if err != nil {
 				t.Fatalf("request failed: %v", err)
 			}
+			defer func() {
+				if err := resp.Body.Close(); err != nil {
+					t.Errorf("failed to close response body: %v", err)
+				}
+			}()
 
 			// Check if Authorization header was added
 			authHeader := capturedHeaders.Get("Authorization")
@@ -105,7 +111,7 @@ func TestTokenTransport_OnlyAddsHeaderForGitHubAPI(t *testing.T) {
 	}
 }
 
-// testRoundTripper wraps tokenTransport and redirects requests to a test server
+// testRoundTripper wraps tokenTransport and redirects requests to a test server.
 type testRoundTripper struct {
 	wrapped    http.RoundTripper
 	testServer string
@@ -127,7 +133,7 @@ func (t *testRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	return http.DefaultTransport.RoundTrip(modifiedReq)
 }
 
-// TestTokenTransport_PreventsCrossHostTokenLeak simulates a redirect attack
+// TestTokenTransport_PreventsCrossHostTokenLeak simulates a redirect attack.
 func TestTokenTransport_PreventsCrossHostTokenLeak(t *testing.T) {
 	testToken := "secret-token-that-should-not-leak"
 
@@ -140,7 +146,7 @@ func TestTokenTransport_PreventsCrossHostTokenLeak(t *testing.T) {
 	defer attackerServer.Close()
 
 	// Simulate what would happen if GitHub redirected to attacker's server
-	req, err := http.NewRequest("GET", attackerServer.URL, nil)
+	req, err := http.NewRequestWithContext(context.Background(), "GET", attackerServer.URL, nil)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
@@ -149,10 +155,17 @@ func TestTokenTransport_PreventsCrossHostTokenLeak(t *testing.T) {
 	req.URL.Host = "attacker.example.com"
 
 	transport := &tokenTransport{token: testToken}
-	_, err = transport.RoundTrip(req)
+	resp, err := transport.RoundTrip(req)
 	// Request will fail because we're using a fake host, but that's OK
 	// We're testing that the header wasn't added before the failure
 	_ = err
+	if resp != nil {
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				t.Errorf("failed to close response body: %v", err)
+			}
+		}()
+	}
 
 	// Verify token was NOT leaked to attacker
 	if leakedToken != "" {
