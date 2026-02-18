@@ -40,6 +40,9 @@ const (
 
 	// MaxPatchFileSize limits patch/properties file size to prevent resource exhaustion.
 	MaxPatchFileSize = 10 * 1024 * 1024 // 10 MB
+
+	// MaxPomFileSize limits POM file size to prevent resource exhaustion.
+	MaxPomFileSize = 10 * 1024 * 1024 // 10 MB
 )
 
 // Patch represents a Maven dependency patch.
@@ -190,6 +193,15 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 
 // ParsePom parses a POM file and returns a gopom.Project.
 func ParsePom(pomPath string) (*gopom.Project, error) {
+	// Check file size before reading to prevent resource exhaustion.
+	fileInfo, err := os.Stat(pomPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat POM file %s: %w", pomPath, err)
+	}
+	if fileInfo.Size() > MaxPomFileSize {
+		return nil, fmt.Errorf("%w: POM file %s is %d bytes (max: %d)", ErrFileTooLarge, pomPath, fileInfo.Size(), MaxPomFileSize)
+	}
+
 	project, err := gopom.Parse(pomPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse POM file %s: %w", pomPath, err)

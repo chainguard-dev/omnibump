@@ -21,9 +21,17 @@ import (
 	"golang.org/x/mod/semver"
 )
 
+const (
+	// MaxGoModSize limits go.mod file size to prevent resource exhaustion.
+	MaxGoModSize = 10 * 1024 * 1024 // 10 MB
+)
+
 var (
 	// ErrPackageDowngrade is returned when trying to downgrade a package version.
 	ErrPackageDowngrade = errors.New("package downgrade not allowed")
+
+	// ErrGoModTooLarge is returned when a go.mod file exceeds size limits.
+	ErrGoModTooLarge = errors.New("go.mod file too large")
 
 	// ErrPackageNotFound is returned when a package is not found in go.mod.
 	ErrPackageNotFound = errors.New("package not found in go.mod")
@@ -47,6 +55,16 @@ type pkgVersion struct {
 // Ported from gobump/pkg/update/update.go.
 func ParseGoModfile(path string) (*modfile.File, []byte, error) {
 	path = filepath.Clean(path)
+
+	// Check file size before reading to prevent resource exhaustion.
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if fileInfo.Size() > MaxGoModSize {
+		return nil, nil, fmt.Errorf("%w: %d bytes (max: %d)", ErrGoModTooLarge, fileInfo.Size(), MaxGoModSize)
+	}
+
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return nil, content, err
