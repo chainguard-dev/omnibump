@@ -15,6 +15,10 @@ import (
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
 )
 
+const (
+	updateStrategyReplace = "replace"
+)
+
 // GolangAnalyzer implements the Analyzer interface for Go projects.
 //
 //nolint:revive // Explicit name preferred for clarity
@@ -85,13 +89,13 @@ func (ga *GolangAnalyzer) Analyze(ctx context.Context, projectPath string) (*ana
 			info.Metadata["replaced"] = true
 			info.Metadata["replacedWith"] = repl.New.Path
 			info.Metadata["replaceVersion"] = repl.New.Version
-			info.UpdateStrategy = "replace"
+			info.UpdateStrategy = updateStrategyReplace
 		} else {
 			// Create entry for replaced dependency
 			info := &analyzer.DependencyInfo{
 				Name:           repl.Old.Path,
 				Version:        repl.Old.Version,
-				UpdateStrategy: "replace",
+				UpdateStrategy: updateStrategyReplace,
 				Metadata: map[string]any{
 					"replaced":       true,
 					"replacedWith":   repl.New.Path,
@@ -168,13 +172,13 @@ func (ga *GolangAnalyzer) AnalyzeFromContent(ctx context.Context, filename strin
 			info.Metadata["replaced"] = true
 			info.Metadata["replacedWith"] = repl.New.Path
 			info.Metadata["replaceVersion"] = repl.New.Version
-			info.UpdateStrategy = "replace"
+			info.UpdateStrategy = updateStrategyReplace
 		} else {
 			// Create entry for replaced dependency
 			info := &analyzer.DependencyInfo{
 				Name:           repl.Old.Path,
 				Version:        repl.Old.Version,
-				UpdateStrategy: "replace",
+				UpdateStrategy: updateStrategyReplace,
 				Metadata: map[string]any{
 					"replaced":       true,
 					"replacedWith":   repl.New.Path,

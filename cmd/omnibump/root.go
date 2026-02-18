@@ -236,12 +236,12 @@ func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but requir
 	detectedLang := flags.language
 
 	// Handle backward compatibility: "maven" -> "java"
-	if detectedLang == "maven" {
+	if detectedLang == languageMaven {
 		log.Warnf("Language 'maven' is deprecated, use 'java' instead")
-		detectedLang = "java"
+		detectedLang = languageJava
 	}
 
-	if detectedLang == "auto" || detectedLang == "" {
+	if detectedLang == languageAuto || detectedLang == "" {
 		detectedLang, err = languages.DetectLanguage(ctx, flags.rootDir)
 		if err != nil {
 			return fmt.Errorf("failed to detect language: %w (try specifying --language explicitly)", err)

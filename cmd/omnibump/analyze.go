@@ -21,6 +21,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const (
+	languageAuto  = "auto"
+	languageJava  = "java"
+	languageMaven = "maven" // Deprecated, use java
+)
+
 type analyzeFlags struct {
 	language     string
 	outputFormat string
@@ -81,12 +87,12 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	detectedLang := analyzeF.language
 
 	// Handle backward compatibility: "maven" -> "java"
-	if detectedLang == "maven" {
+	if detectedLang == languageMaven {
 		log.Warnf("Language 'maven' is deprecated, use 'java' instead")
-		detectedLang = "java"
+		detectedLang = languageJava
 	}
 
-	if detectedLang == "auto" || detectedLang == "" {
+	if detectedLang == languageAuto || detectedLang == "" {
 		var err error
 		detectedLang, err = languages.DetectLanguage(ctx, projectPath)
 		if err != nil {
@@ -98,7 +104,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	// Get analyzer implementation
 	var projectAnalyzer analyzer.Analyzer
 	switch detectedLang {
-	case "java":
+	case languageJava:
 		// Get the Java language and detect build tool
 		javaLang := &java.Java{}
 		buildTool, err := javaLang.GetBuildTool(ctx, projectPath)
