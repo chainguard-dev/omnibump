@@ -64,44 +64,6 @@ formatters:
     - goimports # Check import formatting
     - gci # Control Go package import order
 
-linters-settings:
-  gci:
-    sections:
-      - standard
-      - default
-      - prefix(github.com/chainguard-dev/omnibump)
-
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - style
-      - performance
-      - experimental
-      - opinionated
-
-  gocyclo:
-    min-complexity: 15
-
-  nestif:
-    min-complexity: 4
-
-  goconst:
-    min-len: 3
-    min-occurrences: 3
-
-  misspell:
-    locale: US
-
-  revive:
-    rules:
-      - name: exported
-        disabled: false
-      - name: package-comments
-        disabled: true
-
-  staticcheck:
-    checks: ["all"]
-
 issues:
   uniq-by-line: false
 

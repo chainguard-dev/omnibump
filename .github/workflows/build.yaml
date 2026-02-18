@@ -46,4 +46,4 @@ jobs:
       - name: Create goreleaser snapshot
         run: |
           goreleaser build --snapshot --clean
-          ./dist/omnibump_linux_amd64_v1/omnibump version
+          ./dist/omnibump-build_linux_amd64_v1/omnibump version

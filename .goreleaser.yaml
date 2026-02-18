@@ -9,45 +9,54 @@ env:
   - COSIGN_YES=true
 
 builds:
-- id: omnibump-build
-  binary: omnibump
-  main: ./
-  env:
-  - CGO_ENABLED=0
-  goos:
-    - darwin
-    - linux
-  goarch:
-    - "386"
-    - amd64
-    - arm64
-  ignore:
-    - goos: darwin
-      goarch: "386"
-  flags:
-    - -trimpath
-  mod_timestamp: '{{ .CommitTimestamp }}'
-  ldflags:
-    - -extldflags "-static"
-    - -X sigs.k8s.io/release-utils/version.gitVersion={{ .Version }}
-    - -X sigs.k8s.io/release-utils/version.gitCommit={{ .Commit }}
-    - -X sigs.k8s.io/release-utils/version.gitTreeState=clean
-    - -X sigs.k8s.io/release-utils/version.buildDate={{ .CommitDate }}
+  - id: omnibump-build
+    binary: omnibump
+    main: ./
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - "386"
+      - amd64
+      - arm64
+    ignore:
+      - goos: darwin
+        goarch: "386"
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -extldflags "-static"
+      - -X sigs.k8s.io/release-utils/version.gitVersion={{ .Version }}
+      - -X sigs.k8s.io/release-utils/version.gitCommit={{ .Commit }}
+      - -X sigs.k8s.io/release-utils/version.gitTreeState=clean
+      - -X sigs.k8s.io/release-utils/version.buildDate={{ .CommitDate }}
 
 signs:
   - id: omnibump-cosign
     cmd: cosign
     certificate: "${artifact}.crt"
-    args: ["sign-blob", "--output-signature", "${signature}", "--output-certificate", "${certificate}", "${artifact}", "--yes"]
+    args:
+      [
+        "sign-blob",
+        "--output-signature",
+        "${signature}",
+        "--output-certificate",
+        "${certificate}",
+        "${artifact}",
+        "--yes",
+      ]
     artifacts: all
 
 archives:
-- files:
-    - LICENSE
-  wrap_in_directory: true
+  - files:
+      - LICENSE
+    wrap_in_directory: true
 
 checksum:
-  name_template: 'checksums.txt'
+  name_template: "checksums.txt"
 
 snapshot:
   version_template: "{{ .Tag }}-next"
@@ -56,10 +65,9 @@ changelog:
   sort: asc
   filters:
     exclude:
-    - '^docs:'
-    - '^test:'
+      - "^docs:"
+      - "^test:"
 
 release:
   draft: false
-  prerelease: false
   name_template: "Release {{ .Tag }}"
