@@ -121,3 +121,11 @@ version:
 ## run: Build and run with version command
 run-version: build
 	./$(BINARY_NAME) version
+
+## snapshot: Create a snapshot release with goreleaser
+snapshot:
+	goreleaser build --snapshot --clean
+
+## release: Create a production release with goreleaser
+release:
+	goreleaser release --clean
