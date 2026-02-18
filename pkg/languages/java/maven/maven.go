@@ -29,6 +29,15 @@ var (
 
 	// ErrInvalidVersion is returned when a version string fails validation.
 	ErrInvalidVersion = errors.New("invalid version string")
+
+	// ErrPomNotFound is returned when pom.xml is not found.
+	ErrPomNotFound = errors.New("pom.xml not found")
+
+	// ErrPropertyValidationFailed is returned when property validation fails.
+	ErrPropertyValidationFailed = errors.New("property validation failed")
+
+	// ErrRemoteAnalysisNotImplemented is returned when remote analysis is not implemented.
+	ErrRemoteAnalysisNotImplemented = errors.New("remote analysis not yet implemented")
 )
 
 // Maven implements the BuildTool interface for Maven projects.
@@ -97,7 +106,7 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	// Find pom.xml
 	pomPath := filepath.Join(cfg.RootDir, "pom.xml")
 	if _, err := os.Stat(pomPath); os.IsNotExist(err) {
-		return fmt.Errorf("pom.xml not found in: %s", cfg.RootDir)
+		return fmt.Errorf("%w in: %s", ErrPomNotFound, cfg.RootDir)
 	}
 
 	// Convert unified dependencies to Maven patches
@@ -181,7 +190,7 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 		for propName, expectedValue := range cfg.Properties {
 			if actualValue, exists := project.Properties.Entries[propName]; exists {
 				if actualValue != expectedValue {
-					return fmt.Errorf("property %s has value %s, expected %s", propName, actualValue, expectedValue)
+					return fmt.Errorf("%w: property %s has value %s, expected %s", ErrPropertyValidationFailed, propName, actualValue, expectedValue)
 				}
 			} else {
 				log.Warnf("Property not found: %s", propName)

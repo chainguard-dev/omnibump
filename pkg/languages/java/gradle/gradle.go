@@ -43,6 +43,18 @@ var (
 
 	// ErrInvalidVersion is returned when a version string fails validation.
 	ErrInvalidVersion = errors.New("invalid version string: contains disallowed characters")
+
+	// ErrRemoteAnalysisNotImplemented is returned when remote analysis is not implemented.
+	ErrRemoteAnalysisNotImplemented = errors.New("remote analysis not yet implemented")
+
+	// ErrNoBuildFiles is returned when no build.gradle files are found.
+	ErrNoBuildFiles = errors.New("no build.gradle or build.gradle.kts files found")
+
+	// ErrValidationFailed is returned when dependency validation fails.
+	ErrValidationFailed = errors.New("validation failed")
+
+	// ErrUnknownFileType is returned when an unknown Gradle file type is encountered.
+	ErrUnknownFileType = errors.New("unknown Gradle file type")
 )
 
 // gradleManifestFiles lists all files that can contain dependency versions.
@@ -132,7 +144,7 @@ func (g *Gradle) Update(ctx context.Context, cfg *languages.UpdateConfig) error 
 	}
 
 	if len(buildFiles) == 0 {
-		return fmt.Errorf("no build.gradle or build.gradle.kts files found")
+		return ErrNoBuildFiles
 	}
 
 	log.Infof("Found %d build file(s)", len(buildFiles))
@@ -169,8 +181,8 @@ func (g *Gradle) Validate(ctx context.Context, cfg *languages.UpdateConfig) erro
 	}
 
 	if len(failures) > 0 {
-		return fmt.Errorf("validation failed for %d dependencies:\n  - %s",
-			len(failures), strings.Join(failures, "\n  - "))
+		return fmt.Errorf("%w for %d dependencies:\n  - %s",
+			ErrValidationFailed, len(failures), strings.Join(failures, "\n  - "))
 	}
 
 	log.Infof("Validation successful: all %d dependencies updated correctly", len(cfg.Dependencies))
@@ -286,7 +298,7 @@ func updateBuildFile(ctx context.Context, path string, cfg *languages.UpdateConf
 	case "build.gradle", "build.gradle.kts":
 		return updateBuildGradle(ctx, path, cfg)
 	default:
-		return fmt.Errorf("unknown Gradle file type: %s", filename)
+		return fmt.Errorf("%w: %s", ErrUnknownFileType, filename)
 	}
 }
 

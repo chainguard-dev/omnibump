@@ -7,6 +7,7 @@ package golang
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,13 +19,16 @@ import (
 	versionutil "k8s.io/apimachinery/pkg/util/version"
 )
 
+// ErrEmptyModulePath is returned when a module path is empty.
+var ErrEmptyModulePath = errors.New("module path cannot be empty")
+
 // validateModulePath validates a Go module path to prevent injection attacks.
 // SECURITY: This prevents malicious inputs like "--flag-injection" or "name; rm -rf /"
 // from being passed to exec.Command as arguments.
 // Uses module.CheckPath() from golang.org/x/mod/module to ensure the path is valid.
 func validateModulePath(path string) error {
 	if path == "" {
-		return fmt.Errorf("module path cannot be empty")
+		return ErrEmptyModulePath
 	}
 	if err := module.CheckPath(path); err != nil {
 		return fmt.Errorf("invalid module path %q: %w", path, err)

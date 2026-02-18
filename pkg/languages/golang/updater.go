@@ -7,6 +7,7 @@ package golang
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,23 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/semver"
+)
+
+var (
+	// ErrPackageDowngrade is returned when trying to downgrade a package version.
+	ErrPackageDowngrade = errors.New("package downgrade not allowed")
+
+	// ErrPackageNotFound is returned when a package is not found in go.mod.
+	ErrPackageNotFound = errors.New("package not found in go.mod")
+
+	// ErrMainModuleBump is returned when trying to bump the main module.
+	ErrMainModuleBump = errors.New("bumping the main module is not allowed")
+
+	// ErrValidationFailed is returned when package validation fails.
+	ErrValidationFailed = errors.New("validation failed")
+
+	// ErrUnexpectedGoVersion is returned when go version output has unexpected format.
+	ErrUnexpectedGoVersion = errors.New("unexpected format of go version output")
 )
 
 // ParseGoModfile parses a go.mod file from the specified path.
@@ -169,10 +187,10 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 	for _, pkg := range pkgVersions {
 		verStr := getVersion(newModFile, pkg.Name)
 		if verStr != "" && semver.Compare(verStr, pkg.Version) < 0 {
-			return nil, fmt.Errorf("package %s with %s is less than the desired version %s", pkg.Name, verStr, pkg.Version)
+			return nil, fmt.Errorf("%w: package %s with %s is less than the desired version %s", ErrPackageDowngrade, pkg.Name, verStr, pkg.Version)
 		}
 		if verStr == "" {
-			return nil, fmt.Errorf("package %s was not found on the go.mod file. Please remove the package or add it to the list of 'replaces'", pkg.Name)
+			return nil, fmt.Errorf("%w: package %s. Please remove the package or add it to the list of 'replaces'", ErrPackageNotFound, pkg.Name)
 		}
 	}
 
@@ -198,7 +216,7 @@ func CheckPackageValues(ctx context.Context, pkgVersions map[string]*Package, mo
 	log := clog.FromContext(ctx)
 
 	if _, ok := pkgVersions[modFile.Module.Mod.Path]; ok {
-		return fmt.Errorf("bumping the main module is not allowed '%s'", modFile.Module.Mod.Path)
+		return fmt.Errorf("%w: '%s'", ErrMainModuleBump, modFile.Module.Mod.Path)
 	}
 
 	type pkgVersion struct {
@@ -273,7 +291,7 @@ func CheckPackageValues(ctx context.Context, pkgVersions map[string]*Package, mo
 		for pkg, ver := range errorPkgVer {
 			fmt.Fprintf(&errorMsg, "  - package %s: requested version '%s', is already at version '%s'\n", pkg, ver.ReqVersion, ver.AvailableVersion)
 		}
-		return fmt.Errorf("%s", errorMsg.String())
+		return fmt.Errorf("%w:\n%s", ErrValidationFailed, errorMsg.String())
 	}
 
 	return nil
@@ -317,7 +335,7 @@ func getGoVersionFromEnvironment() (string, error) {
 func parseGoVersionString(versionOutput string) (string, error) {
 	parts := strings.Fields(versionOutput)
 	if len(parts) < 3 || !strings.HasPrefix(parts[2], "go") {
-		return "", fmt.Errorf("unexpected format of 'go version' output")
+		return "", ErrUnexpectedGoVersion
 	}
 
 	goVersion := strings.TrimPrefix(parts[2], "go")

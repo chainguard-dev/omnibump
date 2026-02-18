@@ -141,11 +141,11 @@ func (g *GitHubFetcher) GetFile(ctx context.Context, repo RepositoryRef, path st
 // Patterns must be simple filenames without path components or GitHub search operators.
 func validatePattern(pattern string) error {
 	if pattern == "" {
-		return fmt.Errorf("pattern cannot be empty")
+		return fmt.Errorf("%w: pattern", ErrEmptyField)
 	}
 
 	if len(pattern) > 256 {
-		return fmt.Errorf("pattern exceeds maximum length of 256")
+		return fmt.Errorf("%w: pattern (max: 256)", ErrFieldTooLong)
 	}
 
 	// Security: Prevent GitHub search operator injection
@@ -153,13 +153,13 @@ func validatePattern(pattern string) error {
 	lowerPattern := strings.ToLower(pattern)
 	for _, op := range githubOperators {
 		if strings.Contains(lowerPattern, op) {
-			return fmt.Errorf("pattern cannot contain GitHub search operator: %q", op)
+			return fmt.Errorf("%w: %q", ErrSearchOperatorInjection, op)
 		}
 	}
 
 	// Security: Pattern must be a simple filename, not a path
 	if strings.ContainsAny(pattern, "/\\") {
-		return fmt.Errorf("pattern cannot contain path separators")
+		return ErrPatternContainsPath
 	}
 
 	return nil

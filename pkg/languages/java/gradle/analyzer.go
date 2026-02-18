@@ -114,7 +114,7 @@ func (ga *GradleAnalyzer) Analyze(ctx context.Context, projectPath string) (*ana
 //
 //nolint:revive // Parameters will be used when implementation is added
 func (ga *GradleAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]byte) (*analyzer.RemoteAnalysisResult, error) {
-	return nil, fmt.Errorf("remote analysis not yet implemented for Gradle")
+	return nil, fmt.Errorf("%w for Gradle", ErrRemoteAnalysisNotImplemented)
 }
 
 // RecommendStrategy recommends an update strategy for given dependencies.

@@ -7,6 +7,7 @@ package golang
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,9 @@ import (
 const (
 	updateStrategyReplace = "replace"
 )
+
+// ErrNoFilesProvided is returned when no files are provided for analysis.
+var ErrNoFilesProvided = errors.New("no files provided for analysis")
 
 // GolangAnalyzer implements the Analyzer interface for Go projects.
 //
@@ -201,7 +205,7 @@ func (ga *GolangAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]
 	log := clog.FromContext(ctx)
 
 	if len(files) == 0 {
-		return nil, fmt.Errorf("no files provided for analysis")
+		return nil, ErrNoFilesProvided
 	}
 
 	result := &analyzer.RemoteAnalysisResult{

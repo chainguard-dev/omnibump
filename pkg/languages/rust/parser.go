@@ -6,6 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 package rust
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -16,6 +17,9 @@ import (
 	"github.com/ghodss/yaml"
 	"github.com/samber/lo"
 )
+
+// ErrInvalidPackageSpec is returned when a package spec is missing required fields.
+var ErrInvalidPackageSpec = errors.New("invalid package spec")
 
 // cargoLockPackage represents a package entry in Cargo.lock.
 type cargoLockPackage struct {
@@ -132,11 +136,11 @@ func ParseBumpFile(r io.Reader) (map[string]*Package, error) {
 
 	for i, p := range packageList.Packages {
 		if p.Name == "" {
-			return patches, fmt.Errorf("invalid package spec at [%d], missing name", i)
+			return patches, fmt.Errorf("%w at [%d]: missing name", ErrInvalidPackageSpec, i)
 		}
 
 		if p.Version == "" {
-			return patches, fmt.Errorf("invalid package spec at [%d], missing version", i)
+			return patches, fmt.Errorf("%w at [%d]: missing version", ErrInvalidPackageSpec, i)
 		}
 
 		if patches == nil {

@@ -117,7 +117,7 @@ func TestParseCargoLock(t *testing.T) {
 // TestParseBumpFile_IOReadError tests that io.ReadAll errors are properly propagated (FINDING-003).
 func TestParseBumpFile_IOReadError(t *testing.T) {
 	// Create a reader that will fail
-	failReader := &failingReader{err: fmt.Errorf("simulated I/O error")}
+	failReader := &failingReader{err: fmt.Errorf("simulated I/O error")} //nolint:err113 // Test error, not production code
 
 	_, err := ParseBumpFile(failReader)
 	require.Error(t, err, "ParseBumpFile should return error on I/O failure")

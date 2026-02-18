@@ -8,6 +8,7 @@ package omnibump
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -23,6 +24,26 @@ import (
 	"github.com/ghodss/yaml"
 	"github.com/google/go-github/v75/github"
 	"github.com/spf13/cobra"
+)
+
+var (
+	// ErrGitRefRequired is returned when a git reference is not provided.
+	ErrGitRefRequired = errors.New("git reference required")
+
+	// ErrGitHubTokenRequired is returned when a GitHub token is not provided.
+	ErrGitHubTokenRequired = errors.New("GitHub token required")
+
+	// ErrRemoteAnalysisNotImplemented is returned when remote analysis is not implemented for a language.
+	ErrRemoteAnalysisNotImplemented = errors.New("remote analysis not yet implemented")
+
+	// ErrNoManifestFilesFound is returned when no manifest files are found.
+	ErrNoManifestFilesFound = errors.New("no manifest files found")
+
+	// ErrInvalidGitHubURL is returned when a GitHub URL cannot be parsed.
+	ErrInvalidGitHubURL = errors.New("invalid GitHub URL format")
+
+	// ErrFileContentNil is returned when file content is unexpectedly nil.
+	ErrFileContentNil = errors.New("file content is nil")
 )
 
 type analyzeRemoteFlags struct {
@@ -100,7 +121,7 @@ func runAnalyzeRemote(cmd *cobra.Command, args []string) error {
 	}
 
 	if ref == "" {
-		return fmt.Errorf("git reference required: use --ref flag or include in URL (e.g., /tree/v1.0.0)")
+		return fmt.Errorf("%w: use --ref flag or include in URL (e.g., /tree/v1.0.0)", ErrGitRefRequired)
 	}
 
 	// Get GitHub token (required for Code Search API)
@@ -109,7 +130,7 @@ func runAnalyzeRemote(cmd *cobra.Command, args []string) error {
 		token = os.Getenv("GITHUB_TOKEN")
 	}
 	if token == "" {
-		return fmt.Errorf("GitHub token required: set GITHUB_TOKEN environment variable (e.g., export GITHUB_TOKEN=$(gh auth token)) or use --github-token flag")
+		return fmt.Errorf("%w: set GITHUB_TOKEN environment variable (e.g., export GITHUB_TOKEN=$(gh auth token)) or use --github-token flag", ErrGitHubTokenRequired)
 	}
 
 	// Create GitHub client and fetcher
@@ -141,7 +162,7 @@ func runAnalyzeRemote(cmd *cobra.Command, args []string) error {
 		}
 		projectAnalyzer = &golang.GolangAnalyzer{}
 	default:
-		return fmt.Errorf("remote analysis not yet implemented for language: %s", analyzeRemoteF.language)
+		return fmt.Errorf("%w for language: %s", ErrRemoteAnalysisNotImplemented, analyzeRemoteF.language)
 	}
 
 	// Search for manifest files with fallback
@@ -222,7 +243,7 @@ func searchManifestFilesWithFallback(ctx context.Context, fetcher *remote.GitHub
 	}
 
 	if len(files) == 0 {
-		return nil, fmt.Errorf("no manifest files found for language: %s (tried: %v)", language, patterns)
+		return nil, fmt.Errorf("%w for language: %s (tried: %v)", ErrNoManifestFilesFound, language, patterns)
 	}
 
 	// For Go projects, prioritize go.mod over vendor.mod when both exist in same directory
@@ -299,7 +320,7 @@ func parseGitHubURL(url string) (owner, repo, ref string, err error) {
 	matches := re.FindStringSubmatch(url)
 
 	if len(matches) < 3 {
-		return "", "", "", fmt.Errorf("invalid GitHub URL format: %s", url)
+		return "", "", "", fmt.Errorf("%w: %s", ErrInvalidGitHubURL, url)
 	}
 
 	owner = matches[1]
@@ -320,7 +341,7 @@ func outputRemoteAnalysisResults(result *analyzer.RemoteAnalysisResult, strategi
 	case "text":
 		return outputRemoteText(result, strategies)
 	default:
-		return fmt.Errorf("unsupported output format: %s", format)
+		return fmt.Errorf("%w: %s", ErrUnsupportedOutputFormat, format)
 	}
 }
 
@@ -536,7 +557,7 @@ func (c *githubClient) GetFileContent(ctx context.Context, owner, repo, path, re
 	}
 
 	if fileContent == nil {
-		return nil, fmt.Errorf("file content is nil")
+		return nil, ErrFileContentNil
 	}
 
 	content, err := fileContent.GetContent()

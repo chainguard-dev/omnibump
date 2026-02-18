@@ -9,6 +9,7 @@ package golang
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,6 +22,14 @@ import (
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
+)
+
+var (
+	// ErrGoModNotFound is returned when go.mod is not found in the specified directory.
+	ErrGoModNotFound = errors.New("go.mod not found")
+
+	// ErrUnexpectedGoListOutput is returned when go list output has unexpected format.
+	ErrUnexpectedGoListOutput = errors.New("unexpected go list output")
 )
 
 // Golang implements the Language interface for Go projects.
@@ -69,7 +78,7 @@ func (g *Golang) Update(ctx context.Context, cfg *languages.UpdateConfig) error 
 	// Find go.mod
 	goModPath := filepath.Join(cfg.RootDir, "go.mod")
 	if _, err := os.Stat(goModPath); os.IsNotExist(err) {
-		return fmt.Errorf("go.mod not found in: %s", cfg.RootDir)
+		return fmt.Errorf("%w in: %s", ErrGoModNotFound, cfg.RootDir)
 	}
 
 	// Build update configuration
@@ -273,7 +282,7 @@ func resolveVersionQuery(ctx context.Context, modulePath, query, modroot string)
 	// Parse output: "module version"
 	parts := strings.Fields(strings.TrimSpace(string(output)))
 	if len(parts) < 2 {
-		return "", fmt.Errorf("unexpected go list output: %s", string(output))
+		return "", fmt.Errorf("%w: %s", ErrUnexpectedGoListOutput, string(output))
 	}
 
 	return parts[1], nil

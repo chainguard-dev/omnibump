@@ -103,6 +103,12 @@ var (
 	// ErrInvalidLogPath is returned when a log-policy path fails validation.
 	ErrInvalidLogPath = errors.New("invalid log-policy path")
 
+	// ErrMissingInput is returned when neither --deps nor --packages is specified.
+	ErrMissingInput = errors.New("missing input")
+
+	// ErrConflictingInput is returned when both --deps and --packages are specified.
+	ErrConflictingInput = errors.New("conflicting input")
+
 	// disallowedLogPaths lists sensitive paths that should never be written to.
 	disallowedLogPaths = []string{
 		"/etc/",
@@ -200,11 +206,11 @@ func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but requir
 
 	// Validate input
 	if flags.depsFile == "" && flags.packages == "" {
-		return fmt.Errorf("either --deps or --packages must be specified")
+		return fmt.Errorf("%w: either --deps or --packages must be specified", ErrMissingInput)
 	}
 
 	if flags.depsFile != "" && flags.packages != "" {
-		return fmt.Errorf("cannot use both --deps and --packages")
+		return fmt.Errorf("%w: cannot use both --deps and --packages", ErrConflictingInput)
 	}
 
 	// Load configuration

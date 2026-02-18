@@ -7,6 +7,7 @@ package omnibump
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 
@@ -25,6 +26,17 @@ const (
 	languageAuto  = "auto"
 	languageJava  = "java"
 	languageMaven = "maven" // Deprecated, use java
+)
+
+var (
+	// ErrAnalyzerNotAvailable is returned when an analyzer is not available for a build tool.
+	ErrAnalyzerNotAvailable = errors.New("analyzer not available")
+
+	// ErrAnalysisNotImplemented is returned when analysis is not yet implemented for a language.
+	ErrAnalysisNotImplemented = errors.New("analysis not yet implemented")
+
+	// ErrUnsupportedOutputFormat is returned when an invalid output format is specified.
+	ErrUnsupportedOutputFormat = errors.New("unsupported output format")
 )
 
 type analyzeFlags struct {
@@ -113,14 +125,14 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		}
 		projectAnalyzer = buildTool.GetAnalyzer()
 		if projectAnalyzer == nil {
-			return fmt.Errorf("analyzer not available for build tool: %s", buildTool.Name())
+			return fmt.Errorf("%w for build tool: %s", ErrAnalyzerNotAvailable, buildTool.Name())
 		}
 	case "go":
 		projectAnalyzer = &golang.GolangAnalyzer{}
 	case "rust":
 		projectAnalyzer = &rust.RustAnalyzer{}
 	default:
-		return fmt.Errorf("analysis not yet implemented for language: %s", detectedLang)
+		return fmt.Errorf("%w for language: %s", ErrAnalysisNotImplemented, detectedLang)
 	}
 
 	// Perform analysis
@@ -187,7 +199,7 @@ func outputAnalysisResults(analysis *analyzer.AnalysisResult, strategy *analyzer
 	case "text":
 		return outputText(analysis, strategy)
 	default:
-		return fmt.Errorf("unsupported output format: %s", format)
+		return fmt.Errorf("%w: %s", ErrUnsupportedOutputFormat, format)
 	}
 }
 

@@ -9,12 +9,21 @@ package rust
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
+)
+
+var (
+	// ErrCargoLockNotFound is returned when Cargo.lock is not found.
+	ErrCargoLockNotFound = errors.New("cargo.lock not found")
+
+	// ErrRemoteAnalysisNotImplemented is returned when remote analysis is not implemented.
+	ErrRemoteAnalysisNotImplemented = errors.New("remote analysis not yet implemented")
 )
 
 // Rust implements the Language interface for Rust projects.
@@ -63,7 +72,7 @@ func (r *Rust) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	// Find Cargo.lock
 	cargoLockPath := filepath.Join(cfg.RootDir, "Cargo.lock")
 	if _, err := os.Stat(cargoLockPath); os.IsNotExist(err) {
-		return fmt.Errorf("cargo.lock not found in: %s", cfg.RootDir)
+		return fmt.Errorf("%w in: %s", ErrCargoLockNotFound, cfg.RootDir)
 	}
 
 	// Parse Cargo.lock to get current packages

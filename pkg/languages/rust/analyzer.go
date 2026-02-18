@@ -104,7 +104,7 @@ func (ra *RustAnalyzer) Analyze(ctx context.Context, projectPath string) (*analy
 //
 //nolint:revive // Parameters will be used when implementation is added
 func (ra *RustAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]byte) (*analyzer.RemoteAnalysisResult, error) {
-	return nil, fmt.Errorf("remote analysis not yet implemented for Rust")
+	return nil, fmt.Errorf("%w for Rust", ErrRemoteAnalysisNotImplemented)
 }
 
 // RecommendStrategy suggests update strategy for Rust dependencies.

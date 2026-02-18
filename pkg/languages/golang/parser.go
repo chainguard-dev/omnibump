@@ -6,6 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 package golang
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,11 +15,19 @@ import (
 	"github.com/ghodss/yaml"
 )
 
+var (
+	// ErrNoFilename is returned when no filename is specified.
+	ErrNoFilename = errors.New("no filename specified")
+
+	// ErrInvalidPackageSpec is returned when a package spec is missing required fields.
+	ErrInvalidPackageSpec = errors.New("invalid package spec")
+)
+
 // ParseFile parses a YAML file containing package update specifications.
 // Ported from gobump/pkg/types/parse.go.
 func ParseFile(bumpFile string) (map[string]*Package, error) {
 	if bumpFile == "" {
-		return nil, fmt.Errorf("no filename specified")
+		return nil, ErrNoFilename
 	}
 	bumpFile = filepath.Clean(bumpFile)
 	var pkgVersions map[string]*Package
@@ -42,10 +51,10 @@ func ParseFile(bumpFile string) (map[string]*Package, error) {
 	}
 	for i, p := range packageList.Packages {
 		if p.Name == "" {
-			return nil, fmt.Errorf("invalid package spec at [%d], missing name", i)
+			return nil, fmt.Errorf("%w at [%d]: missing name", ErrInvalidPackageSpec, i)
 		}
 		if p.Version == "" {
-			return nil, fmt.Errorf("invalid package spec at [%d], missing version", i)
+			return nil, fmt.Errorf("%w at [%d]: missing version", ErrInvalidPackageSpec, i)
 		}
 		if pkgVersions == nil {
 			pkgVersions = make(map[string]*Package, 1)

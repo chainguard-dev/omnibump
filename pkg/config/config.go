@@ -8,6 +8,7 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,6 +22,20 @@ import (
 const (
 	// MaxConfigFileSize limits configuration file size to prevent resource exhaustion.
 	MaxConfigFileSize = 10 * 1024 * 1024 // 10 MB
+)
+
+var (
+	// ErrConfigNotFound is returned when a configuration file is not found.
+	ErrConfigNotFound = errors.New("configuration file not found")
+
+	// ErrConfigTooLarge is returned when a configuration file exceeds size limits.
+	ErrConfigTooLarge = errors.New("configuration file too large")
+
+	// ErrConflictingLanguage is returned when merging configs with different language specs.
+	ErrConflictingLanguage = errors.New("conflicting language specifications")
+
+	// ErrInvalidPackageFormat is returned when a package string has invalid format.
+	ErrInvalidPackageFormat = errors.New("invalid package format")
 )
 
 // Config represents the unified configuration for omnibump.
@@ -88,7 +103,7 @@ func LoadConfig(ctx context.Context, path string) (*Config, error) {
 	// Check if file exists and validate size
 	fileInfo, err := os.Stat(path)
 	if os.IsNotExist(err) {
-		return nil, fmt.Errorf("configuration file not found: %s", path)
+		return nil, fmt.Errorf("%w: %s", ErrConfigNotFound, path)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to stat configuration file: %w", err)
@@ -96,7 +111,7 @@ func LoadConfig(ctx context.Context, path string) (*Config, error) {
 
 	// Prevent resource exhaustion from reading huge files
 	if fileInfo.Size() > MaxConfigFileSize {
-		return nil, fmt.Errorf("configuration file too large: %d bytes (max: %d)", fileInfo.Size(), MaxConfigFileSize)
+		return nil, fmt.Errorf("%w: %d bytes (max: %d)", ErrConfigTooLarge, fileInfo.Size(), MaxConfigFileSize)
 	}
 
 	data, err := os.ReadFile(filepath.Clean(path))
@@ -141,7 +156,7 @@ func LoadMultipleConfigs(ctx context.Context, paths []string) (*Config, error) {
 		// Language should be consistent or auto
 		if cfg.Language != "" && cfg.Language != "auto" {
 			if merged.Language != "" && merged.Language != cfg.Language {
-				return nil, fmt.Errorf("conflicting language specifications: %s vs %s", merged.Language, cfg.Language)
+				return nil, fmt.Errorf("%w: %s vs %s", ErrConflictingLanguage, merged.Language, cfg.Language)
 			}
 			merged.Language = cfg.Language
 		}
@@ -310,7 +325,7 @@ func ParseInlinePackages(packagesStr string) ([]Package, error) {
 				Type:       parts[4],
 			})
 		default:
-			return nil, fmt.Errorf("invalid package format: %s (expected name@version or groupId@artifactId@version)", pkgStr)
+			return nil, fmt.Errorf("%w: %s (expected name@version or groupId@artifactId@version)", ErrInvalidPackageFormat, pkgStr)
 		}
 	}
 

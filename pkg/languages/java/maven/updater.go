@@ -7,6 +7,7 @@ package maven
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,20 @@ import (
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/gopom"
 	"github.com/ghodss/yaml"
+)
+
+var (
+	// ErrProjectNil is returned when a POM project is nil.
+	ErrProjectNil = errors.New("project is nil")
+
+	// ErrFileTooLarge is returned when a file exceeds size limits.
+	ErrFileTooLarge = errors.New("file too large")
+
+	// ErrInvalidDependencyFormat is returned when a dependency string has invalid format.
+	ErrInvalidDependencyFormat = errors.New("invalid dependencies format")
+
+	// ErrInvalidPropertyFormat is returned when a property string has invalid format.
+	ErrInvalidPropertyFormat = errors.New("invalid properties format")
 )
 
 // Default scope and type for a dependency.
@@ -86,7 +101,7 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 	log := clog.FromContext(ctx)
 
 	if project == nil {
-		return nil, fmt.Errorf("project is nil")
+		return nil, ErrProjectNil
 	}
 
 	// Track dependencies that weren't found (will be added to DependencyManagement)
@@ -200,7 +215,7 @@ func parsePatches(ctx context.Context, patchFile, patchFlag string) ([]Patch, er
 		}
 		// Check if file was truncated (too large)
 		if len(byteValue) >= MaxPatchFileSize {
-			return nil, fmt.Errorf("patch file too large (max: %d bytes)", MaxPatchFileSize)
+			return nil, fmt.Errorf("%w: patch file (max: %d bytes)", ErrFileTooLarge, MaxPatchFileSize)
 		}
 		if err := yaml.Unmarshal(byteValue, &patchList); err != nil {
 			return nil, err
@@ -223,7 +238,7 @@ func parsePatches(ctx context.Context, patchFile, patchFlag string) ([]Patch, er
 		}
 		parts := strings.Split(dep, "@")
 		if len(parts) < 3 {
-			return nil, fmt.Errorf("invalid dependencies format (%s). Each dependency should be in the format <groupID@artifactID@version[@scope]>", dep)
+			return nil, fmt.Errorf("%w (%s): each dependency should be in the format <groupID@artifactID@version[@scope]>", ErrInvalidDependencyFormat, dep)
 		}
 		// Default scope
 		scope := defaultScope
@@ -263,7 +278,7 @@ func parseProperties(ctx context.Context, propertyFile, propertiesFlag string) (
 		}
 		// Check if file was truncated (too large)
 		if len(byteValue) >= MaxPatchFileSize {
-			return nil, fmt.Errorf("properties file too large (max: %d bytes)", MaxPatchFileSize)
+			return nil, fmt.Errorf("%w: properties file (max: %d bytes)", ErrFileTooLarge, MaxPatchFileSize)
 		}
 		if err := yaml.Unmarshal(byteValue, &propertyList); err != nil {
 			return nil, err
@@ -280,7 +295,7 @@ func parseProperties(ctx context.Context, propertyFile, propertiesFlag string) (
 		}
 		parts := strings.Split(prop, "@")
 		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid properties format. Each dependency should be in the format <property@value>")
+			return nil, fmt.Errorf("%w: each property should be in the format <property@value>", ErrInvalidPropertyFormat)
 		}
 		propertiesPatches[parts[0]] = parts[1]
 	}

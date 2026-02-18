@@ -190,7 +190,7 @@ func TestGoModTidy(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "bumping the main module is not allowed 'github.com/puerco/hello'",
+			errMsg:  "bumping the main module is not allowed: 'github.com/puerco/hello'",
 		},
 	}
 

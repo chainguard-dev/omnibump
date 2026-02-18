@@ -99,7 +99,7 @@ func (ma *MavenAnalyzer) Analyze(ctx context.Context, projectPath string) (*anal
 //
 //nolint:revive // Parameters will be used when implementation is added
 func (ma *MavenAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]byte) (*analyzer.RemoteAnalysisResult, error) {
-	return nil, fmt.Errorf("remote analysis not yet implemented for Maven")
+	return nil, fmt.Errorf("%w for Maven", ErrRemoteAnalysisNotImplemented)
 }
 
 // RecommendStrategy suggests whether to use properties or direct patches.
