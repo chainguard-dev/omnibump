@@ -18,6 +18,11 @@ import (
 	"github.com/ghodss/yaml"
 )
 
+const (
+	// MaxConfigFileSize limits configuration file size to prevent resource exhaustion.
+	MaxConfigFileSize = 10 * 1024 * 1024 // 10 MB
+)
+
 // Config represents the unified configuration for omnibump.
 type Config struct {
 	// Language specifies the language ecosystem (auto, maven, go, rust)
@@ -80,9 +85,18 @@ func LoadConfig(ctx context.Context, path string) (*Config, error) {
 		log.Warnf("Please migrate to: %s", filepath.Base(normalizedPath))
 	}
 
-	// Check if file exists
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	// Check if file exists and validate size
+	fileInfo, err := os.Stat(path)
+	if os.IsNotExist(err) {
 		return nil, fmt.Errorf("configuration file not found: %s", path)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat configuration file: %w", err)
+	}
+
+	// Prevent resource exhaustion from reading huge files
+	if fileInfo.Size() > MaxConfigFileSize {
+		return nil, fmt.Errorf("configuration file too large: %d bytes (max: %d)", fileInfo.Size(), MaxConfigFileSize)
 	}
 
 	data, err := os.ReadFile(filepath.Clean(path))
@@ -157,7 +171,7 @@ func DiscoverConfigFiles(ctx context.Context, dir string) ([]string, error) {
 		path := filepath.Join(dir, oldName)
 		if _, err := os.Stat(path); err == nil {
 			// Only add if we haven't already found the standard equivalent
-			if !contains(found, filepath.Join(dir, StandardFileNames[oldName])) {
+			if !slices.Contains(found, filepath.Join(dir, StandardFileNames[oldName])) {
 				found = append(found, path)
 				log.Warnf("Found deprecated configuration file: %s", oldName)
 			}
@@ -249,10 +263,6 @@ func loadReplacesFile(data []byte) (*Config, error) {
 }
 
 // contains checks if a string is in a slice.
-func contains(slice []string, item string) bool {
-	return slices.Contains(slice, item)
-}
-
 // ParseInlinePackages parses inline package specifications from command line.
 // Format: "name@version" or "groupId@artifactId@version" (Maven).
 func ParseInlinePackages(packagesStr string) ([]Package, error) {

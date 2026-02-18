@@ -40,6 +40,9 @@ type rootFlags struct {
 
 var flags rootFlags
 
+// logFileHandle stores the log file handle so it can be closed on exit.
+var logFileHandle *os.File
+
 // New creates the root omnibump command.
 func New() *cobra.Command {
 	cmd := &cobra.Command{
@@ -49,6 +52,14 @@ func New() *cobra.Command {
 		SilenceUsage: true,
 		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
 			return setupLogging()
+		},
+		PersistentPostRunE: func(_ *cobra.Command, _ []string) error { // _ unused but required by cobra interface
+			if logFileHandle != nil {
+				if err := logFileHandle.Close(); err != nil {
+					return fmt.Errorf("failed to close log file: %w", err)
+				}
+			}
+			return nil
 		},
 		RunE: runUpdate,
 	}
@@ -154,6 +165,7 @@ func setupLogging() error {
 				return fmt.Errorf("failed to create log writer: %w", err)
 			}
 			out = f
+			logFileHandle = f // Store handle for cleanup in PersistentPostRunE
 			break
 		}
 	}

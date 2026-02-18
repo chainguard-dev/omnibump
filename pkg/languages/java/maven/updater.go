@@ -22,6 +22,9 @@ import (
 const (
 	defaultScope = "import"
 	defaultType  = "jar"
+
+	// MaxPatchFileSize limits patch/properties file size to prevent resource exhaustion.
+	MaxPatchFileSize = 10 * 1024 * 1024 // 10 MB
 )
 
 // Patch represents a Maven dependency patch.
@@ -189,9 +192,14 @@ func parsePatches(ctx context.Context, patchFile, patchFlag string) ([]Patch, er
 				clog.FromContext(ctx).Warnf("failed to close file: %v", err)
 			}
 		}()
-		byteValue, err := io.ReadAll(file)
+		// Limit file size to prevent resource exhaustion
+		byteValue, err := io.ReadAll(io.LimitReader(file, MaxPatchFileSize))
 		if err != nil {
 			return nil, fmt.Errorf("reading file: %w", err)
+		}
+		// Check if file was truncated (too large)
+		if len(byteValue) >= MaxPatchFileSize {
+			return nil, fmt.Errorf("patch file too large (max: %d bytes)", MaxPatchFileSize)
 		}
 		if err := yaml.Unmarshal(byteValue, &patchList); err != nil {
 			return nil, err
@@ -246,9 +254,14 @@ func parseProperties(ctx context.Context, propertyFile, propertiesFlag string) (
 				clog.FromContext(ctx).Warnf("failed to close file: %v", err)
 			}
 		}()
-		byteValue, err := io.ReadAll(file)
+		// Limit file size to prevent resource exhaustion
+		byteValue, err := io.ReadAll(io.LimitReader(file, MaxPatchFileSize))
 		if err != nil {
 			return nil, fmt.Errorf("reading file: %w", err)
+		}
+		// Check if file was truncated (too large)
+		if len(byteValue) >= MaxPatchFileSize {
+			return nil, fmt.Errorf("properties file too large (max: %d bytes)", MaxPatchFileSize)
 		}
 		if err := yaml.Unmarshal(byteValue, &propertyList); err != nil {
 			return nil, err
