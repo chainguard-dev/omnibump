@@ -1,0 +1,11 @@
+# Each line is a file pattern followed by one or more owners.
+
+# Require review by repo owners of changes to CODEOWNERS
+CODEOWNERS @chainguard-dev/sustaining-tooling-team-write
+
+# Important CI and Repo configuration
+.chainguard/            @chainguard-dev/sustaining-tooling-team-write
+.github/                @chainguard-dev/sustaining-tooling-team-write
+.pre-commit-config.yaml @chainguard-dev/sustaining-tooling-team-write
+
+Makefile @chainguard-dev/sustaining-tooling-team-write
