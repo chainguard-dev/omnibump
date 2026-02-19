@@ -58,21 +58,18 @@ func validateVersionQuery(query string) error {
 	return nil
 }
 
-// GoModTidy runs go mod tidy with the specified go version and compatibility settings.
+// GoModTidy runs go mod tidy with optional compatibility settings.
+// The go version is automatically determined from the project's go.mod file.
 // Ported from gobump/pkg/run/gorun.go.
-func GoModTidy(ctx context.Context, modroot, goVersion, compat string) (string, error) {
-	if goVersion == "" {
-		goVersion = strings.TrimPrefix(runtime.Version(), "go")
-		v := versionutil.MustParseGeneric(goVersion)
-		goVersion = fmt.Sprintf("%d.%d", v.Major(), v.Minor())
-	}
-
-	args := []string{"mod", "tidy", "-go", goVersion}
+func GoModTidy(ctx context.Context, modroot, _ string, compat string) (string, error) {
+	// Note: goVersion parameter (now _) is kept for API compatibility but is no longer used.
+	// go mod tidy will automatically use the Go version specified in the project's go.mod file.
+	args := []string{"mod", "tidy"}
 	if compat != "" {
 		args = append(args, "-compat", compat)
 	}
 
-	cmd := exec.CommandContext(ctx, "go", args...) //nolint:gosec
+	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = modroot
 	if bytes, err := cmd.CombinedOutput(); err != nil {
 		return strings.TrimSpace(string(bytes)), err
