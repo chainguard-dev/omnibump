@@ -209,7 +209,7 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for gui
 
 ## License
 
-Copyright 2024 Chainguard, Inc.
+Copyright 2026 Chainguard, Inc.
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
 
