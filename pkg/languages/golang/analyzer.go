@@ -240,6 +240,7 @@ func (ga *GolangAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]
 
 // RecommendStrategy suggests update strategy for Go dependencies.
 // For Go, it's simpler than Maven - either direct update or replace directive.
+// For indirect dependencies, uses ResolveIndirectDependency to find direct parents.
 func (ga *GolangAnalyzer) RecommendStrategy(ctx context.Context, analysis *analyzer.AnalysisResult, deps []analyzer.Dependency) (*analyzer.Strategy, error) {
 	log := clog.FromContext(ctx)
 
@@ -259,19 +260,111 @@ func (ga *GolangAnalyzer) RecommendStrategy(ctx context.Context, analysis *analy
 						dep.Name, depInfo.Metadata["replacedWith"]))
 			}
 
-			// Check if it's an indirect dependency
+			// Check if it's an indirect dependency and try to resolve
 			if depInfo.Transitive {
-				strategy.Warnings = append(strategy.Warnings,
-					fmt.Sprintf("Dependency %s is indirect - consider if direct update is needed", dep.Name))
+				handled := ga.handleIndirectDependency(ctx, analysis, dep, strategy)
+				if handled {
+					continue // Indirect dependency was resolved to parent bumps
+				}
 			}
 		}
 
+		// Default: add to direct updates
 		strategy.DirectUpdates = append(strategy.DirectUpdates, dep)
 		log.Infof("Will update %s to %s", dep.Name, dep.Version)
 	}
 
 	log.Infof("Strategy: %d direct updates", len(strategy.DirectUpdates))
 	return strategy, nil
+}
+
+// handleIndirectDependency resolves an indirect dependency to parent bumps.
+// Returns true if the dependency was handled as indirect, false otherwise.
+func (ga *GolangAnalyzer) handleIndirectDependency(
+	ctx context.Context,
+	analysis *analyzer.AnalysisResult,
+	dep analyzer.Dependency,
+	strategy *analyzer.Strategy,
+) bool {
+	log := clog.FromContext(ctx)
+
+	log.Info("Dependency is indirect - finding direct parent options", "dependency", dep.Name)
+
+	// Get the module root from analysis metadata
+	modRoot := "."
+	if rootPath, ok := analysis.Metadata["moduleRoot"].(string); ok {
+		modRoot = rootPath
+	}
+
+	// Resolve indirect dependency
+	resolution, err := ResolveIndirectDependency(ctx, modRoot, dep.Name, dep.Version)
+	if err != nil {
+		log.Warn("Could not resolve indirect dependency", "dependency", dep.Name, "error", err)
+		strategy.Warnings = append(strategy.Warnings,
+			fmt.Sprintf("Dependency %s is indirect but resolution failed - will update directly", dep.Name))
+		return false // Not handled, will be added as direct update
+	}
+
+	if resolution.IsIndirect && len(resolution.PossibleBumps) > 0 {
+		// Found parent bump options
+		ga.addParentBumpsToStrategy(ctx, dep, resolution, strategy)
+		return true // Handled
+	}
+
+	// No parent fix found - allow bumping indirect
+	if resolution.FallbackAllowed {
+		strategy.Warnings = append(strategy.Warnings,
+			fmt.Sprintf("Dependency %s is indirect with no parent fix available - will bump directly (not ideal)", dep.Name))
+	}
+
+	return false // Not handled, will be added as direct update
+}
+
+// addParentBumpsToStrategy adds parent bump options to the strategy.
+func (ga *GolangAnalyzer) addParentBumpsToStrategy(
+	ctx context.Context,
+	originalDep analyzer.Dependency,
+	resolution *IndirectResolution,
+	strategy *analyzer.Strategy,
+) {
+	log := clog.FromContext(ctx)
+
+	log.Info("Found parents that can provide fix", "count", len(resolution.PossibleBumps))
+
+	// Add all possible parent bumps to strategy
+	for _, parentBump := range resolution.PossibleBumps {
+		log.Info("Parent bump option",
+			"package", parentBump.Package,
+			"from_version", parentBump.FromVersion,
+			"to_version", parentBump.ToVersion,
+			"brings_in", parentBump.WillBringIn,
+			"brings_in_version", parentBump.WillBringInVersion)
+
+		// Add parent bump to direct updates
+		parentDep := analyzer.Dependency{
+			Name:     parentBump.Package,
+			Version:  parentBump.ToVersion,
+			Metadata: make(map[string]any),
+		}
+		parentDep.Metadata["fixes_indirect"] = parentBump.WillBringIn
+		parentDep.Metadata["indirect_target_version"] = parentBump.WillBringInVersion
+
+		strategy.DirectUpdates = append(strategy.DirectUpdates, parentDep)
+	}
+
+	// Add informative warning
+	if len(resolution.PossibleBumps) == 1 {
+		strategy.Warnings = append(strategy.Warnings,
+			fmt.Sprintf("Dependency %s is indirect - recommending bump of %s to %s instead",
+				originalDep.Name,
+				resolution.PossibleBumps[0].Package,
+				resolution.PossibleBumps[0].ToVersion))
+	} else {
+		strategy.Warnings = append(strategy.Warnings,
+			fmt.Sprintf("Dependency %s is indirect - found %d parent options (see direct updates)",
+				originalDep.Name,
+				len(resolution.PossibleBumps)))
+	}
 }
 
 // countDirect counts direct dependencies.

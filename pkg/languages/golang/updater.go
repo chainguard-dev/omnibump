@@ -44,6 +44,15 @@ var (
 
 	// ErrUnexpectedGoVersion is returned when go version output has unexpected format.
 	ErrUnexpectedGoVersion = errors.New("unexpected format of go version output")
+
+	// ErrNoParentVersionFound is returned when no version of a parent package brings in the target fix.
+	ErrNoParentVersionFound = errors.New("no parent version found with fix")
+
+	// ErrProxyRequestFailed is returned when the Go proxy request fails.
+	ErrProxyRequestFailed = errors.New("proxy request failed")
+
+	// ErrNilHTTPResponse is returned when HTTP client returns nil response.
+	ErrNilHTTPResponse = errors.New("http request returned nil response")
 )
 
 // pkgVersion holds version information for validation.
