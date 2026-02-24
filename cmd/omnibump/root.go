@@ -103,10 +103,10 @@ var (
 	// ErrInvalidLogPath is returned when a log-policy path fails validation.
 	ErrInvalidLogPath = errors.New("invalid log-policy path")
 
-	// ErrMissingInput is returned when neither --deps nor --packages is specified.
+	// ErrMissingInput is returned when no input source is specified.
 	ErrMissingInput = errors.New("missing input")
 
-	// ErrConflictingInput is returned when both --deps and --packages are specified.
+	// ErrConflictingInput is returned when conflicting input sources are specified.
 	ErrConflictingInput = errors.New("conflicting input")
 
 	// disallowedLogPaths lists sensitive paths that should never be written to.
@@ -204,22 +204,32 @@ func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but requir
 	ctx := cmd.Context()
 	log := clog.FromContext(ctx)
 
-	// Validate input
-	if flags.depsFile == "" && flags.packages == "" {
-		return fmt.Errorf("%w: either --deps or --packages must be specified", ErrMissingInput)
+	// Validate input - require at least one input source
+	hasFileInput := flags.depsFile != "" || flags.propertiesFile != ""
+	hasInlineInput := flags.packages != "" || flags.properties != ""
+
+	if !hasFileInput && !hasInlineInput {
+		return fmt.Errorf("%w: at least one of --deps, --properties, --packages, or --props must be specified", ErrMissingInput)
 	}
 
 	if flags.depsFile != "" && flags.packages != "" {
 		return fmt.Errorf("%w: cannot use both --deps and --packages", ErrConflictingInput)
 	}
 
+	if flags.propertiesFile != "" && flags.properties != "" {
+		return fmt.Errorf("%w: cannot use both --properties (file) and --props (inline)", ErrConflictingInput)
+	}
+
 	// Load configuration
 	var cfg *config.Config
 	var err error
 
-	if flags.depsFile != "" {
+	if hasFileInput {
 		// Load from file(s)
-		files := []string{flags.depsFile}
+		var files []string
+		if flags.depsFile != "" {
+			files = append(files, flags.depsFile)
+		}
 		if flags.propertiesFile != "" {
 			files = append(files, flags.propertiesFile)
 		}
@@ -228,13 +238,23 @@ func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but requir
 			return fmt.Errorf("failed to load configuration: %w", err)
 		}
 	} else {
-		// Parse inline packages
-		packages, err := config.ParseInlinePackages(flags.packages)
-		if err != nil {
-			return fmt.Errorf("failed to parse inline packages: %w", err)
+		// Parse inline inputs
+		cfg = &config.Config{}
+
+		if flags.packages != "" {
+			packages, err := config.ParseInlinePackages(flags.packages)
+			if err != nil {
+				return fmt.Errorf("failed to parse inline packages: %w", err)
+			}
+			cfg.Packages = packages
 		}
-		cfg = &config.Config{
-			Packages: packages,
+
+		if flags.properties != "" {
+			properties, err := config.ParseInlineProperties(flags.properties)
+			if err != nil {
+				return fmt.Errorf("failed to parse inline properties: %w", err)
+			}
+			cfg.Properties = properties
 		}
 	}
 
