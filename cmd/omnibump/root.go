@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package omnibump
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -200,6 +201,46 @@ func setupLogging() error {
 	return nil
 }
 
+// loadFileInputConfig loads configuration from file sources (--deps and/or --properties).
+func loadFileInputConfig(ctx context.Context) (*config.Config, error) {
+	var files []string
+	if flags.depsFile != "" {
+		files = append(files, flags.depsFile)
+	}
+	if flags.propertiesFile != "" {
+		files = append(files, flags.propertiesFile)
+	}
+
+	cfg, err := config.LoadMultipleConfigs(ctx, files)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load configuration: %w", err)
+	}
+	return cfg, nil
+}
+
+// loadInlineInputConfig loads configuration from inline sources (--packages and/or --props).
+func loadInlineInputConfig() (*config.Config, error) {
+	cfg := &config.Config{}
+
+	if flags.packages != "" {
+		packages, err := config.ParseInlinePackages(flags.packages)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse inline packages: %w", err)
+		}
+		cfg.Packages = packages
+	}
+
+	if flags.properties != "" {
+		properties, err := config.ParseInlineProperties(flags.properties)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse inline properties: %w", err)
+		}
+		cfg.Properties = properties
+	}
+
+	return cfg, nil
+}
+
 func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but required by cobra interface
 	ctx := cmd.Context()
 	log := clog.FromContext(ctx)
@@ -225,36 +266,14 @@ func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but requir
 	var err error
 
 	if hasFileInput {
-		// Load from file(s)
-		var files []string
-		if flags.depsFile != "" {
-			files = append(files, flags.depsFile)
-		}
-		if flags.propertiesFile != "" {
-			files = append(files, flags.propertiesFile)
-		}
-		cfg, err = config.LoadMultipleConfigs(ctx, files)
+		cfg, err = loadFileInputConfig(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to load configuration: %w", err)
+			return err
 		}
 	} else {
-		// Parse inline inputs
-		cfg = &config.Config{}
-
-		if flags.packages != "" {
-			packages, err := config.ParseInlinePackages(flags.packages)
-			if err != nil {
-				return fmt.Errorf("failed to parse inline packages: %w", err)
-			}
-			cfg.Packages = packages
-		}
-
-		if flags.properties != "" {
-			properties, err := config.ParseInlineProperties(flags.properties)
-			if err != nil {
-				return fmt.Errorf("failed to parse inline properties: %w", err)
-			}
-			cfg.Properties = properties
+		cfg, err = loadInlineInputConfig()
+		if err != nil {
+			return err
 		}
 	}
 

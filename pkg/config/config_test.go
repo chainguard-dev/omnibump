@@ -12,10 +12,10 @@ import (
 // TestParseInlineProperties tests parsing inline property specifications.
 func TestParseInlineProperties(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		want     []Property
-		wantErr  bool
+		name    string
+		input   string
+		want    []Property
+		wantErr bool
 	}{
 		{
 			name:  "single property",

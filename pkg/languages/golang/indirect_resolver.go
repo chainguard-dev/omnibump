@@ -235,7 +235,7 @@ func FindDirectParents(ctx context.Context, modRoot, indirectPkg string) ([]Dire
 		targetPkg := extractModulePath(target)
 
 		// If target matches our indirect package and source is a direct dep
-		if strings.Contains(targetPkg, indirectPkg) && directDeps[sourcePkg] && !seen[sourcePkg] {
+		if targetPkg == indirectPkg && directDeps[sourcePkg] && !seen[sourcePkg] {
 			parents = append(parents, DirectParent{
 				Package:         sourcePkg,
 				CurrentVersion:  extractModuleVersion(source),
