@@ -419,17 +419,21 @@ func printDirectUpdates(analysis *analyzer.AnalysisResult, strategy *analyzer.St
 	fmt.Println("Direct Dependency Updates:")
 	fmt.Println("--------------------------")
 	for _, dep := range strategy.DirectUpdates {
-		depKey := dep.Name
-		depInfo, exists := analysis.Dependencies[depKey]
-		if !exists {
-			fmt.Printf("  %s: (new) -> %s\n", depKey, dep.Version)
-			continue
-		}
-
-		fmt.Printf("  %s: %s -> %s\n", depKey, depInfo.Version, dep.Version)
-		printModuleInfo(depInfo)
+		printDependencyUpdate(analysis, dep)
 	}
 	fmt.Println()
+}
+
+// printDependencyUpdate prints a single dependency update.
+func printDependencyUpdate(analysis *analyzer.AnalysisResult, dep analyzer.Dependency) {
+	depInfo, exists := analysis.Dependencies[dep.Name]
+	if !exists {
+		fmt.Printf("  %s: (new) -> %s\n", dep.Name, dep.Version)
+		return
+	}
+
+	fmt.Printf("  %s: %s -> %s\n", dep.Name, depInfo.Version, dep.Version)
+	printModuleInfo(depInfo)
 }
 
 // printModuleInfo prints module information for a dependency if available.

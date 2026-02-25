@@ -203,13 +203,9 @@ func (ga *GolangAnalyzer) analyzeWorkspace(ctx context.Context, projectPath, wor
 		}
 	}
 
-	// Add module information to dependencies that appear in multiple places
+	// Add module information to dependencies
 	for depName, modules := range depModules {
-		if len(modules) > 1 {
-			result.Dependencies[depName].Metadata["foundInModules"] = modules
-		} else {
-			result.Dependencies[depName].Metadata["foundInModules"] = modules
-		}
+		result.Dependencies[depName].Metadata["foundInModules"] = modules
 	}
 
 	log.Infof("Workspace analysis complete: found %d unique dependencies across %d modules",
@@ -220,7 +216,8 @@ func (ga *GolangAnalyzer) analyzeWorkspace(ctx context.Context, projectPath, wor
 
 // parseGoWork parses a go.work file.
 func parseGoWork(workPath string) (*modfile.WorkFile, error) {
-	contents, err := os.ReadFile(workPath)
+	// workPath is constructed from validated directory path + "go.work"
+	contents, err := os.ReadFile(workPath) //nolint:gosec // G304: workPath is from validated directory
 	if err != nil {
 		return nil, fmt.Errorf("failed to read go.work: %w", err)
 	}
