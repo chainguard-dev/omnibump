@@ -38,6 +38,9 @@ var (
 
 	// ErrRemoteAnalysisNotImplemented is returned when remote analysis is not implemented.
 	ErrRemoteAnalysisNotImplemented = errors.New("remote analysis not yet implemented")
+
+	// ErrMissingRequiredFields is returned when a dependency is missing groupId or artifactId.
+	ErrMissingRequiredFields = errors.New("missing required fields for dependency")
 )
 
 // Maven implements the BuildTool interface for Maven projects.
@@ -109,8 +112,22 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 		return fmt.Errorf("%w in: %s", ErrPomNotFound, cfg.RootDir)
 	}
 
-	// Convert unified dependencies to Maven patches
-	patches := convertDependenciesToPatches(cfg.Dependencies)
+	// Apply precedence: properties take precedence over direct dependency patches
+	// If a dependency uses a property that's being updated, skip the direct patch
+	var patches []Patch
+	var err error
+	if len(cfg.Properties) > 0 {
+		patches, err = applyPrecedenceRules(ctx, pomPath, cfg.Dependencies, cfg.Properties)
+		if err != nil {
+			return fmt.Errorf("failed to apply precedence rules: %w", err)
+		}
+	} else {
+		// No properties, convert all dependencies to patches
+		patches, err = convertDependenciesToPatches(cfg.Dependencies)
+		if err != nil {
+			return fmt.Errorf("failed to convert dependencies to patches: %w", err)
+		}
+	}
 
 	// Perform the update
 	updatedPom, err := UpdatePom(ctx, pomPath, patches, cfg.Properties)
@@ -202,8 +219,53 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 	return nil
 }
 
+// applyPrecedenceRules filters dependencies based on precedence rules:
+// - If a dependency uses a property that's being updated, skip the direct patch.
+// - Properties take precedence over direct dependency patches.
+func applyPrecedenceRules(ctx context.Context, pomPath string, deps []languages.Dependency, properties map[string]string) ([]Patch, error) {
+	log := clog.FromContext(ctx)
+
+	// Analyze the POM to understand which dependencies use properties
+	analyzer := &MavenAnalyzer{}
+	analysis, err := analyzer.Analyze(ctx, pomPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to analyze POM for precedence rules: %w", err)
+	}
+
+	// Filter dependencies based on property precedence
+	var filteredDeps []languages.Dependency
+	for _, dep := range deps {
+		// Determine the dependency key
+		depKey := dep.Name
+		if depKey == "" && dep.Metadata != nil {
+			if groupID, ok := dep.Metadata["groupId"].(string); ok {
+				if artifactID, ok := dep.Metadata["artifactId"].(string); ok {
+					depKey = fmt.Sprintf("%s:%s", groupID, artifactID)
+				}
+			}
+		}
+
+		// Check if this dependency uses a property
+		if depInfo, exists := analysis.Dependencies[depKey]; exists && depInfo.UsesProperty {
+			// Check if the property is being updated
+			if _, propertyBeingUpdated := properties[depInfo.PropertyName]; propertyBeingUpdated {
+				log.Infof("Skipping direct patch for %s (property %s takes precedence)", depKey, depInfo.PropertyName)
+				continue // Skip this dependency, property wins
+			}
+		}
+
+		// Include this dependency in patches
+		filteredDeps = append(filteredDeps, dep)
+	}
+
+	log.Infof("After precedence filtering: %d patches (skipped %d property-managed)", len(filteredDeps), len(deps)-len(filteredDeps))
+
+	// Convert filtered dependencies to patches
+	return convertDependenciesToPatches(filteredDeps)
+}
+
 // convertDependenciesToPatches converts unified dependencies to Maven-specific patches.
-func convertDependenciesToPatches(deps []languages.Dependency) []Patch {
+func convertDependenciesToPatches(deps []languages.Dependency) ([]Patch, error) {
 	patches := make([]Patch, 0, len(deps))
 
 	for _, dep := range deps {
@@ -219,11 +281,11 @@ func convertDependenciesToPatches(deps []languages.Dependency) []Patch {
 			patch.GroupID = extractGroupID(dep)
 			patch.ArtifactID = extractArtifactID(dep)
 		} else {
-			// Use metadata if available
-			if groupID, ok := dep.Metadata["groupID"].(string); ok {
+			// Use metadata if available (lowercase 'd' to match Maven XML)
+			if groupID, ok := dep.Metadata["groupId"].(string); ok {
 				patch.GroupID = groupID
 			}
-			if artifactID, ok := dep.Metadata["artifactID"].(string); ok {
+			if artifactID, ok := dep.Metadata["artifactId"].(string); ok {
 				patch.ArtifactID = artifactID
 			}
 		}
@@ -236,15 +298,22 @@ func convertDependenciesToPatches(deps []languages.Dependency) []Patch {
 			patch.Type = "jar"
 		}
 
+		// Validate required fields to prevent malformed XML
+		if patch.GroupID == "" || patch.ArtifactID == "" {
+			return nil, fmt.Errorf("%w: groupId=%q, artifactId=%q, version=%q (dependency name=%q)",
+				ErrMissingRequiredFields, patch.GroupID, patch.ArtifactID, patch.Version, dep.Name)
+		}
+
 		patches = append(patches, patch)
 	}
 
-	return patches
+	return patches, nil
 }
 
 // extractGroupID extracts groupID from a dependency.
 func extractGroupID(dep languages.Dependency) string {
-	if groupID, ok := dep.Metadata["groupID"].(string); ok {
+	// Use lowercase 'd' to match Maven XML naming
+	if groupID, ok := dep.Metadata["groupId"].(string); ok {
 		return groupID
 	}
 	// Try to extract from Name if it's in groupID:artifactID format
@@ -259,7 +328,8 @@ func extractGroupID(dep languages.Dependency) string {
 
 // extractArtifactID extracts artifactID from a dependency.
 func extractArtifactID(dep languages.Dependency) string {
-	if artifactID, ok := dep.Metadata["artifactID"].(string); ok {
+	// Use lowercase 'd' to match Maven XML naming
+	if artifactID, ok := dep.Metadata["artifactId"].(string); ok {
 		return artifactID
 	}
 	// Try to extract from Name if it's in groupID:artifactID format

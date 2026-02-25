@@ -7,6 +7,8 @@ package golang
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -364,4 +366,97 @@ require github.com/google/uuid v1.3.0
 			}
 		})
 	}
+}
+
+func TestAnalyzeWorkspace(t *testing.T) {
+	ctx := context.Background()
+
+	// Create temporary workspace directory
+	tmpDir := t.TempDir()
+
+	// Create go.work file
+	workContent := `go 1.23
+
+use (
+	.
+	./moduleA
+	./moduleB
+)
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "go.work"), []byte(workContent), 0o600))
+
+	// Create root go.mod
+	rootMod := `module github.com/example/workspace
+
+go 1.23
+
+require (
+	github.com/google/uuid v1.3.0
+	github.com/shared/dep v1.0.0
+)
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(rootMod), 0o600))
+
+	// Create moduleA
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "moduleA"), 0o755))
+	modAContent := `module github.com/example/workspace/moduleA
+
+go 1.23
+
+require (
+	github.com/sirupsen/logrus v1.9.0
+	github.com/shared/dep v1.0.0
+)
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "moduleA", "go.mod"), []byte(modAContent), 0o600))
+
+	// Create moduleB
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "moduleB"), 0o755))
+	modBContent := `module github.com/example/workspace/moduleB
+
+go 1.23
+
+require (
+	golang.org/x/crypto v0.45.0
+	github.com/unique/dep v1.2.0
+)
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "moduleB", "go.mod"), []byte(modBContent), 0o600))
+
+	// Test workspace analysis
+	analyzer := &GolangAnalyzer{}
+	result, err := analyzer.Analyze(ctx, tmpDir)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Check metadata
+	require.Equal(t, "go", result.Language)
+	isWorkspace, ok := result.Metadata["workspace"].(bool)
+	require.True(t, ok)
+	require.True(t, isWorkspace)
+
+	moduleCount, ok := result.Metadata["moduleCount"].(int)
+	require.True(t, ok)
+	require.Equal(t, 3, moduleCount)
+
+	// Check dependencies are aggregated
+	// Should have: uuid, shared/dep, logrus, crypto, unique/dep
+	require.Equal(t, 5, len(result.Dependencies))
+
+	// Check shared dependency appears in multiple modules
+	sharedDep, ok := result.Dependencies["github.com/shared/dep"]
+	require.True(t, ok)
+	modules, ok := sharedDep.Metadata["foundInModules"].([]string)
+	require.True(t, ok)
+	require.Len(t, modules, 2)
+	require.Contains(t, modules, ".")
+	require.Contains(t, modules, "./moduleA")
+
+	// Check unique dependencies
+	uniqueDep, ok := result.Dependencies["github.com/unique/dep"]
+	require.True(t, ok)
+	uniqueModules, ok := uniqueDep.Metadata["foundInModules"].([]string)
+	require.True(t, ok)
+	require.Len(t, uniqueModules, 1)
+	require.Contains(t, uniqueModules, "./moduleB")
 }

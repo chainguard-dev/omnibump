@@ -195,6 +195,14 @@ func outputText(analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy) 
 	fmt.Println()
 
 	fmt.Printf("Language: %s\n", analysis.Language)
+
+	// Show workspace information if applicable
+	if isWorkspace, ok := analysis.Metadata["workspace"].(bool); ok && isWorkspace {
+		if moduleCount, ok := analysis.Metadata["moduleCount"].(int); ok {
+			fmt.Printf("Workspace: %d modules\n", moduleCount)
+		}
+	}
+
 	fmt.Printf("Total dependencies: %d\n", len(analysis.Dependencies))
 
 	// Count dependencies using properties
@@ -411,14 +419,39 @@ func printDirectUpdates(analysis *analyzer.AnalysisResult, strategy *analyzer.St
 	fmt.Println("Direct Dependency Updates:")
 	fmt.Println("--------------------------")
 	for _, dep := range strategy.DirectUpdates {
-		depKey := dep.Name
-		if depInfo, exists := analysis.Dependencies[depKey]; exists {
-			fmt.Printf("  %s: %s -> %s\n", depKey, depInfo.Version, dep.Version)
-		} else {
-			fmt.Printf("  %s: (new) -> %s\n", depKey, dep.Version)
-		}
+		printDependencyUpdate(analysis, dep)
 	}
 	fmt.Println()
+}
+
+// printDependencyUpdate prints a single dependency update.
+func printDependencyUpdate(analysis *analyzer.AnalysisResult, dep analyzer.Dependency) {
+	depInfo, exists := analysis.Dependencies[dep.Name]
+	if !exists {
+		fmt.Printf("  %s: (new) -> %s\n", dep.Name, dep.Version)
+		return
+	}
+
+	fmt.Printf("  %s: %s -> %s\n", dep.Name, depInfo.Version, dep.Version)
+	printModuleInfo(depInfo)
+}
+
+// printModuleInfo prints module information for a dependency if available.
+func printModuleInfo(depInfo *analyzer.DependencyInfo) {
+	modules, ok := depInfo.Metadata["foundInModules"].([]string)
+	if !ok || len(modules) == 0 {
+		return
+	}
+
+	if len(modules) == 1 {
+		fmt.Printf("    Found in: %s\n", modules[0])
+		return
+	}
+
+	fmt.Printf("    Found in %d modules:\n", len(modules))
+	for _, mod := range modules {
+		fmt.Printf("      - %s\n", mod)
+	}
 }
 
 // printStrategyWarnings prints strategy warnings.

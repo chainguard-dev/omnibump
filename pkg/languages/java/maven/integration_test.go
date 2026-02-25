@@ -393,7 +393,10 @@ func TestConvertDependenciesToPatches(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := convertDependenciesToPatches(tc.deps)
+			got, err := convertDependenciesToPatches(tc.deps)
+			if err != nil {
+				t.Fatalf("convertDependenciesToPatches() error = %v", err)
+			}
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %d patches, want %d", len(got), len(tc.want))
 			}
