@@ -98,6 +98,11 @@ func UpdatePom(ctx context.Context, pomPath string, patches []Patch, properties 
 	return xmlBytes, nil
 }
 
+// isPropertyReference checks if a version string is a Maven property reference.
+func isPropertyReference(version string) bool {
+	return strings.HasPrefix(version, "${") && strings.HasSuffix(version, "}")
+}
+
 // PatchProject updates a gopom.Project with the given patches and properties.
 // Ported from pombump/pkg/patch.go:PatchProject.
 func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, propertyPatches map[string]string) (*gopom.Project, error) {
@@ -120,6 +125,13 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 			log.Debugf("Checking dependency: %s:%s @ %s", dep.GroupID, dep.ArtifactID, dep.Version)
 			for _, patch := range patches {
 				if dep.ArtifactID == patch.ArtifactID && dep.GroupID == patch.GroupID {
+					// Skip patching if the dependency uses a property reference
+					if isPropertyReference(dep.Version) {
+						log.Warnf("Skipping patch for %s:%s (uses property %s, consider using --properties instead)",
+							patch.GroupID, patch.ArtifactID, dep.Version)
+						delete(missingDeps, patch)
+						continue
+					}
 					log.Infof("Patching %s:%s from %s to %s (scope: %s)",
 						patch.GroupID, patch.ArtifactID, dep.Version, patch.Version, patch.Scope)
 					(*project.Dependencies)[i].Version = patch.Version
@@ -135,6 +147,13 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 			log.Debugf("Checking DM dependency: %s:%s @ %s", dep.GroupID, dep.ArtifactID, dep.Version)
 			for _, patch := range patches {
 				if dep.ArtifactID == patch.ArtifactID && dep.GroupID == patch.GroupID {
+					// Skip patching if the dependency uses a property reference
+					if isPropertyReference(dep.Version) {
+						log.Warnf("Skipping patch for %s:%s (uses property %s, consider using --properties instead)",
+							patch.GroupID, patch.ArtifactID, dep.Version)
+						delete(missingDeps, patch)
+						continue
+					}
 					log.Infof("Patching DM dependency %s:%s from %s to %s (scope: %s)",
 						patch.GroupID, patch.ArtifactID, dep.Version, patch.Version, patch.Scope)
 					(*project.DependencyManagement.Dependencies)[i].Version = patch.Version

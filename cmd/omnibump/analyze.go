@@ -420,25 +420,34 @@ func printDirectUpdates(analysis *analyzer.AnalysisResult, strategy *analyzer.St
 	fmt.Println("--------------------------")
 	for _, dep := range strategy.DirectUpdates {
 		depKey := dep.Name
-		if depInfo, exists := analysis.Dependencies[depKey]; exists {
-			fmt.Printf("  %s: %s -> %s\n", depKey, depInfo.Version, dep.Version)
-
-			// If this is a workspace, show which modules contain this dependency
-			if modules, ok := depInfo.Metadata["foundInModules"].([]string); ok && len(modules) > 0 {
-				if len(modules) == 1 {
-					fmt.Printf("    Found in: %s\n", modules[0])
-				} else {
-					fmt.Printf("    Found in %d modules:\n", len(modules))
-					for _, mod := range modules {
-						fmt.Printf("      - %s\n", mod)
-					}
-				}
-			}
-		} else {
+		depInfo, exists := analysis.Dependencies[depKey]
+		if !exists {
 			fmt.Printf("  %s: (new) -> %s\n", depKey, dep.Version)
+			continue
 		}
+
+		fmt.Printf("  %s: %s -> %s\n", depKey, depInfo.Version, dep.Version)
+		printModuleInfo(depInfo)
 	}
 	fmt.Println()
+}
+
+// printModuleInfo prints module information for a dependency if available.
+func printModuleInfo(depInfo *analyzer.DependencyInfo) {
+	modules, ok := depInfo.Metadata["foundInModules"].([]string)
+	if !ok || len(modules) == 0 {
+		return
+	}
+
+	if len(modules) == 1 {
+		fmt.Printf("    Found in: %s\n", modules[0])
+		return
+	}
+
+	fmt.Printf("    Found in %d modules:\n", len(modules))
+	for _, mod := range modules {
+		fmt.Printf("      - %s\n", mod)
+	}
 }
 
 // printStrategyWarnings prints strategy warnings.
