@@ -195,6 +195,14 @@ func outputText(analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy) 
 	fmt.Println()
 
 	fmt.Printf("Language: %s\n", analysis.Language)
+
+	// Show workspace information if applicable
+	if isWorkspace, ok := analysis.Metadata["workspace"].(bool); ok && isWorkspace {
+		if moduleCount, ok := analysis.Metadata["moduleCount"].(int); ok {
+			fmt.Printf("Workspace: %d modules\n", moduleCount)
+		}
+	}
+
 	fmt.Printf("Total dependencies: %d\n", len(analysis.Dependencies))
 
 	// Count dependencies using properties
@@ -414,6 +422,18 @@ func printDirectUpdates(analysis *analyzer.AnalysisResult, strategy *analyzer.St
 		depKey := dep.Name
 		if depInfo, exists := analysis.Dependencies[depKey]; exists {
 			fmt.Printf("  %s: %s -> %s\n", depKey, depInfo.Version, dep.Version)
+
+			// If this is a workspace, show which modules contain this dependency
+			if modules, ok := depInfo.Metadata["foundInModules"].([]string); ok && len(modules) > 0 {
+				if len(modules) == 1 {
+					fmt.Printf("    Found in: %s\n", modules[0])
+				} else {
+					fmt.Printf("    Found in %d modules:\n", len(modules))
+					for _, mod := range modules {
+						fmt.Printf("      - %s\n", mod)
+					}
+				}
+			}
 		} else {
 			fmt.Printf("  %s: (new) -> %s\n", depKey, dep.Version)
 		}

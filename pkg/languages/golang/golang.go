@@ -69,21 +69,37 @@ func (g *Golang) SupportsAnalysis() bool {
 }
 
 // Update performs dependency updates on a Go project.
+// If a go.work file is present, updates all modules in the workspace that contain the dependencies.
 func (g *Golang) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	log := clog.FromContext(ctx)
 
 	log.Infof("Updating Go project at: %s", cfg.RootDir)
 	log.Infof("Dependencies to update: %d", len(cfg.Dependencies))
 
+	// Check for go.work file
+	workPath := filepath.Join(cfg.RootDir, "go.work")
+	if _, err := os.Stat(workPath); err == nil {
+		log.Infof("Found go.work file, updating all workspace modules")
+		return g.updateWorkspace(ctx, cfg, workPath)
+	}
+
+	// No workspace, update single module
+	return g.updateSingleModule(ctx, cfg, cfg.RootDir)
+}
+
+// updateSingleModule updates a single Go module.
+func (g *Golang) updateSingleModule(ctx context.Context, cfg *languages.UpdateConfig, moduleDir string) error {
+	log := clog.FromContext(ctx)
+
 	// Find go.mod
-	goModPath := filepath.Join(cfg.RootDir, "go.mod")
+	goModPath := filepath.Join(moduleDir, "go.mod")
 	if _, err := os.Stat(goModPath); os.IsNotExist(err) {
-		return fmt.Errorf("%w in: %s", ErrGoModNotFound, cfg.RootDir)
+		return fmt.Errorf("%w in: %s", ErrGoModNotFound, moduleDir)
 	}
 
 	// Build update configuration
 	updateCfg := &UpdateConfig{
-		Modroot:         cfg.RootDir,
+		Modroot:         moduleDir,
 		Tidy:            cfg.Tidy,
 		ShowDiff:        cfg.ShowDiff,
 		SkipInitialTidy: getOptionBool(cfg.Options, "skip-initial-tidy", false),
@@ -102,29 +118,110 @@ func (g *Golang) Update(ctx context.Context, cfg *languages.UpdateConfig) error 
 	}
 
 	// Resolve and filter packages that need updating
-	packagesToUpdate, err := resolveAndFilterPackages(ctx, packages, modFile, cfg.RootDir)
+	packagesToUpdate, err := resolveAndFilterPackages(ctx, packages, modFile, moduleDir)
 	if err != nil {
 		return fmt.Errorf("failed to resolve package versions: %w", err)
 	}
 
 	if len(packagesToUpdate) == 0 {
-		log.Infof("All packages are already up-to-date")
+		log.Infof("All packages are already up-to-date in %s", moduleDir)
 		return nil
 	}
 
 	if cfg.DryRun {
 		log.Infof("Dry run mode: not making actual changes")
-		log.Infof("Would update %d packages", len(packagesToUpdate))
+		log.Infof("Would update %d packages in %s", len(packagesToUpdate), moduleDir)
 		return nil
 	}
 
 	// Perform the update
 	_, err = DoUpdate(ctx, packagesToUpdate, updateCfg)
 	if err != nil {
-		return fmt.Errorf("failed to update Go modules: %w", err)
+		return fmt.Errorf("failed to update Go modules in %s: %w", moduleDir, err)
 	}
 
-	log.Infof("Successfully updated Go modules")
+	log.Infof("Successfully updated Go modules in %s", moduleDir)
+	return nil
+}
+
+// updateWorkspace updates all modules in a Go workspace that contain the target dependencies.
+func (g *Golang) updateWorkspace(ctx context.Context, cfg *languages.UpdateConfig, workPath string) error {
+	log := clog.FromContext(ctx)
+
+	// Parse go.work file
+	workFile, err := parseGoWork(workPath)
+	if err != nil {
+		return fmt.Errorf("failed to parse go.work: %w", err)
+	}
+
+	// Get all module paths from workspace
+	modulePaths := getWorkspaceModulePaths(workFile)
+	log.Infof("Found %d modules in workspace", len(modulePaths))
+
+	// First, determine which modules contain the dependencies we want to update
+	modulesToUpdate := make([]string, 0)
+	dependencyNames := make(map[string]bool)
+	for _, dep := range cfg.Dependencies {
+		dependencyNames[dep.Name] = true
+	}
+
+	for _, modPath := range modulePaths {
+		fullModPath := filepath.Join(cfg.RootDir, modPath)
+		goModPath := filepath.Join(fullModPath, "go.mod")
+
+		// Parse go.mod to see if it contains any of our target dependencies
+		modFile, _, err := ParseGoModfile(goModPath)
+		if err != nil {
+			log.Warnf("Failed to parse %s: %v", goModPath, err)
+			continue
+		}
+
+		// Check if this module contains any of the dependencies
+		hasTargetDep := false
+		for _, req := range modFile.Require {
+			if req != nil && dependencyNames[req.Mod.Path] {
+				hasTargetDep = true
+				break
+			}
+		}
+
+		if hasTargetDep {
+			modulesToUpdate = append(modulesToUpdate, modPath)
+		}
+	}
+
+	if len(modulesToUpdate) == 0 {
+		log.Infof("None of the workspace modules contain the target dependencies")
+		return nil
+	}
+
+	log.Infof("Will update %d modules that contain target dependencies", len(modulesToUpdate))
+
+	// Update each module
+	updatedCount := 0
+	for _, modPath := range modulesToUpdate {
+		fullModPath := filepath.Join(cfg.RootDir, modPath)
+		log.Infof("Updating module: %s", modPath)
+
+		// Create a copy of cfg with the module-specific directory
+		moduleCfg := &languages.UpdateConfig{
+			RootDir:      fullModPath,
+			Dependencies: cfg.Dependencies,
+			DryRun:       cfg.DryRun,
+			Tidy:         cfg.Tidy,
+			ShowDiff:     cfg.ShowDiff,
+			Options:      cfg.Options,
+		}
+
+		// Update this module
+		if err := g.updateSingleModule(ctx, moduleCfg, fullModPath); err != nil {
+			log.Errorf("Failed to update module %s: %v", modPath, err)
+			return fmt.Errorf("failed to update module %s: %w", modPath, err)
+		}
+		updatedCount++
+	}
+
+	log.Infof("Successfully updated %d modules in workspace", updatedCount)
 	return nil
 }
 

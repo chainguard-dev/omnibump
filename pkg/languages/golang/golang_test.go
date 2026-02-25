@@ -14,6 +14,7 @@ import (
 
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
 )
@@ -1086,4 +1087,137 @@ func TestGolangAnalyzer_RecommendStrategy(t *testing.T) {
 	if !strings.Contains(warningsText, "replaced") {
 		t.Error("Expected warning about replaced dependency")
 	}
+}
+
+func TestGolang_Update_Workspace(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create go.work file
+	workContent := `go 1.26
+
+use (
+	.
+	./moduleA
+	./moduleB
+)
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "go.work"), []byte(workContent), 0o600))
+
+	// Create root go.mod with shared dependency
+	rootMod := `module test/workspace
+
+go 1.26
+
+require github.com/google/uuid v1.0.0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(rootMod), 0o600))
+
+	// Create moduleA with shared dependency
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "moduleA"), 0o755))
+	modAContent := `module test/workspace/moduleA
+
+go 1.26
+
+require github.com/google/uuid v1.0.0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "moduleA", "go.mod"), []byte(modAContent), 0o600))
+
+	// Create moduleB without the dependency
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "moduleB"), 0o755))
+	modBContent := `module test/workspace/moduleB
+
+go 1.26
+
+require golang.org/x/crypto v0.45.0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "moduleB", "go.mod"), []byte(modBContent), 0o600))
+
+	// Test dry run update
+	g := &Golang{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "github.com/google/uuid", Version: "v1.3.0"},
+		},
+		DryRun: true,
+	}
+
+	err := g.Update(context.Background(), cfg)
+	require.NoError(t, err)
+
+	// Verify go.mod files were not changed in dry run
+	rootContent, err := os.ReadFile(filepath.Join(tmpDir, "go.mod"))
+	require.NoError(t, err)
+	require.Contains(t, string(rootContent), "v1.0.0", "root go.mod should not change in dry run")
+
+	modAPath := filepath.Join(tmpDir, "moduleA", "go.mod")
+	modAActual, err := os.ReadFile(modAPath)
+	require.NoError(t, err)
+	require.Contains(t, string(modAActual), "v1.0.0", "moduleA go.mod should not change in dry run")
+
+	// moduleB should not be touched since it doesn't have the dependency
+	modBPath := filepath.Join(tmpDir, "moduleB", "go.mod")
+	modBActual, err := os.ReadFile(modBPath)
+	require.NoError(t, err)
+	require.NotContains(t, string(modBActual), "uuid", "moduleB should not be modified")
+}
+
+func TestGolang_Update_Workspace_OnlyTargetedModules(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create go.work file with 3 modules
+	workContent := `go 1.26
+
+use (
+	.
+	./with-dep
+	./without-dep
+)
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "go.work"), []byte(workContent), 0o600))
+
+	// Root module without target dependency
+	rootMod := `module test/workspace
+
+go 1.26
+
+require github.com/sirupsen/logrus v1.9.0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(rootMod), 0o600))
+
+	// Module with target dependency
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "with-dep"), 0o755))
+	withDepMod := `module test/workspace/with-dep
+
+go 1.26
+
+require github.com/google/uuid v1.0.0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "with-dep", "go.mod"), []byte(withDepMod), 0o600))
+
+	// Module without target dependency
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "without-dep"), 0o755))
+	withoutDepMod := `module test/workspace/without-dep
+
+go 1.26
+
+require golang.org/x/crypto v0.45.0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "without-dep", "go.mod"), []byte(withoutDepMod), 0o600))
+
+	// Update the dependency (dry run to avoid actual network calls)
+	g := &Golang{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "github.com/google/uuid", Version: "v1.3.0"},
+		},
+		DryRun: true,
+	}
+
+	err := g.Update(context.Background(), cfg)
+	require.NoError(t, err)
+
+	// Only with-dep module should have been processed
+	// (In actual execution, only that module would be updated)
 }

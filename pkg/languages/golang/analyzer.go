@@ -14,6 +14,7 @@ import (
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
+	"golang.org/x/mod/modfile"
 )
 
 const (
@@ -29,14 +30,36 @@ var ErrNoFilesProvided = errors.New("no files provided for analysis")
 type GolangAnalyzer struct{}
 
 // Analyze performs dependency analysis on a Go project.
+// If a go.work file is present, analyzes all modules in the workspace.
 func (ga *GolangAnalyzer) Analyze(ctx context.Context, projectPath string) (*analyzer.AnalysisResult, error) {
 	log := clog.FromContext(ctx)
 
-	// Determine go.mod file path
-	goModPath := projectPath
-	if info, err := os.Stat(projectPath); err == nil && info.IsDir() {
-		goModPath = filepath.Join(projectPath, "go.mod")
+	// Check if projectPath is a directory
+	info, err := os.Stat(projectPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat project path: %w", err)
 	}
+
+	// If it's a file, analyze just that go.mod
+	if !info.IsDir() {
+		return ga.analyzeSingleModule(ctx, projectPath)
+	}
+
+	// Check for go.work file
+	workPath := filepath.Join(projectPath, "go.work")
+	if _, err := os.Stat(workPath); err == nil {
+		log.Infof("Found go.work file, analyzing all workspace modules")
+		return ga.analyzeWorkspace(ctx, projectPath, workPath)
+	}
+
+	// No workspace, analyze single module
+	goModPath := filepath.Join(projectPath, "go.mod")
+	return ga.analyzeSingleModule(ctx, goModPath)
+}
+
+// analyzeSingleModule analyzes a single Go module.
+func (ga *GolangAnalyzer) analyzeSingleModule(ctx context.Context, goModPath string) (*analyzer.AnalysisResult, error) {
+	log := clog.FromContext(ctx)
 
 	log.Debugf("Analyzing Go project: %s", goModPath)
 
@@ -53,6 +76,9 @@ func (ga *GolangAnalyzer) Analyze(ctx context.Context, projectPath string) (*ana
 		PropertyUsage: make(map[string]int),
 		Metadata:      make(map[string]any),
 	}
+
+	// Store module root
+	result.Metadata["moduleRoot"] = filepath.Dir(goModPath)
 
 	// Store Go version
 	if modFile.Go != nil {
@@ -114,6 +140,108 @@ func (ga *GolangAnalyzer) Analyze(ctx context.Context, projectPath string) (*ana
 		len(result.Dependencies), countDirect(result), countIndirect(result))
 
 	return result, nil
+}
+
+// analyzeWorkspace analyzes all modules in a Go workspace.
+func (ga *GolangAnalyzer) analyzeWorkspace(ctx context.Context, projectPath, workPath string) (*analyzer.AnalysisResult, error) {
+	log := clog.FromContext(ctx)
+
+	// Parse go.work file
+	workFile, err := parseGoWork(workPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse go.work: %w", err)
+	}
+
+	// Get all module paths from workspace
+	modulePaths := getWorkspaceModulePaths(workFile)
+	log.Infof("Found %d modules in workspace", len(modulePaths))
+
+	// Analyze each module and aggregate dependencies
+	result := &analyzer.AnalysisResult{
+		Language:      "go",
+		Dependencies:  make(map[string]*analyzer.DependencyInfo),
+		Properties:    make(map[string]string),
+		PropertyUsage: make(map[string]int),
+		Metadata:      make(map[string]any),
+	}
+
+	result.Metadata["workspace"] = true
+	result.Metadata["workspacePath"] = workPath
+	result.Metadata["moduleCount"] = len(modulePaths)
+	result.Metadata["moduleRoot"] = projectPath
+
+	// Track which modules contain each dependency
+	depModules := make(map[string][]string)
+
+	for _, modPath := range modulePaths {
+		fullModPath := filepath.Join(projectPath, modPath, "go.mod")
+
+		log.Debugf("Analyzing module: %s", modPath)
+
+		modResult, err := ga.analyzeSingleModule(ctx, fullModPath)
+		if err != nil {
+			log.Warnf("Failed to analyze module %s: %v", modPath, err)
+			continue
+		}
+
+		// Merge dependencies
+		for depName, depInfo := range modResult.Dependencies {
+			if existing, exists := result.Dependencies[depName]; exists {
+				// Dependency exists in multiple modules - track which modules
+				depModules[depName] = append(depModules[depName], modPath)
+
+				// Keep the newer version if different
+				if depInfo.Version != existing.Version {
+					log.Debugf("Dependency %s has different versions: %s vs %s",
+						depName, existing.Version, depInfo.Version)
+				}
+			} else {
+				// First time seeing this dependency
+				result.Dependencies[depName] = depInfo
+				depModules[depName] = []string{modPath}
+			}
+		}
+	}
+
+	// Add module information to dependencies that appear in multiple places
+	for depName, modules := range depModules {
+		if len(modules) > 1 {
+			result.Dependencies[depName].Metadata["foundInModules"] = modules
+		} else {
+			result.Dependencies[depName].Metadata["foundInModules"] = modules
+		}
+	}
+
+	log.Infof("Workspace analysis complete: found %d unique dependencies across %d modules",
+		len(result.Dependencies), len(modulePaths))
+
+	return result, nil
+}
+
+// parseGoWork parses a go.work file.
+func parseGoWork(workPath string) (*modfile.WorkFile, error) {
+	contents, err := os.ReadFile(workPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read go.work: %w", err)
+	}
+
+	workFile, err := modfile.ParseWork(workPath, contents, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse go.work: %w", err)
+	}
+
+	return workFile, nil
+}
+
+// getWorkspaceModulePaths extracts module paths from a go.work file.
+func getWorkspaceModulePaths(workFile *modfile.WorkFile) []string {
+	paths := make([]string, 0, len(workFile.Use))
+	for _, use := range workFile.Use {
+		if use != nil {
+			paths = append(paths, use.Path)
+		}
+	}
+	return paths
 }
 
 // AnalyzeFromContent performs dependency analysis on a Go project from go.mod file content.
