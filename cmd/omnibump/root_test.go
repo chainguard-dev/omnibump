@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/chainguard-dev/omnibump/pkg/config"
 )
 
 // TestValidateLogPath_ValidPaths tests that safe log paths are accepted.
@@ -199,5 +201,36 @@ func TestSetupLogging_AllowsBuiltinStderr(t *testing.T) {
 	err := setupLogging()
 	if err != nil {
 		t.Errorf("setupLogging() should allow builtin:stderr, got error: %v", err)
+	}
+}
+
+// TestConvertToUpdateConfig_WithProperties tests property conversion.
+func TestConvertToUpdateConfig_WithProperties(t *testing.T) {
+	cfg := &config.Config{
+		Packages: []config.Package{
+			{Name: "test-package", Version: "1.0.0"},
+		},
+		Properties: []config.Property{
+			{Property: "java.version", Value: "17"},
+			{Property: "spring.version", Value: "3.0.0"},
+		},
+	}
+
+	updateCfg := convertToUpdateConfig(cfg)
+
+	if len(updateCfg.Dependencies) != 1 {
+		t.Errorf("expected 1 dependency, got %d", len(updateCfg.Dependencies))
+	}
+
+	if len(updateCfg.Properties) != 2 {
+		t.Errorf("expected 2 properties, got %d", len(updateCfg.Properties))
+	}
+
+	if updateCfg.Properties["java.version"] != "17" {
+		t.Errorf("expected java.version=17, got %s", updateCfg.Properties["java.version"])
+	}
+
+	if updateCfg.Properties["spring.version"] != "3.0.0" {
+		t.Errorf("expected spring.version=3.0.0, got %s", updateCfg.Properties["spring.version"])
 	}
 }

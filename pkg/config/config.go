@@ -331,3 +331,35 @@ func ParseInlinePackages(packagesStr string) ([]Package, error) {
 
 	return packages, nil
 }
+
+// ParseInlineProperties parses inline property specifications from command line.
+// Format: "property=value" pairs separated by spaces.
+func ParseInlineProperties(propsStr string) ([]Property, error) {
+	if propsStr == "" {
+		return nil, nil
+	}
+
+	var properties []Property
+	for propStr := range strings.FieldsSeq(propsStr) {
+		if propStr == "" {
+			continue
+		}
+
+		parts := strings.SplitN(propStr, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("%w: %s (expected property=value)", ErrInvalidPackageFormat, propStr)
+		}
+
+		// Skip properties with empty name or value
+		if parts[0] == "" || parts[1] == "" {
+			continue
+		}
+
+		properties = append(properties, Property{
+			Property: parts[0],
+			Value:    parts[1],
+		})
+	}
+
+	return properties, nil
+}
