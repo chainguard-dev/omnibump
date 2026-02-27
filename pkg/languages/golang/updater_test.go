@@ -912,3 +912,143 @@ require github.com/example/dependency v1.4.0
 		})
 	}
 }
+
+func TestShouldDowngradeGoVersion(t *testing.T) {
+	tests := []struct {
+		name           string
+		currentVersion string
+		envGoVersion   string
+		want           bool
+	}{{
+		name:           "same version",
+		currentVersion: "1.25.7",
+		envGoVersion:   "1.25.7",
+		want:           false,
+	}, {
+		name:           "downgrade needed",
+		currentVersion: "1.26.0",
+		envGoVersion:   "1.25.7",
+		want:           true,
+	}, {
+		name:           "upgrade not needed",
+		currentVersion: "1.24.0",
+		envGoVersion:   "1.25.7",
+		want:           false,
+	}, {
+		name:           "invalid current version",
+		currentVersion: "invalid",
+		envGoVersion:   "1.25.7",
+		want:           false,
+	}, {
+		name:           "invalid env version",
+		currentVersion: "1.26.0",
+		envGoVersion:   "invalid",
+		want:           false,
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldDowngradeGoVersion(tt.currentVersion, tt.envGoVersion)
+			if got != tt.want {
+				t.Errorf("shouldDowngradeGoVersion() got = %v, wanted = %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeGoModVersion(t *testing.T) {
+	tests := []struct {
+		name          string
+		initialGoMod  string
+		envGoVersion  string
+		wantGoVersion string
+		wantToolchain bool
+	}{{
+		name: "downgrade from 1.26 to 1.25.7",
+		initialGoMod: `module test
+
+go 1.26
+
+require (
+	example.com/foo v1.0.0
+)
+`,
+		envGoVersion:  "1.25.7",
+		wantGoVersion: "1.25.7",
+		wantToolchain: false,
+	}, {
+		name: "remove toolchain directive",
+		initialGoMod: `module test
+
+go 1.25
+
+toolchain go1.26.0
+
+require (
+	example.com/foo v1.0.0
+)
+`,
+		envGoVersion:  "1.25.7",
+		wantGoVersion: "1.25",
+		wantToolchain: false,
+	}, {
+		name: "no change needed",
+		initialGoMod: `module test
+
+go 1.25.7
+
+require (
+	example.com/foo v1.0.0
+)
+`,
+		envGoVersion:  "1.25.7",
+		wantGoVersion: "1.25.7",
+		wantToolchain: false,
+	}, {
+		name: "add missing go directive",
+		initialGoMod: `module test
+
+require (
+	example.com/foo v1.0.0
+)
+`,
+		envGoVersion:  "1.25.7",
+		wantGoVersion: "1.25.7",
+		wantToolchain: false,
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			goModPath := filepath.Join(tmpDir, "go.mod")
+
+			if err := os.WriteFile(goModPath, []byte(tt.initialGoMod), 0o600); err != nil {
+				t.Fatalf("Failed to create go.mod: %v", err)
+			}
+
+			ctx := context.Background()
+			if err := normalizeGoModVersion(ctx, goModPath, tt.envGoVersion); err != nil {
+				t.Fatalf("normalizeGoModVersion() error: got = %v", err)
+			}
+
+			modFile, _, err := ParseGoModfile(goModPath)
+			if err != nil {
+				t.Fatalf("Failed to parse updated go.mod: %v", err)
+			}
+
+			if modFile.Go == nil {
+				t.Fatal("go directive is missing after normalization")
+			}
+
+			if modFile.Go.Version != tt.wantGoVersion {
+				t.Errorf("go version: got = %v, wanted = %v", modFile.Go.Version, tt.wantGoVersion)
+			}
+
+			if tt.wantToolchain && modFile.Toolchain == nil {
+				t.Error("expected toolchain directive to be present")
+			} else if !tt.wantToolchain && modFile.Toolchain != nil {
+				t.Errorf("expected toolchain directive to be removed, but found: %v", modFile.Toolchain.Name)
+			}
+		})
+	}
+}
