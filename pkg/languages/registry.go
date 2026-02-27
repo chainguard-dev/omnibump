@@ -56,43 +56,11 @@ func List() []string {
 
 // DetectLanguage attempts to detect which language is present in the given directory.
 // Returns the first language that reports a positive detection.
-// For polyglot projects, checks languages in priority order: go, java, rust.
 func DetectLanguage(ctx context.Context, dir string) (string, error) {
 	mu.RLock()
 	defer mu.RUnlock()
 
-	// Define priority order for polyglot projects
-	priorityOrder := []string{"go", "java", "rust"}
-
-	// Check priority languages first
-	for _, name := range priorityOrder {
-		lang, exists := registry[name]
-		if !exists {
-			continue
-		}
-		detected, err := lang.Detect(ctx, dir)
-		if err != nil {
-			continue
-		}
-		if detected {
-			return name, nil
-		}
-	}
-
-	// Check remaining languages
 	for name, lang := range registry {
-		// Skip if already checked in priority order
-		isPriority := false
-		for _, pName := range priorityOrder {
-			if name == pName {
-				isPriority = true
-				break
-			}
-		}
-		if isPriority {
-			continue
-		}
-
 		detected, err := lang.Detect(ctx, dir)
 		if err != nil {
 			continue
@@ -103,6 +71,26 @@ func DetectLanguage(ctx context.Context, dir string) (string, error) {
 	}
 
 	return "", fmt.Errorf("%w in directory: %s", ErrNoLanguageDetected, dir)
+}
+
+// DetectLanguageForPackage detects which language contains the specified package.
+// This is useful for polyglot projects where the package name determines the ecosystem.
+func DetectLanguageForPackage(ctx context.Context, dir string, packageName string) (string, error) {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	for name, lang := range registry {
+		contains, err := lang.ContainsPackage(ctx, dir, packageName)
+		if err != nil {
+			continue
+		}
+		if contains {
+			return name, nil
+		}
+	}
+
+	// Fall back to regular detection if package not found
+	return DetectLanguage(ctx, dir)
 }
 
 // DetectLanguages returns all languages detected in the given directory.

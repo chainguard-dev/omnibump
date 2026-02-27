@@ -69,6 +69,21 @@ func (j *Java) SupportsAnalysis() bool {
 	return true
 }
 
+// ContainsPackage checks if the package exists by delegating to all build tools.
+func (j *Java) ContainsPackage(ctx context.Context, dir string, packageName string) (bool, error) {
+	// Try all registered build tools
+	for _, tool := range registeredBuildTools {
+		contains, err := tool.ContainsPackage(ctx, dir, packageName)
+		if err != nil {
+			continue // Skip tools that error
+		}
+		if contains {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // Update performs dependency updates on a Java project.
 func (j *Java) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	log := clog.FromContext(ctx)

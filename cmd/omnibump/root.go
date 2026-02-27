@@ -287,11 +287,29 @@ func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but requir
 	}
 
 	if detectedLang == languageAuto || detectedLang == "" {
-		detectedLang, err = languages.DetectLanguage(ctx, flags.rootDir)
-		if err != nil {
-			return fmt.Errorf("failed to detect language: %w (try specifying --language explicitly)", err)
+		// If packages are specified, try package-based detection first
+		if len(cfg.Packages) > 0 {
+			packageName := cfg.Packages[0].Name
+			if packageName == "" && cfg.Packages[0].GroupID != "" {
+				// Maven format: use artifactId
+				packageName = cfg.Packages[0].ArtifactID
+			}
+			if packageName != "" {
+				detectedLang, err = languages.DetectLanguageForPackage(ctx, flags.rootDir, packageName)
+				if err == nil {
+					log.Infof("Detected language from package %q: %s", packageName, detectedLang)
+				}
+			}
 		}
-		log.Infof("Detected language: %s", detectedLang)
+
+		// Fall back to regular detection if package-based detection didn't work
+		if err != nil || detectedLang == "" {
+			detectedLang, err = languages.DetectLanguage(ctx, flags.rootDir)
+			if err != nil {
+				return fmt.Errorf("failed to detect language: %w (try specifying --language explicitly)", err)
+			}
+			log.Infof("Detected language: %s", detectedLang)
+		}
 	}
 
 	// Override language from config if specified

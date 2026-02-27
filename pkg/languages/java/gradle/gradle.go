@@ -131,6 +131,34 @@ func (g *Gradle) GetAnalyzer() analyzer.Analyzer {
 	return &GradleAnalyzer{}
 }
 
+// ContainsPackage checks if the package exists in Gradle build files or libs.versions.toml.
+func (g *Gradle) ContainsPackage(ctx context.Context, dir string, packageName string) (bool, error) {
+	log := clog.FromContext(ctx)
+
+	// Check libs.versions.toml first (version catalogs)
+	tomlPath := filepath.Join(dir, "gradle", "libs.versions.toml")
+	if content, err := os.ReadFile(tomlPath); err == nil { //nolint:gosec // G304: tomlPath is constructed from validated dir
+		if strings.Contains(string(content), packageName) {
+			log.Debugf("Found package %s in libs.versions.toml", packageName)
+			return true, nil
+		}
+	}
+
+	// Check build.gradle and build.gradle.kts
+	for _, filename := range []string{"build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"} {
+		buildPath := filepath.Join(dir, filename)
+		if content, err := os.ReadFile(buildPath); err == nil { //nolint:gosec // G304: buildPath is constructed from validated dir
+			if strings.Contains(string(content), packageName) {
+				log.Debugf("Found package %s in %s", packageName, filename)
+				return true, nil
+			}
+		}
+	}
+
+	log.Debugf("Package %s not found in Gradle build files", packageName)
+	return false, nil
+}
+
 // Update performs dependency updates on a Gradle project.
 func (g *Gradle) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	log := clog.FromContext(ctx)

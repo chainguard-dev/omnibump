@@ -68,6 +68,37 @@ func (g *Golang) SupportsAnalysis() bool {
 	return true
 }
 
+// ContainsPackage checks if the package exists in go.mod.
+func (g *Golang) ContainsPackage(ctx context.Context, dir string, packageName string) (bool, error) {
+	log := clog.FromContext(ctx)
+
+	goModPath := filepath.Join(dir, "go.mod")
+	modFile, _, err := ParseGoModfile(goModPath)
+	if err != nil {
+		log.Debugf("Could not parse go.mod at %s: %v", goModPath, err)
+		return false, nil
+	}
+
+	// Check require statements (both direct and indirect)
+	for _, req := range modFile.Require {
+		if req != nil && req.Mod.Path == packageName {
+			log.Debugf("Found package %s in go.mod require statements", packageName)
+			return true, nil
+		}
+	}
+
+	// Check replace statements
+	for _, rep := range modFile.Replace {
+		if rep != nil && (rep.Old.Path == packageName || rep.New.Path == packageName) {
+			log.Debugf("Found package %s in go.mod replace statements", packageName)
+			return true, nil
+		}
+	}
+
+	log.Debugf("Package %s not found in go.mod", packageName)
+	return false, nil
+}
+
 // Update performs dependency updates on a Go project.
 // If a go.work file is present, updates all modules in the workspace that contain the dependencies.
 func (g *Golang) Update(ctx context.Context, cfg *languages.UpdateConfig) error {

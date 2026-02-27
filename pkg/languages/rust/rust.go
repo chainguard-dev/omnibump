@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
@@ -60,6 +61,32 @@ func (r *Rust) GetManifestFiles() []string {
 // SupportsAnalysis returns true since Rust now has analysis capabilities.
 func (r *Rust) SupportsAnalysis() bool {
 	return true
+}
+
+// ContainsPackage checks if the package exists in Cargo.toml or Cargo.lock.
+func (r *Rust) ContainsPackage(ctx context.Context, dir string, packageName string) (bool, error) {
+	log := clog.FromContext(ctx)
+
+	// Check Cargo.toml
+	cargoTomlPath := filepath.Join(dir, "Cargo.toml")
+	if content, err := os.ReadFile(cargoTomlPath); err == nil { //nolint:gosec // G304: cargoTomlPath is constructed from validated dir
+		if strings.Contains(string(content), packageName) {
+			log.Debugf("Found package %s in Cargo.toml", packageName)
+			return true, nil
+		}
+	}
+
+	// Check Cargo.lock
+	cargoLockPath := filepath.Join(dir, "Cargo.lock")
+	if content, err := os.ReadFile(cargoLockPath); err == nil { //nolint:gosec // G304: cargoLockPath is constructed from validated dir
+		if strings.Contains(string(content), fmt.Sprintf("name = %q", packageName)) {
+			log.Debugf("Found package %s in Cargo.lock", packageName)
+			return true, nil
+		}
+	}
+
+	log.Debugf("Package %s not found in Rust manifests", packageName)
+	return false, nil
 }
 
 // Update performs dependency updates on a Rust project.

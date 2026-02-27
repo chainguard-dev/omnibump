@@ -31,6 +31,10 @@ type Language interface {
 
 	// SupportsAnalysis returns true if this language supports dependency analysis.
 	SupportsAnalysis() bool
+
+	// ContainsPackage checks if the dependency manifest contains the specified package.
+	// Returns true if the package is found in the manifest files.
+	ContainsPackage(ctx context.Context, dir string, packageName string) (bool, error)
 }
 
 // UpdateConfig contains all configuration needed to perform a dependency update.

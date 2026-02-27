@@ -69,6 +69,37 @@ func (m *Maven) GetManifestFiles() []string {
 	return []string{"pom.xml"}
 }
 
+// ContainsPackage checks if the package exists in pom.xml.
+// Package name can be in format "groupId:artifactId" or just "artifactId".
+func (m *Maven) ContainsPackage(ctx context.Context, dir string, packageName string) (bool, error) {
+	log := clog.FromContext(ctx)
+
+	pomPath := filepath.Join(dir, "pom.xml")
+	content, err := os.ReadFile(pomPath) //nolint:gosec // G304: pomPath is constructed from validated dir
+	if err != nil {
+		log.Debugf("Could not read pom.xml at %s: %v", pomPath, err)
+		return false, nil
+	}
+
+	// Simple string search for artifactId
+	if regexp.MustCompile(`<artifactId>` + regexp.QuoteMeta(packageName) + `</artifactId>`).Match(content) {
+		log.Debugf("Found package %s in pom.xml", packageName)
+		return true, nil
+	}
+
+	// Also check if packageName is in groupId:artifactId format
+	if parts := regexp.MustCompile(`:`).Split(packageName, 2); len(parts) == 2 {
+		artifactID := parts[1]
+		if regexp.MustCompile(`<artifactId>` + regexp.QuoteMeta(artifactID) + `</artifactId>`).Match(content) {
+			log.Debugf("Found package %s (as artifactId %s) in pom.xml", packageName, artifactID)
+			return true, nil
+		}
+	}
+
+	log.Debugf("Package %s not found in pom.xml", packageName)
+	return false, nil
+}
+
 // validateVersion checks if a version string contains only safe characters.
 // Returns an error if the version contains characters that could be used for
 // XML injection (quotes, braces, newlines, etc.).

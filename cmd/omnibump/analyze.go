@@ -107,11 +107,34 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 
 	if detectedLang == languageAuto || detectedLang == "" {
 		var err error
-		detectedLang, err = languages.DetectLanguage(ctx, projectPath)
-		if err != nil {
-			return fmt.Errorf("failed to detect language: %w", err)
+
+		// If packages are specified, try package-based detection first
+		if analyzeF.packages != "" {
+			pkgs, parseErr := config.ParseInlinePackages(analyzeF.packages)
+			if parseErr == nil && len(pkgs) > 0 {
+				// Use first package name for detection
+				packageName := pkgs[0].Name
+				if packageName == "" && pkgs[0].GroupID != "" {
+					// Maven format: use artifactId
+					packageName = pkgs[0].ArtifactID
+				}
+				if packageName != "" {
+					detectedLang, err = languages.DetectLanguageForPackage(ctx, projectPath, packageName)
+					if err == nil {
+						log.Infof("Detected language from package %q: %s", packageName, detectedLang)
+					}
+				}
+			}
 		}
-		log.Infof("Detected language: %s", detectedLang)
+
+		// Fall back to regular detection if package-based detection didn't work
+		if err != nil || detectedLang == "" {
+			detectedLang, err = languages.DetectLanguage(ctx, projectPath)
+			if err != nil {
+				return fmt.Errorf("failed to detect language: %w", err)
+			}
+			log.Infof("Detected language: %s", detectedLang)
+		}
 	}
 
 	// Get analyzer implementation

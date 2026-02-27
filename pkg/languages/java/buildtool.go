@@ -37,4 +37,7 @@ type BuildTool interface {
 
 	// GetAnalyzer returns an analyzer for this build tool, or nil if not supported.
 	GetAnalyzer() analyzer.Analyzer
+
+	// ContainsPackage checks if the dependency manifest contains the specified package.
+	ContainsPackage(ctx context.Context, dir string, packageName string) (bool, error)
 }
