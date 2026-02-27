@@ -10,8 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 
@@ -110,9 +110,15 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 		}
 	}
 
-	// Update go.work version FIRST before ANY go commands to avoid version mismatch errors
+	// Normalize go.mod to environment version FIRST
+	modpath := filepath.Join(cfg.Modroot, "go.mod")
+	if err := normalizeGoModVersion(ctx, modpath, goVersion); err != nil {
+		return nil, fmt.Errorf("failed to normalize go.mod version: %w", err)
+	}
+
+	// Update go.work version before ANY go commands to avoid version mismatch errors
 	if err := UpdateGoWorkVersion(ctx, cfg.Modroot, cfg.ForceWork, goVersion); err != nil {
-		log.Warnf("Failed to update go.work version: %v", err)
+		return nil, fmt.Errorf("failed to update go.work version: %w", err)
 	}
 
 	// Run go mod tidy before
@@ -124,7 +130,6 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 	}
 
 	// Read the entire go.mod one more time into memory and check that all the version constraints are met
-	modpath := filepath.Join(cfg.Modroot, "go.mod")
 	modFile, content, err := ParseGoModfile(modpath)
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse the go mod file with error: %w", err)
@@ -402,10 +407,15 @@ func getVersion(modFile *modfile.File, packageName string) string {
 	return ""
 }
 
-// getGoVersionFromEnvironment returns the Go version from the local environment.
+// getGoVersionFromEnvironment returns the Go version from the local environment by running `go version`.
+// This gets the actual Go toolchain version available in the environment, not the version omnibump was built with.
 func getGoVersionFromEnvironment() (string, error) {
-	versionOutput := fmt.Sprintf("go version %s", runtime.Version())
-	return parseGoVersionString(versionOutput)
+	cmd := exec.CommandContext(context.Background(), "go", "version")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to run 'go version': %w, output: %s", err, strings.TrimSpace(string(output)))
+	}
+	return parseGoVersionString(strings.TrimSpace(string(output)))
 }
 
 // parseGoVersionString parses the output of `go version` command and extracts the Go version.
@@ -417,4 +427,70 @@ func parseGoVersionString(versionOutput string) (string, error) {
 
 	goVersion := strings.TrimPrefix(parts[2], "go")
 	return goVersion, nil
+}
+
+// shouldDowngradeGoVersion checks if currentVersion should be downgraded to envGoVersion.
+func shouldDowngradeGoVersion(currentVersion, envGoVersion string) bool {
+	if currentVersion == envGoVersion {
+		return false
+	}
+	if !semver.IsValid("v"+currentVersion) || !semver.IsValid("v"+envGoVersion) {
+		return false
+	}
+	return semver.Compare("v"+currentVersion, "v"+envGoVersion) > 0
+}
+
+// normalizeGoModVersion normalizes a go.mod file to match the environment's Go version.
+// This downgrades the go directive if needed and removes any toolchain directive.
+func normalizeGoModVersion(ctx context.Context, goModPath, envGoVersion string) error {
+	log := clog.FromContext(ctx)
+
+	modFile, _, err := ParseGoModfile(goModPath)
+	if err != nil {
+		return fmt.Errorf("failed to parse go.mod: %w", err)
+	}
+
+	modified := false
+
+	currentVersion := ""
+	if modFile.Go != nil {
+		currentVersion = modFile.Go.Version
+	}
+
+	// Downgrade go directive if it's higher than environment version
+	if currentVersion == "" {
+		log.Infof("Setting go.mod go directive to %s (environment version)", envGoVersion)
+		if err := modFile.AddGoStmt(envGoVersion); err != nil {
+			return fmt.Errorf("failed to add go directive: %w", err)
+		}
+		modified = true
+	} else if shouldDowngradeGoVersion(currentVersion, envGoVersion) {
+		log.Infof("Downgrading go.mod go directive from %s to %s (environment version)", currentVersion, envGoVersion)
+		if err := modFile.AddGoStmt(envGoVersion); err != nil {
+			return fmt.Errorf("failed to update go directive: %w", err)
+		}
+		modified = true
+	}
+
+	// Remove toolchain directive if present
+	if modFile.Toolchain != nil {
+		log.Infof("Removing toolchain directive (%s) from go.mod", modFile.Toolchain.Name)
+		modFile.DropToolchainStmt()
+		modified = true
+	}
+
+	if modified {
+		newContent, err := modFile.Format()
+		if err != nil {
+			return fmt.Errorf("failed to format go.mod: %w", err)
+		}
+
+		if err := os.WriteFile(goModPath, newContent, 0o600); err != nil {
+			return fmt.Errorf("failed to write go.mod: %w", err)
+		}
+
+		log.Debugf("Normalized %s to match environment", goModPath)
+	}
+
+	return nil
 }

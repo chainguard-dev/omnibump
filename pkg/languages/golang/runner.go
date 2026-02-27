@@ -12,9 +12,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 
+	"github.com/chainguard-dev/clog"
+	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
 	versionutil "k8s.io/apimachinery/pkg/util/version"
 )
@@ -27,6 +28,9 @@ var ErrEmptyVersionQuery = errors.New("version query cannot be empty")
 
 // ErrInvalidVersionQueryChar is returned when a version query contains an invalid character.
 var ErrInvalidVersionQueryChar = errors.New("invalid character in version query")
+
+// ErrUnexpectedGoVersionOutput is returned when go version output has unexpected format.
+var ErrUnexpectedGoVersionOutput = errors.New("unexpected go version output")
 
 // validateModulePath validates a Go module path to prevent injection attacks.
 // Uses module.CheckPath() from golang.org/x/mod/module to ensure the path is valid.
@@ -106,6 +110,8 @@ func findGoWork(modroot string) string {
 
 // UpdateGoWorkVersion updates the go.work version if we're using workspaces.
 func UpdateGoWorkVersion(ctx context.Context, modroot string, forceWork bool, goVersion string) error {
+	log := clog.FromContext(ctx)
+
 	workPath := findGoWork(modroot)
 	if !forceWork && workPath == "" {
 		return nil
@@ -119,11 +125,51 @@ func UpdateGoWorkVersion(ctx context.Context, modroot string, forceWork bool, go
 		return nil
 	}
 
-	// Auto-detect Go version if not provided
+	// Get Go version from environment if not provided
 	if goVersion == "" {
-		goVersion = strings.TrimPrefix(runtime.Version(), "go")
-		v := versionutil.MustParseGeneric(goVersion)
-		goVersion = fmt.Sprintf("%d.%d", v.Major(), v.Minor())
+		cmd := exec.CommandContext(ctx, "go", "version")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("failed to get Go version: %w, output: %s", err, strings.TrimSpace(string(output)))
+		}
+
+		parts := strings.Fields(strings.TrimSpace(string(output)))
+		if len(parts) < 3 || !strings.HasPrefix(parts[2], "go") {
+			return fmt.Errorf("%w: %s", ErrUnexpectedGoVersionOutput, string(output))
+		}
+
+		goVersion = strings.TrimPrefix(parts[2], "go")
+	}
+
+	// Read current go.work version to log the change
+	// workPath is from findGoWork which validates it's a real go.work file
+	workContent, err := os.ReadFile(workPath) //nolint:gosec // G304: workPath is validated by findGoWork
+	if err != nil {
+		return fmt.Errorf("failed to read go.work file: %w", err)
+	}
+
+	workFile, err := modfile.ParseWork(workPath, workContent, nil)
+	if err != nil {
+		return fmt.Errorf("failed to parse go.work file: %w", err)
+	}
+
+	currentVersion := ""
+	if workFile.Go != nil {
+		currentVersion = workFile.Go.Version
+	}
+
+	// Compare versions and log the change
+	if currentVersion != "" && currentVersion != goVersion {
+		currentV := versionutil.MustParseGeneric(currentVersion)
+		newV := versionutil.MustParseGeneric(goVersion)
+
+		if newV.GreaterThan(currentV) {
+			log.Infof("Upgrading go.work version from %s to %s (runtime version)", currentVersion, goVersion)
+		} else if newV.LessThan(currentV) {
+			log.Infof("Downgrading go.work version from %s to %s (runtime version)", currentVersion, goVersion)
+		}
+	} else if currentVersion == "" {
+		log.Infof("Setting go.work version to %s (runtime version)", goVersion)
 	}
 
 	dir := filepath.Dir(workPath)
