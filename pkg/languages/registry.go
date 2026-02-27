@@ -56,14 +56,46 @@ func List() []string {
 
 // DetectLanguage attempts to detect which language is present in the given directory.
 // Returns the first language that reports a positive detection.
+// For polyglot projects, checks languages in priority order: go, java, rust.
 func DetectLanguage(ctx context.Context, dir string) (string, error) {
 	mu.RLock()
 	defer mu.RUnlock()
 
-	for name, lang := range registry {
+	// Define priority order for polyglot projects
+	priorityOrder := []string{"go", "java", "rust"}
+
+	// Check priority languages first
+	for _, name := range priorityOrder {
+		lang, exists := registry[name]
+		if !exists {
+			continue
+		}
 		detected, err := lang.Detect(ctx, dir)
 		if err != nil {
-			continue // Skip languages that error during detection
+			continue
+		}
+		if detected {
+			return name, nil
+		}
+	}
+
+	// Check remaining languages
+	for name, lang := range registry {
+		// Skip if already checked in priority order
+		isPriority := false
+		for _, pName := range priorityOrder {
+			if name == pName {
+				isPriority = true
+				break
+			}
+		}
+		if isPriority {
+			continue
+		}
+
+		detected, err := lang.Detect(ctx, dir)
+		if err != nil {
+			continue
 		}
 		if detected {
 			return name, nil
