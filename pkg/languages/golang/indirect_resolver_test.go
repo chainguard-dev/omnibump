@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
 )
 
@@ -283,13 +284,19 @@ func TestCheckIfDirectParentHasFix(t *testing.T) {
 		},
 	}
 
+	// Create an empty modfile for testing (no replace directives)
+	emptyModFile := &modfile.File{
+		Module: &modfile.Module{Mod: module.Version{Path: "test"}},
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			info, err := CheckIfDirectParentHasFix(ctx,
 				tt.directDep,
 				tt.currentVersion,
 				tt.indirectPkg,
-				tt.targetVersion)
+				tt.targetVersion,
+				emptyModFile)
 
 			if tt.expectError {
 				assert.Error(t, err)
