@@ -10,7 +10,7 @@ require (
 	github.com/ghodss/yaml v1.0.0
 	github.com/google/go-cmp v0.7.0
 	github.com/google/go-github/v75 v75.0.0
-	github.com/samber/lo v1.52.0
+	github.com/samber/lo v1.53.0
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/mod v0.33.0
