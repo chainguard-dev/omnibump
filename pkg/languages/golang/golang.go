@@ -358,6 +358,75 @@ func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package,
 		log.Infof("Will update %s from %s to %s", name, currentVersion, resolvedVersion)
 	}
 
+	// Second pass: check transitive requirements for all packages being updated
+	allMissingDeps := make(map[string]MissingDependency)
+	packagesBeingUpdated := make(map[string]string)
+
+	// Build set of packages being updated
+	for name, pkg := range filtered {
+		packagesBeingUpdated[name] = pkg.Version
+	}
+
+	// Check each package for missing transitive requirements
+	for name, pkg := range filtered {
+		missingDeps, err := CheckTransitiveRequirements(ctx, name, pkg.Version, modFile)
+		if err != nil {
+			log.Warnf("Could not check transitive requirements for %s@%s: %v", name, pkg.Version, err)
+			continue
+		}
+
+		// Only report missing deps that are NOT already being updated
+		for _, dep := range missingDeps {
+			// Skip if this dependency is already in the update list
+			if targetVer, beingUpdated := packagesBeingUpdated[dep.Package]; beingUpdated {
+				// Check if the version being updated is sufficient
+				if semver.IsValid(targetVer) && semver.IsValid(dep.RequiredVersion) {
+					if semver.Compare(targetVer, dep.RequiredVersion) >= 0 {
+						log.Debugf("Dependency %s requirement satisfied by update to %s", dep.Package, targetVer)
+						continue
+					}
+				}
+			}
+
+			// Add to missing deps (deduplicate by package name, keep highest required version)
+			if existing, exists := allMissingDeps[dep.Package]; exists {
+				if semver.IsValid(dep.RequiredVersion) && semver.IsValid(existing.RequiredVersion) {
+					if semver.Compare(dep.RequiredVersion, existing.RequiredVersion) > 0 {
+						allMissingDeps[dep.Package] = dep
+					}
+				}
+			} else {
+				allMissingDeps[dep.Package] = dep
+			}
+		}
+	}
+
+	// If there are missing dependencies, return error with recommendations
+	if len(allMissingDeps) > 0 {
+		var msg strings.Builder
+		fmt.Fprintf(&msg, "the following dependencies need to be co-updated:\n")
+		for _, dep := range allMissingDeps {
+			fmt.Fprintf(&msg, "  - %s: current %s, required >= %s\n", dep.Package, dep.CurrentVersion, dep.RequiredVersion)
+		}
+		fmt.Fprintf(&msg, "\nTo proceed, add these packages to your update:\n")
+		fmt.Fprintf(&msg, "  omnibump --packages \"")
+		// Add original packages first
+		first := true
+		for name, pkg := range filtered {
+			if !first {
+				fmt.Fprintf(&msg, " ")
+			}
+			fmt.Fprintf(&msg, "%s@%s", name, pkg.Version)
+			first = false
+		}
+		// Add missing packages
+		for _, dep := range allMissingDeps {
+			fmt.Fprintf(&msg, " %s@%s", dep.Package, dep.RequiredVersion)
+		}
+		fmt.Fprintf(&msg, "\"")
+		return nil, fmt.Errorf("%s", msg.String())
+	}
+
 	return filtered, nil
 }
 

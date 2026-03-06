@@ -453,3 +453,81 @@ func extractModuleVersion(moduleWithVersion string) string {
 	}
 	return moduleWithVersion[idx+1:]
 }
+
+// MissingDependency represents a dependency that needs to be updated.
+type MissingDependency struct {
+	Package         string
+	RequiredVersion string
+	CurrentVersion  string
+	Reason          string
+}
+
+// CheckTransitiveRequirements checks if updating a package to a target version
+// would require updating other dependencies in the project.
+// Returns a list of dependencies that would need co-updating.
+func CheckTransitiveRequirements(
+	ctx context.Context,
+	packageName string,
+	targetVersion string,
+	currentModFile *modfile.File,
+) ([]MissingDependency, error) {
+	log := clog.FromContext(ctx)
+
+	log.Debug("Checking transitive requirements", "package", packageName, "version", targetVersion)
+
+	// Fetch the target version's go.mod from the proxy
+	targetModFile, err := fetchGoModForPackage(ctx, packageName, targetVersion)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch go.mod for %s@%s: %w", packageName, targetVersion, err)
+	}
+
+	// Build map of current versions in the project
+	currentVersions := make(map[string]string)
+	for _, req := range currentModFile.Require {
+		if req != nil {
+			currentVersions[req.Mod.Path] = req.Mod.Version
+		}
+	}
+
+	// Check each requirement of the target version
+	var missing []MissingDependency
+	for _, req := range targetModFile.Require {
+		if req == nil {
+			continue
+		}
+
+		reqPkg := req.Mod.Path
+		reqVer := req.Mod.Version
+
+		currentVer, exists := currentVersions[reqPkg]
+
+		// If package doesn't exist in current project, skip (go get will add it)
+		if !exists {
+			continue
+		}
+
+		// Compare versions
+		if semver.IsValid(currentVer) && semver.IsValid(reqVer) {
+			if semver.Compare(currentVer, reqVer) < 0 {
+				// Current version is older than required
+				missing = append(missing, MissingDependency{
+					Package:         reqPkg,
+					RequiredVersion: reqVer,
+					CurrentVersion:  currentVer,
+					Reason:          fmt.Sprintf("%s@%s requires %s@%s but project has %s", packageName, targetVersion, reqPkg, reqVer, currentVer),
+				})
+				log.Warn("Dependency requires newer version",
+					"updating", packageName,
+					"requires", reqPkg,
+					"required_version", reqVer,
+					"current_version", currentVer)
+			}
+		}
+	}
+
+	if len(missing) > 0 {
+		log.Info("Found missing co-updates", "count", len(missing))
+	}
+
+	return missing, nil
+}
