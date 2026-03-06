@@ -301,6 +301,17 @@ func getOptionBool(options map[string]any, key string, defaultValue bool) bool {
 	return defaultValue
 }
 
+// hasReplaceDirective returns true if the go.mod has a replace directive with the
+// given module path on the left (Old) side.
+func hasReplaceDirective(modFile *modfile.File, packageName string) bool {
+	for _, r := range modFile.Replace {
+		if r.Old.Path == packageName {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveAndFilterPackages resolves version queries like @latest and filters out packages that don't need updating.
 func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package, modFile *modfile.File, modroot string) (map[string]*Package, error) {
 	log := clog.FromContext(ctx)
@@ -326,6 +337,15 @@ func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package,
 			pkg.Version = resolvedVersion
 			filtered[name] = pkg
 			log.Infof("Package %s not found in go.mod, will add at %s", name, resolvedVersion)
+			continue
+		}
+
+		// Skip packages that are pinned via a replace directive unless the caller
+		// explicitly requested a replace update (pkg.Replace == true). Replace-pinned
+		// packages must be updated through --replaces, not --deps, because only
+		// updating the require directive leaves the replace pin in place.
+		if !pkg.Replace && hasReplaceDirective(modFile, name) {
+			log.Warnf("Package %s is pinned via a replace directive — skipping. Use --replaces %s=%s@%s to update the pin.", name, name, name, resolvedVersion)
 			continue
 		}
 
