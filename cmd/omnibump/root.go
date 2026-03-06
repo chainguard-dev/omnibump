@@ -31,6 +31,7 @@ type rootFlags struct {
 	depsFile       string
 	propertiesFile string
 	packages       string
+	replaces       string
 	properties     string
 	rootDir        string
 	tidy           bool
@@ -77,6 +78,7 @@ func New() *cobra.Command {
 	f.StringVar(&flags.depsFile, "deps", "", "dependencies file (deps.yaml, or legacy names)")
 	f.StringVar(&flags.propertiesFile, "properties", "", "properties file (properties.yaml)")
 	f.StringVar(&flags.packages, "packages", "", "inline package list (space-separated)")
+	f.StringVar(&flags.replaces, "replaces", "", "inline replace list (space-separated, format: oldpkg=newpkg@version)")
 	f.StringVar(&flags.properties, "props", "", "inline properties list (space-separated)")
 	f.StringVar(&flags.rootDir, "dir", ".", "project root directory")
 	f.BoolVar(&flags.tidy, "tidy", false, "run tidy command after update")
@@ -218,7 +220,7 @@ func loadFileInputConfig(ctx context.Context) (*config.Config, error) {
 	return cfg, nil
 }
 
-// loadInlineInputConfig loads configuration from inline sources (--packages and/or --props).
+// loadInlineInputConfig loads configuration from inline sources (--packages, --replaces, and/or --props).
 func loadInlineInputConfig() (*config.Config, error) {
 	cfg := &config.Config{}
 
@@ -228,6 +230,14 @@ func loadInlineInputConfig() (*config.Config, error) {
 			return nil, fmt.Errorf("failed to parse inline packages: %w", err)
 		}
 		cfg.Packages = packages
+	}
+
+	if flags.replaces != "" {
+		replaces, err := config.ParseInlineReplaces(flags.replaces)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse inline replaces: %w", err)
+		}
+		cfg.Replaces = replaces
 	}
 
 	if flags.properties != "" {
@@ -247,10 +257,10 @@ func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but requir
 
 	// Validate input - require at least one input source
 	hasFileInput := flags.depsFile != "" || flags.propertiesFile != ""
-	hasInlineInput := flags.packages != "" || flags.properties != ""
+	hasInlineInput := flags.packages != "" || flags.replaces != "" || flags.properties != ""
 
 	if !hasFileInput && !hasInlineInput {
-		return fmt.Errorf("%w: at least one of --deps, --properties, --packages, or --props must be specified", ErrMissingInput)
+		return fmt.Errorf("%w: at least one of --deps, --properties, --packages, --replaces, or --props must be specified", ErrMissingInput)
 	}
 
 	if flags.depsFile != "" && flags.packages != "" {

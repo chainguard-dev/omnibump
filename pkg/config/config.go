@@ -332,6 +332,42 @@ func ParseInlinePackages(packagesStr string) ([]Package, error) {
 	return packages, nil
 }
 
+// ParseInlineReplaces parses inline replace specifications from command line.
+// Format: space-separated "oldpkg=newpkg@version" entries.
+func ParseInlineReplaces(replacesStr string) ([]Replace, error) {
+	if replacesStr == "" {
+		return nil, nil
+	}
+
+	var replaces []Replace
+	for replStr := range strings.FieldsSeq(replacesStr) {
+		if replStr == "" {
+			continue
+		}
+
+		eqIdx := strings.Index(replStr, "=")
+		if eqIdx < 0 {
+			return nil, fmt.Errorf("%w: %s (expected oldpkg=newpkg@version)", ErrInvalidPackageFormat, replStr)
+		}
+
+		oldName := replStr[:eqIdx]
+		rest := replStr[eqIdx+1:]
+
+		atIdx := strings.LastIndex(rest, "@")
+		if atIdx < 0 {
+			return nil, fmt.Errorf("%w: %s (expected oldpkg=newpkg@version)", ErrInvalidPackageFormat, replStr)
+		}
+
+		replaces = append(replaces, Replace{
+			OldName: oldName,
+			Name:    rest[:atIdx],
+			Version: rest[atIdx+1:],
+		})
+	}
+
+	return replaces, nil
+}
+
 // ParseInlineProperties parses inline property specifications from command line.
 // Format: "property=value" pairs separated by spaces.
 func ParseInlineProperties(propsStr string) ([]Property, error) {
