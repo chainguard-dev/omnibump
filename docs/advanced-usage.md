@@ -209,6 +209,83 @@ omnibump automatically detects and updates `go.work` files:
 omnibump --deps deps.yaml --tidy
 ```
 
+### Go: Version Resolution and Normalization
+
+omnibump resolves all Go package versions through `go list` to get canonical forms:
+
+```bash
+# Debug output shows resolution
+omnibump --packages "github.com/docker/docker@v28.0.0" --log-level debug
+
+# Output:
+# DEBUG: Resolved github.com/docker/docker@v28.0.0 to canonical form v28.0.0+incompatible
+```
+
+**What gets normalized:**
+- **+incompatible suffix**: `v28.0.0` → `v28.0.0+incompatible`
+- **Pseudo-versions**: Commit hashes → `v0.0.0-20240101123456-abc123def456`
+- **Version queries**: `@latest` → actual version number
+
+**Environment:**
+- Uses `GOWORK=off` to bypass workspace mode during resolution
+- Uses `GOFLAGS=-mod=mod` to allow version queries
+- Queries `proxy.golang.org` for version information
+
+### Go: Transitive Dependency Analysis
+
+omnibump performs deep analysis of dependency requirements:
+
+```bash
+# See detailed detection process
+omnibump --packages "oras.land/oras-go@v1.2.7" --log-level debug
+
+# Debug output shows:
+# DEBUG: Checking transitive requirements package=oras.land/oras-go version=v1.2.7
+# DEBUG: Fetching https://proxy.golang.org/oras.land/oras-go/@v/v1.2.7.mod
+# WARN: Dependency requires newer version updating=oras.land/oras-go requires=github.com/docker/docker required_version=v28.5.1 current_version=v28.0.0
+# INFO: Found missing co-updates count=15
+```
+
+**Process:**
+1. Fetches target version's go.mod from Go proxy (e.g., `oras.land/oras-go@v1.2.7.mod`)
+2. Parses its `require` statements
+3. Compares each requirement against current project's versions
+4. Detects incompatibilities where `current < required`
+5. Deduplicates across all packages being updated
+6. Returns complete list of missing co-updates
+
+**Deduplication logic:**
+- If multiple packages require same dependency, keeps highest version
+- If dependency already in update list with sufficient version, skips
+- Only reports genuine missing updates
+
+**Example with multiple packages:**
+```bash
+omnibump --packages "pkg-a@v2.0.0 pkg-b@v3.0.0" --log-level debug
+
+# pkg-a requires dep-x@v1.5.0
+# pkg-b requires dep-x@v1.8.0
+# Result: Only reports dep-x@v1.8.0 (highest)
+```
+
+### Go: Vendor Directory Handling
+
+When vendor directory exists, omnibump ensures go.sum is up-to-date:
+
+```bash
+# Omnibump detects vendor directory and runs go mod tidy before vendoring
+omnibump --packages "pkg@version"
+
+# Debug output:
+# INFO: Vendor directory detected, running go mod tidy to update go.sum
+# INFO: Running go mod vendor
+```
+
+**Why this matters:**
+- When using `AddRequire()` to update go.mod, go.sum isn't automatically updated
+- Running `go vendor` on stale go.sum fails with "missing go.sum entry" errors
+- Omnibump automatically runs `go mod tidy` first to refresh go.sum
+
 ### Maven: Property Analysis
 
 Understand property usage before updating:

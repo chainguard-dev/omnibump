@@ -92,6 +92,62 @@ This helps:
 - Track security updates
 - Explain version pins
 
+## 8. Trust Transitive Dependency Detection (Go)
+
+When omnibump reports required co-updates, always update them together:
+
+```bash
+# Omnibump detects co-updates needed
+omnibump --packages "oras.land/oras-go@v1.2.7"
+
+# Error shows exact command with all required packages
+# Copy and run it - don't try to update individually
+omnibump --packages "oras.land/oras-go@v1.2.7 github.com/docker/docker@v28.5.1 ..."
+```
+
+**Why:**
+- Prevents build failures from incompatible versions
+- Omnibump fetches actual requirements from Go proxy
+- All packages validated together before updating
+- Saves debugging time
+
+**Don't:**
+- ❌ Ignore the co-update warnings and proceed anyway
+- ❌ Try to update packages one at a time
+- ❌ Manually guess which versions are compatible
+
+**Do:**
+- ✅ Run the exact command omnibump provides
+- ✅ Update all packages together in a single omnibump call
+- ✅ Let omnibump validate compatibility
+
+## 9. Don't Worry About +incompatible Suffix (Go)
+
+For Go packages, specify versions without the `+incompatible` suffix:
+
+```bash
+# Simple - just use the version number
+omnibump --packages "github.com/docker/docker@v28.0.0"
+
+# Omnibump automatically adds +incompatible if needed
+# Output: Resolved to v28.0.0+incompatible
+```
+
+**Why this works:**
+- Omnibump queries the Go module proxy for canonical version
+- Automatically detects when `+incompatible` is needed
+- Creates valid go.mod entries
+
+**Don't:**
+- ❌ Try to remember which packages need `+incompatible`
+- ❌ Manually look up versions on proxy.golang.org
+- ❌ Edit go.mod by hand to add `+incompatible`
+
+**Do:**
+- ✅ Specify versions as they appear in release tags
+- ✅ Let omnibump normalize to canonical form
+- ✅ Trust the automatic resolution
+
 ## Additional Recommendations
 
 ### Start Small
