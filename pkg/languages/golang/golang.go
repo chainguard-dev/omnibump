@@ -307,15 +307,26 @@ func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package,
 	filtered := make(map[string]*Package)
 
 	for name, pkg := range packages {
-		// Resolve version if it's a query (@latest, @upgrade, etc.)
+		// Always resolve version to get canonical format (handles +incompatible, pseudo-versions, etc.)
 		resolvedVersion := pkg.Version
 		if isVersionQuery(pkg.Version) {
+			// It's a query like @latest, @upgrade, @patch
 			resolved, err := resolveVersionQuery(ctx, name, pkg.Version, modroot)
 			if err != nil {
 				return nil, fmt.Errorf("failed to resolve %s@%s: %w", name, pkg.Version, err)
 			}
 			resolvedVersion = resolved
 			log.Infof("Resolved %s@%s to %s", name, pkg.Version, resolvedVersion)
+		} else if len(pkg.Version) >= 2 && pkg.Version[0] == 'v' && pkg.Version[1] >= '0' && pkg.Version[1] <= '9' {
+			// It's a semantic version - resolve to get canonical form (+incompatible, etc.)
+			resolved, err := resolveVersionQuery(ctx, name, pkg.Version, modroot)
+			if err != nil {
+				return nil, fmt.Errorf("failed to resolve %s@%s: %w", name, pkg.Version, err)
+			}
+			if resolved != pkg.Version {
+				log.Infof("Resolved %s@%s to canonical form %s", name, pkg.Version, resolved)
+			}
+			resolvedVersion = resolved
 		}
 
 		// Get current version from go.mod
@@ -370,8 +381,9 @@ func resolveVersionQuery(ctx context.Context, modulePath, query, modroot string)
 	//nolint:gosec // G204: Using exec.Command with validated module path and version query
 	cmd := exec.CommandContext(ctx, "go", "list", "-m", fmt.Sprintf("%s@%s", modulePath, query))
 	cmd.Dir = modroot
-	// Override vendor mode to allow querying
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod")
+	// Disable workspace mode and override vendor mode to allow querying
+	// GOWORK=off is required when go.work file exists
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
