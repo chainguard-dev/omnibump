@@ -401,9 +401,7 @@ func (ga *GolangAnalyzer) RecommendStrategy(ctx context.Context, analysis *analy
 	}
 
 	// Check transitive requirements for all packages being updated
-	if err := ga.checkTransitiveRequirementsForStrategy(ctx, analysis, strategy); err != nil {
-		return nil, err
-	}
+	ga.checkTransitiveRequirementsForStrategy(ctx, analysis, strategy)
 
 	log.Infof("Strategy: %d direct updates", len(strategy.DirectUpdates))
 	return strategy, nil
@@ -415,7 +413,7 @@ func (ga *GolangAnalyzer) checkTransitiveRequirementsForStrategy(
 	ctx context.Context,
 	analysis *analyzer.AnalysisResult,
 	strategy *analyzer.Strategy,
-) error {
+) {
 	log := clog.FromContext(ctx)
 
 	// Get module root from analysis
@@ -431,7 +429,7 @@ func (ga *GolangAnalyzer) checkTransitiveRequirementsForStrategy(
 		// If we can't parse go.mod, skip transitive checking
 		// This can happen in tests or when analyzing remotely
 		log.Debugf("Could not parse go.mod for transitive checking: %v", err)
-		return nil
+		return
 	}
 
 	// Build map of packages being updated
@@ -481,8 +479,8 @@ func (ga *GolangAnalyzer) checkTransitiveRequirementsForStrategy(
 		log.Infof("Found %d additional dependencies that need co-updating", len(allMissingDeps))
 		for _, missing := range allMissingDeps {
 			strategy.DirectUpdates = append(strategy.DirectUpdates, analyzer.Dependency{
-				Name:     missing.Package,
-				Version:  missing.RequiredVersion,
+				Name:    missing.Package,
+				Version: missing.RequiredVersion,
 				Metadata: map[string]any{
 					"required_by": "transitive dependency check",
 					"reason":      missing.Reason,
@@ -493,8 +491,6 @@ func (ga *GolangAnalyzer) checkTransitiveRequirementsForStrategy(
 			log.Infof("Adding co-update: %s@%s", missing.Package, missing.RequiredVersion)
 		}
 	}
-
-	return nil
 }
 
 // handleIndirectDependency resolves an indirect dependency to parent bumps.
