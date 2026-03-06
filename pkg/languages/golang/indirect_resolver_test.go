@@ -665,4 +665,3 @@ require (
 		assert.True(t, foundCli, "Should detect github.com/docker/cli needs updating")
 	})
 }
-
