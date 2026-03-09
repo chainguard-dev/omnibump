@@ -967,7 +967,7 @@ func TestNormalizeGoModVersion(t *testing.T) {
 		name: "downgrade from 1.26 to 1.25.7",
 		initialGoMod: `module test
 
-go 1.25
+go 1.26
 
 require (
 	example.com/foo v1.0.0
