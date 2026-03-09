@@ -510,3 +510,158 @@ func TestResolveIndirectDependency_K3S_Integration(t *testing.T) {
 	}
 	assert.True(t, foundLibp2pBump, "Should include libp2p bump option")
 }
+
+func TestCheckTransitiveRequirements(t *testing.T) {
+	tests := []struct {
+		name                string
+		packageName         string
+		targetVersion       string
+		currentGoModContent string
+		expectedMissing     int
+		expectedPackages    []string
+		skipTest            bool // Skip if network required
+	}{
+		{
+			name:          "oras-go v1.2.7 requires newer docker packages",
+			packageName:   "oras.land/oras-go",
+			targetVersion: "v1.2.7",
+			currentGoModContent: `module test
+
+go 1.24
+
+require (
+	github.com/docker/cli v25.0.1+incompatible // indirect
+	github.com/docker/docker v28.0.0+incompatible // indirect
+	github.com/docker/go-connections v0.5.0 // indirect
+	golang.org/x/crypto v0.41.0 // indirect
+)
+`,
+			expectedMissing: 4,
+			expectedPackages: []string{
+				"github.com/docker/cli",
+				"github.com/docker/docker",
+				"github.com/docker/go-connections",
+				"golang.org/x/crypto",
+			},
+		},
+		{
+			name:          "package with all requirements satisfied",
+			packageName:   "github.com/google/uuid",
+			targetVersion: "v1.6.0",
+			currentGoModContent: `module test
+
+go 1.21
+
+require (
+	github.com/google/uuid v1.5.0
+)
+`,
+			expectedMissing:  0,
+			expectedPackages: []string{},
+		},
+		{
+			name:          "package with current version higher than required",
+			packageName:   "github.com/stretchr/testify",
+			targetVersion: "v1.8.0",
+			currentGoModContent: `module test
+
+go 1.21
+
+require (
+	github.com/davecgh/go-spew v1.2.0
+	github.com/pmezard/go-difflib v1.1.0
+	gopkg.in/yaml.v3 v3.1.0
+)
+`,
+			expectedMissing:  0,
+			expectedPackages: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.skipTest {
+				t.Skip("Skipping test that requires network access")
+			}
+
+			ctx := context.Background()
+
+			// Parse the current go.mod content
+			modFile, err := modfile.Parse("go.mod", []byte(tt.currentGoModContent), nil)
+			require.NoError(t, err)
+
+			// Check transitive requirements
+			missing, err := CheckTransitiveRequirements(ctx, tt.packageName, tt.targetVersion, modFile)
+			require.NoError(t, err)
+
+			// Verify count
+			assert.Equal(t, tt.expectedMissing, len(missing), "Should find expected number of missing dependencies")
+
+			// Verify expected packages are in the missing list
+			foundPackages := make(map[string]bool)
+			for _, m := range missing {
+				foundPackages[m.Package] = true
+			}
+
+			for _, expectedPkg := range tt.expectedPackages {
+				assert.True(t, foundPackages[expectedPkg], "Should find %s in missing dependencies", expectedPkg)
+			}
+		})
+	}
+}
+
+func TestCheckTransitiveRequirements_Integration(t *testing.T) {
+	// Integration test using real go.mod files
+	t.Run("real oras-go update scenario", func(t *testing.T) {
+		ctx := context.Background()
+
+		// Create a temp directory with a go.mod similar to gatekeeper
+		tmpDir := t.TempDir()
+		goModContent := `module github.com/example/test
+
+go 1.24.0
+
+require (
+	oras.land/oras-go v1.2.5
+	github.com/docker/cli v25.0.1+incompatible // indirect
+	github.com/docker/docker v28.0.0+incompatible // indirect
+	github.com/docker/go-connections v0.5.0 // indirect
+	github.com/spf13/cobra v1.9.1
+	golang.org/x/crypto v0.41.0 // indirect
+	golang.org/x/sync v0.16.0 // indirect
+)
+`
+		goModPath := filepath.Join(tmpDir, "go.mod")
+		err := os.WriteFile(goModPath, []byte(goModContent), 0o600)
+		require.NoError(t, err)
+
+		modFile, _, err := ParseGoModfile(goModPath)
+		require.NoError(t, err)
+
+		// Check what updating oras-go to v1.2.7 would require
+		missing, err := CheckTransitiveRequirements(ctx, "oras.land/oras-go", "v1.2.7", modFile)
+		require.NoError(t, err)
+
+		// Should find multiple missing dependencies
+		assert.Greater(t, len(missing), 0, "Should find missing dependencies")
+
+		// Should include docker/cli and docker/docker at minimum
+		foundDocker := false
+		foundCli := false
+		for _, m := range missing {
+			if m.Package == "github.com/docker/docker" {
+				foundDocker = true
+				assert.Equal(t, "v28.0.0+incompatible", m.CurrentVersion)
+				assert.True(t, semver.Compare(m.RequiredVersion, "v28.5.0") >= 0, "Required version should be >= v28.5.0")
+			}
+			if m.Package == "github.com/docker/cli" {
+				foundCli = true
+				assert.Equal(t, "v25.0.1+incompatible", m.CurrentVersion)
+				assert.True(t, semver.Compare(m.RequiredVersion, "v28.5.0") >= 0, "Required version should be >= v28.5.0")
+			}
+		}
+
+		assert.True(t, foundDocker, "Should detect github.com/docker/docker needs updating")
+		assert.True(t, foundCli, "Should detect github.com/docker/cli needs updating")
+	})
+}

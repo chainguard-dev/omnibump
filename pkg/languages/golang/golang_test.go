@@ -549,7 +549,7 @@ func TestGolang_Update_DryRun(t *testing.T) {
 	// Create minimal go.mod
 	goModContent := `module test/module
 
-go 1.26
+go 1.25
 
 require github.com/google/uuid v1.0.0
 `
@@ -589,7 +589,7 @@ func TestGolang_Update_AllPackagesUpToDate(t *testing.T) {
 	// Create go.mod with package already at target version
 	goModContent := `module test/module
 
-go 1.26
+go 1.25
 
 require github.com/google/uuid v1.3.0
 `
@@ -666,7 +666,7 @@ func TestGolang_Validate_Success(t *testing.T) {
 	// Create go.mod with updated version
 	goModContent := `module test/module
 
-go 1.26
+go 1.25
 
 require github.com/google/uuid v1.3.0
 `
@@ -696,7 +696,7 @@ func TestGolang_Validate_PackageNotFound(t *testing.T) {
 	// Create go.mod without the requested package
 	goModContent := `module test/module
 
-go 1.26
+go 1.25
 
 require github.com/sirupsen/logrus v1.0.0
 `
@@ -760,7 +760,7 @@ func TestGolangAnalyzer_Analyze(t *testing.T) {
 	// Create minimal go.mod
 	goModContent := `module test/module
 
-go 1.26
+go 1.25
 
 require (
 	github.com/google/uuid v1.3.0
@@ -831,7 +831,7 @@ func TestGolangAnalyzer_Analyze_WithReplaceDirectives(t *testing.T) {
 	// Create go.mod with replace directives
 	goModContent := `module test/module
 
-go 1.26
+go 1.25
 
 require github.com/old/pkg v1.0.0
 
@@ -881,7 +881,7 @@ func TestGolangAnalyzer_Analyze_FilePathDirectly(t *testing.T) {
 	// Create minimal go.mod
 	goModContent := `module test/module
 
-go 1.26
+go 1.25
 
 require github.com/google/uuid v1.3.0
 `
@@ -909,7 +909,7 @@ func TestGolang_Update_CurrentVersionNewer(t *testing.T) {
 	// Create go.mod with package at v1.5.0 (newer than requested v1.3.0)
 	goModContent := `module test/module
 
-go 1.26
+go 1.25
 
 require github.com/google/uuid v1.5.0
 `
@@ -948,7 +948,7 @@ func TestGolang_Update_PackageNotInGoMod(t *testing.T) {
 	// Create go.mod without the package we want to add
 	goModContent := `module test/module
 
-go 1.26
+go 1.25
 `
 	goModPath := filepath.Join(tmpDir, "go.mod")
 	err := os.WriteFile(goModPath, []byte(goModContent), 0o600)
@@ -1093,7 +1093,7 @@ func TestGolang_Update_Workspace(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create go.work file
-	workContent := `go 1.26
+	workContent := `go 1.25
 
 use (
 	.
@@ -1106,7 +1106,7 @@ use (
 	// Create root go.mod with shared dependency
 	rootMod := `module test/workspace
 
-go 1.26
+go 1.25
 
 require github.com/google/uuid v1.0.0
 `
@@ -1116,7 +1116,7 @@ require github.com/google/uuid v1.0.0
 	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "moduleA"), 0o755))
 	modAContent := `module test/workspace/moduleA
 
-go 1.26
+go 1.25
 
 require github.com/google/uuid v1.0.0
 `
@@ -1126,7 +1126,7 @@ require github.com/google/uuid v1.0.0
 	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "moduleB"), 0o755))
 	modBContent := `module test/workspace/moduleB
 
-go 1.26
+go 1.25
 
 require golang.org/x/crypto v0.45.0
 `
@@ -1166,7 +1166,7 @@ func TestGolang_Update_Workspace_OnlyTargetedModules(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create go.work file with 3 modules
-	workContent := `go 1.26
+	workContent := `go 1.25
 
 use (
 	.
@@ -1179,7 +1179,7 @@ use (
 	// Root module without target dependency
 	rootMod := `module test/workspace
 
-go 1.26
+go 1.25
 
 require github.com/sirupsen/logrus v1.9.0
 `
@@ -1189,7 +1189,7 @@ require github.com/sirupsen/logrus v1.9.0
 	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "with-dep"), 0o755))
 	withDepMod := `module test/workspace/with-dep
 
-go 1.26
+go 1.25
 
 require github.com/google/uuid v1.0.0
 `
@@ -1199,7 +1199,7 @@ require github.com/google/uuid v1.0.0
 	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "without-dep"), 0o755))
 	withoutDepMod := `module test/workspace/without-dep
 
-go 1.26
+go 1.25
 
 require golang.org/x/crypto v0.45.0
 `

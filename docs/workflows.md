@@ -8,23 +8,31 @@ When a CVE is announced, quickly patch affected dependencies:
 # Step 1: Analyze current state
 omnibump analyze --output json > before.json
 
-# Step 2: Create patch configuration
-cat > deps.yaml <<EOF
-language: auto
-packages:
-  - name: vulnerable-package
-    version: 1.2.3-patched
-EOF
+# Step 2: Try to update vulnerable package
+omnibump --packages "vulnerable-package@1.2.3-patched"
 
-# Step 3: Test update (dry run)
-omnibump --deps deps.yaml --dry-run
+# Step 3: If omnibump detects co-updates needed, it provides exact command
+# Error: the following dependencies need to be co-updated:
+#   - dep-a: current v1.0.0, required >= v1.2.0
+#   - dep-b: current v2.5.0, required >= v2.8.0
+#
+# To proceed, add these packages to your update:
+#   omnibump --packages "vulnerable-package@1.2.3-patched dep-a@v1.2.0 dep-b@v2.8.0"
 
-# Step 4: Apply update
-omnibump --deps deps.yaml --tidy
+# Step 4: Run suggested command
+omnibump --packages "vulnerable-package@1.2.3-patched dep-a@v1.2.0 dep-b@v2.8.0" --tidy
 
-# Step 5: Verify
+# Step 5: Verify build works
+make test
+
+# Step 6: Document the update
 omnibump analyze --output json > after.json
 ```
+
+**For Go projects with transitive detection:**
+- Omnibump automatically detects all required co-updates
+- Prevents partial updates that break builds
+- Ensures compatible version set before applying changes
 
 ## Workflow 2: Batch Updates
 

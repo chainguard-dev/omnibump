@@ -30,6 +30,9 @@ var (
 
 	// ErrUnexpectedGoListOutput is returned when go list output has unexpected format.
 	ErrUnexpectedGoListOutput = errors.New("unexpected go list output")
+
+	// ErrTransitiveDepsRequired is returned when updating a package requires co-updating other dependencies.
+	ErrTransitiveDepsRequired = errors.New("transitive dependencies need co-updating")
 )
 
 // Golang implements the Language interface for Go projects.
@@ -307,15 +310,26 @@ func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package,
 	filtered := make(map[string]*Package)
 
 	for name, pkg := range packages {
-		// Resolve version if it's a query (@latest, @upgrade, etc.)
+		// Always resolve version to get canonical format (handles +incompatible, pseudo-versions, etc.)
 		resolvedVersion := pkg.Version
 		if isVersionQuery(pkg.Version) {
+			// It's a query like @latest, @upgrade, @patch
 			resolved, err := resolveVersionQuery(ctx, name, pkg.Version, modroot)
 			if err != nil {
 				return nil, fmt.Errorf("failed to resolve %s@%s: %w", name, pkg.Version, err)
 			}
 			resolvedVersion = resolved
 			log.Infof("Resolved %s@%s to %s", name, pkg.Version, resolvedVersion)
+		} else if len(pkg.Version) >= 2 && pkg.Version[0] == 'v' && pkg.Version[1] >= '0' && pkg.Version[1] <= '9' {
+			// It's a semantic version - resolve to get canonical form (+incompatible, etc.)
+			resolved, err := resolveVersionQuery(ctx, name, pkg.Version, modroot)
+			if err != nil {
+				return nil, fmt.Errorf("failed to resolve %s@%s: %w", name, pkg.Version, err)
+			}
+			if resolved != pkg.Version {
+				log.Infof("Resolved %s@%s to canonical form %s", name, pkg.Version, resolved)
+			}
+			resolvedVersion = resolved
 		}
 
 		// Get current version from go.mod
@@ -347,7 +361,85 @@ func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package,
 		log.Infof("Will update %s from %s to %s", name, currentVersion, resolvedVersion)
 	}
 
+	if err := checkMissingTransitiveDeps(ctx, filtered, modFile); err != nil {
+		return nil, err
+	}
+
 	return filtered, nil
+}
+
+// checkMissingTransitiveDeps checks all packages being updated for transitive dependency
+// requirements not satisfied by the current go.mod, and returns an error with co-update
+// recommendations if any are found.
+func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Package, modFile *modfile.File) error {
+	log := clog.FromContext(ctx)
+
+	// Build set of packages being updated
+	packagesBeingUpdated := make(map[string]string)
+	for name, pkg := range filtered {
+		packagesBeingUpdated[name] = pkg.Version
+	}
+
+	allMissingDeps := make(map[string]MissingDependency)
+
+	for name, pkg := range filtered {
+		missingDeps, err := CheckTransitiveRequirements(ctx, name, pkg.Version, modFile)
+		if err != nil {
+			log.Warnf("Could not check transitive requirements for %s@%s: %v", name, pkg.Version, err)
+			continue
+		}
+		collectMissingDeps(ctx, missingDeps, packagesBeingUpdated, allMissingDeps)
+	}
+
+	if len(allMissingDeps) == 0 {
+		return nil
+	}
+
+	var msg strings.Builder
+	fmt.Fprintf(&msg, "the following dependencies need to be co-updated:\n")
+	for _, dep := range allMissingDeps {
+		fmt.Fprintf(&msg, "  - %s: current %s, required >= %s\n", dep.Package, dep.CurrentVersion, dep.RequiredVersion)
+	}
+	fmt.Fprintf(&msg, "\nTo proceed, add these packages to your update:\n")
+	fmt.Fprintf(&msg, "  omnibump --packages \"")
+	first := true
+	for name, pkg := range filtered {
+		if !first {
+			fmt.Fprintf(&msg, " ")
+		}
+		fmt.Fprintf(&msg, "%s@%s", name, pkg.Version)
+		first = false
+	}
+	for _, dep := range allMissingDeps {
+		fmt.Fprintf(&msg, " %s@%s", dep.Package, dep.RequiredVersion)
+	}
+	fmt.Fprintf(&msg, "\"")
+	return fmt.Errorf("%w:\n%s", ErrTransitiveDepsRequired, msg.String())
+}
+
+// collectMissingDeps adds missing transitive dependencies to allMissingDeps,
+// skipping any that are already satisfied by the current update set.
+func collectMissingDeps(ctx context.Context, missingDeps []MissingDependency, packagesBeingUpdated map[string]string, allMissingDeps map[string]MissingDependency) {
+	log := clog.FromContext(ctx)
+	for _, dep := range missingDeps {
+		if targetVer, beingUpdated := packagesBeingUpdated[dep.Package]; beingUpdated {
+			if semver.IsValid(targetVer) && semver.IsValid(dep.RequiredVersion) {
+				if semver.Compare(targetVer, dep.RequiredVersion) >= 0 {
+					log.Debugf("Dependency %s requirement satisfied by update to %s", dep.Package, targetVer)
+					continue
+				}
+			}
+		}
+		if existing, exists := allMissingDeps[dep.Package]; exists {
+			if semver.IsValid(dep.RequiredVersion) && semver.IsValid(existing.RequiredVersion) {
+				if semver.Compare(dep.RequiredVersion, existing.RequiredVersion) > 0 {
+					allMissingDeps[dep.Package] = dep
+				}
+			}
+		} else {
+			allMissingDeps[dep.Package] = dep
+		}
+	}
 }
 
 // isVersionQuery checks if a version string is a query (like @latest, @upgrade, @patch).
@@ -370,8 +462,9 @@ func resolveVersionQuery(ctx context.Context, modulePath, query, modroot string)
 	//nolint:gosec // G204: Using exec.Command with validated module path and version query
 	cmd := exec.CommandContext(ctx, "go", "list", "-m", fmt.Sprintf("%s@%s", modulePath, query))
 	cmd.Dir = modroot
-	// Override vendor mode to allow querying
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod")
+	// Disable workspace mode and override vendor mode to allow querying
+	// GOWORK=off is required when go.work file exists
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {

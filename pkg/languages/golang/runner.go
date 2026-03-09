@@ -81,6 +81,16 @@ func GoModTidy(ctx context.Context, modroot, _ string, compat string) (string, e
 	return "", nil
 }
 
+// GoModDownload runs go mod download to update go.sum.
+func GoModDownload(ctx context.Context, modroot string) (string, error) {
+	cmd := exec.CommandContext(ctx, "go", "mod", "download")
+	cmd.Dir = modroot
+	if bytes, err := cmd.CombinedOutput(); err != nil {
+		return strings.TrimSpace(string(bytes)), err
+	}
+	return "", nil
+}
+
 func findWorkspaceFile(dir string) (root string) {
 	dir = filepath.Clean(dir)
 	for {

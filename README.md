@@ -13,6 +13,8 @@
 - **Unified Configuration**: Single configuration format across all languages
 - **Property-Based Updates**: Smart property management for Maven
 - **Version Resolution**: Resolves `@latest` queries without spurious changes
+- **Transitive Dependency Detection**: Automatically detects when updates require co-updating other dependencies
+- **Incompatible Version Handling**: Automatically handles `+incompatible` suffix for Go modules
 - **Dependency Analysis**: Understand project's dependency structure
 - **Dry Run Mode**: Preview changes before applying
 - **Backward Compatible**: Works with legacy configuration file names
@@ -82,6 +84,14 @@ omnibump --deps deps.yaml --tidy
 ```bash
 # Update a single dependency
 omnibump --language go --packages "golang.org/x/sys@latest" --tidy
+
+# +incompatible versions handled automatically
+omnibump --packages "github.com/docker/docker@v28.0.0"
+# Resolved to v28.0.0+incompatible
+
+# Automatic co-update detection
+omnibump --packages "oras.land/oras-go@v1.2.7"
+# Error: github.com/docker/docker needs v28.5.1+ (provides exact command)
 ```
 
 Or create `deps.yaml`:
@@ -179,6 +189,7 @@ Comprehensive documentation is available in the `docs/` directory:
 - **[Configuration Guide](docs/configuration.md)** - Configuration file formats and package specifications
 - **[CLI Reference](docs/cli-reference.md)** - Complete command-line interface documentation
 - **[Validation and Safety](docs/validation-and-safety.md)** - Built-in validation rules and safety features
+- **[Transitive Dependency Detection](docs/transitive-dependency-detection.md)** - Automatic co-update detection for Go
 - **[Common Workflows](docs/workflows.md)** - CVE response, batch updates, CI/CD integration
 - **[Best Practices](docs/best-practices.md)** - Recommendations for using omnibump effectively
 - **[Troubleshooting](docs/troubleshooting.md)** - Common issues and solutions
@@ -202,6 +213,34 @@ omnibump is a CLI tool for manual/scripted updates. Dependabot and Renovate are 
 ### Is omnibump safe to use?
 
 Yes, with proper testing. Always use `--dry-run` first, review changes, run tests, and maintain backups. See the [Validation and Safety](docs/validation-and-safety.md) guide for details on built-in safety features.
+
+### What does "requires co-updating" mean? (Go)
+
+When updating a Go package, omnibump checks if the new version requires newer versions of other dependencies:
+
+```bash
+$ omnibump --packages "oras.land/oras-go@v1.2.7"
+Error: the following dependencies need to be co-updated:
+  - github.com/docker/docker: current v28.0.0, required >= v28.5.1
+  - github.com/docker/cli: current v25.0.1, required >= v28.5.1
+  [... more ...]
+
+To proceed, add these packages to your update:
+  omnibump --packages "oras.land/oras-go@v1.2.7 github.com/docker/docker@v28.5.1 ..."
+```
+
+This prevents build failures from incompatible dependency versions. See [Transitive Dependency Detection](docs/transitive-dependency-detection.md) for technical details.
+
+### Do I need to specify +incompatible for Go packages?
+
+No! omnibump automatically adds the `+incompatible` suffix when needed:
+
+```bash
+omnibump --packages "github.com/docker/docker@v28.0.0"
+# Automatically resolved to v28.0.0+incompatible
+```
+
+See [Usage Examples](docs/usage-examples.md) for more Go-specific examples.
 
 ## Contributing
 

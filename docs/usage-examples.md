@@ -76,6 +76,65 @@ omnibump analyze .
 omnibump analyze --packages "golang.org/x/sys@latest"
 ```
 
+### Example 6: Handling +incompatible Versions
+
+Go modules with major version >= 2 that don't have `/vN` in their path require the `+incompatible` suffix. Omnibump handles this automatically:
+
+```bash
+# You specify without +incompatible
+omnibump --packages "github.com/docker/docker@v28.0.0"
+
+# Omnibump automatically resolves to canonical form
+# Output: Resolved github.com/docker/docker@v28.0.0 to canonical form v28.0.0+incompatible
+
+# Works with multiple packages
+omnibump --packages "github.com/docker/docker@v28.0.0 github.com/docker/cli@v29.2.0"
+# Both get +incompatible added automatically
+```
+
+**Why this matters:**
+- Without automatic resolution, you'd get: `version "v28.0.0" invalid: should be v0 or v1, not v28`
+- Omnibump queries the Go proxy to get the correct canonical version
+- No need to remember which packages need `+incompatible`
+
+### Example 7: Transitive Dependency Detection
+
+Omnibump automatically detects when updating a package requires co-updating other dependencies:
+
+```bash
+# Try to update a single package
+omnibump --packages "oras.land/oras-go@v1.2.7"
+
+# Omnibump detects incompatibilities and provides guidance
+# Output:
+# Error: the following dependencies need to be co-updated:
+#   - github.com/docker/docker: current v28.0.0, required >= v28.5.1
+#   - github.com/docker/cli: current v25.0.1, required >= v28.5.1
+#   - golang.org/x/crypto: current v0.41.0, required >= v0.43.0
+#   [... more dependencies ...]
+#
+# To proceed, add these packages to your update:
+#   omnibump --packages "oras.land/oras-go@v1.2.7 github.com/docker/docker@v28.5.1 github.com/docker/cli@v28.5.1 ..."
+
+# Run the suggested command
+omnibump --packages "oras.land/oras-go@v1.2.7 github.com/docker/docker@v28.5.1 github.com/docker/cli@v28.5.1 golang.org/x/crypto@v0.43.0 ..."
+# All packages updated successfully, build will work
+```
+
+**Why this matters:**
+- Prevents build failures from incompatible dependency versions
+- Saves time debugging type mismatch errors
+- Provides exact command to run - no trial and error
+- Validates entire update set together
+
+**How it works:**
+1. Fetches target version's go.mod from Go module proxy
+2. Compares its requirements against your current versions
+3. Detects packages where `current < required`
+4. Provides complete list of co-updates needed
+
+See [Transitive Dependency Detection](transitive-dependency-detection.md) for detailed documentation.
+
 ## Rust Projects
 
 ### Example 1: Update Cargo Dependencies

@@ -52,12 +52,47 @@ omnibump analyze /path/to/project
 # Get recommendations for updating specific dependencies
 omnibump analyze --packages "golang.org/x/sys@v0.28.0"
 
+# Get recommendations with transitive co-updates (Go)
+omnibump analyze --packages "oras.land/oras-go@v1.2.7"
+# Shows all packages that need updating together
+
 # Generate configuration files
 omnibump analyze --output-deps deps.yaml --output-props properties.yaml
 
 # Get JSON output for automation
 omnibump analyze --output json
 ```
+
+### Automatic Features (No Flags Required)
+
+**For Go Projects:**
+
+omnibump automatically performs these actions without additional flags:
+
+1. **Version Normalization**: Resolves versions to canonical forms
+   ```bash
+   omnibump --packages "github.com/docker/docker@v28.0.0"
+   # Automatically adds +incompatible suffix
+   ```
+
+2. **Transitive Dependency Detection**: Detects required co-updates
+   ```bash
+   omnibump --packages "package@version"
+   # Automatically checks if other packages need updating
+   # Provides exact command if co-updates needed
+   ```
+
+3. **Vendor go.sum Update**: Refreshes go.sum before vendoring
+   ```bash
+   omnibump --packages "package@version"
+   # If vendor/ exists, runs go mod tidy before go vendor
+   ```
+
+4. **Workspace Handling**: Works with go.work files
+   ```bash
+   omnibump --packages "package@version"
+   # Automatically detects and handles go.work
+   ```
 
 ## Supported Command
 
