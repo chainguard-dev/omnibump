@@ -491,6 +491,64 @@ func TestUpdateError(t *testing.T) {
 	}
 }
 
+// TestCrossPathReplacePreservedWithRequireUpdate verifies that a cross-path replace
+// directive (OldName != NewName) is preserved when a regular require update is also
+// being processed. The bug was that GoModEditReplaceModule writes to disk, but the
+// subsequent AddRequire + WriteFile path overwrites the disk file using a stale
+// in-memory modFile that was parsed before the replace was written.
+func TestCrossPathReplacePreservedWithRequireUpdate(t *testing.T) {
+	pkgVersions := map[string]*Package{
+		// Cross-path replace: github.com/google/gofuzz -> github.com/fakefuzz
+		"github.com/fakefuzz": {
+			OldName: "github.com/google/gofuzz",
+			Name:    "github.com/fakefuzz",
+			Version: "v1.2.3",
+			Replace: true,
+		},
+		// Regular require update: causes hasDirectEdits=true, triggering the WriteFile path
+		"github.com/google/uuid": {
+			Name:    "github.com/google/uuid",
+			Version: "v1.4.0",
+		},
+	}
+
+	tmpdir := t.TempDir()
+	copyFile(t, "testdata/aws-efs-csi-driver/go.mod", tmpdir)
+
+	modFile, err := DoUpdate(context.Background(), pkgVersions, &UpdateConfig{
+		Modroot: tmpdir,
+		Tidy:    false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify the require was updated
+	if got := getVersion(modFile, "github.com/google/uuid"); got != "v1.4.0" {
+		t.Errorf("github.com/google/uuid: expected v1.4.0, got %s", got)
+	}
+
+	// Verify the cross-path replace directive is still present.
+	// Without the fix, DoUpdate returns "package not found in go.mod: package github.com/fakefuzz"
+	// because the in-memory modFile write overwrites the replace that was written to disk.
+	if got := getVersion(modFile, "github.com/fakefuzz"); got != "v1.2.3" {
+		t.Errorf("github.com/fakefuzz: expected v1.2.3 in replace directive, got %q", got)
+	}
+
+	foundReplace := false
+	for _, r := range modFile.Replace {
+		if r.Old.Path == "github.com/google/gofuzz" && r.New.Path == "github.com/fakefuzz" {
+			foundReplace = true
+			if r.New.Version != "v1.2.3" {
+				t.Errorf("replace version: expected v1.2.3, got %s", r.New.Version)
+			}
+		}
+	}
+	if !foundReplace {
+		t.Error("cross-path replace directive was not preserved after require update")
+	}
+}
+
 func TestReplaces(t *testing.T) {
 	testCases := []struct {
 		name     string
