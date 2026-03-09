@@ -175,6 +175,61 @@ func TestResolveAndFilterPackages(t *testing.T) {
 			skipResolver: true,
 		},
 		{
+			name: "package with versioned replace directive is skipped",
+			packages: map[string]*Package{
+				"k8s.io/apiserver": {
+					Name:    "k8s.io/apiserver",
+					Version: "v0.29.4",
+					Replace: false,
+				},
+			},
+			modFile: &modfile.File{
+				Module: &modfile.Module{
+					Mod: module.Version{Path: "test/module"},
+				},
+				Require: []*modfile.Require{
+					{Mod: module.Version{Path: "k8s.io/apiserver", Version: "v0.29.3"}},
+				},
+				Replace: []*modfile.Replace{
+					{
+						Old: module.Version{Path: "k8s.io/apiserver", Version: "v0.0.0"},
+						New: module.Version{Path: "k8s.io/apiserver", Version: "v0.29.3"},
+					},
+				},
+			},
+			wantFiltered: 0,
+			wantSkipped:  []string{"k8s.io/apiserver"},
+			skipResolver: true,
+		},
+		{
+			name: "package with replace directive is not skipped when explicitly marked Replace",
+			packages: map[string]*Package{
+				"k8s.io/apiserver": {
+					Name:    "k8s.io/apiserver",
+					OldName: "k8s.io/apiserver",
+					Version: "v0.29.4",
+					Replace: true,
+				},
+			},
+			modFile: &modfile.File{
+				Module: &modfile.Module{
+					Mod: module.Version{Path: "test/module"},
+				},
+				Require: []*modfile.Require{
+					{Mod: module.Version{Path: "k8s.io/apiserver", Version: "v0.29.3"}},
+				},
+				Replace: []*modfile.Replace{
+					{
+						Old: module.Version{Path: "k8s.io/apiserver", Version: "v0.0.0"},
+						New: module.Version{Path: "k8s.io/apiserver", Version: "v0.29.3"},
+					},
+				},
+			},
+			wantFiltered: 1,
+			wantSkipped:  nil,
+			skipResolver: true,
+		},
+		{
 			name: "multiple packages mixed scenario",
 			packages: map[string]*Package{
 				"example.com/upgrade": {
@@ -258,6 +313,11 @@ func resolveAndFilterPackagesForTest(packages map[string]*Package, modFile *modf
 			// Package doesn't exist in go.mod, add it
 			pkg.Version = resolvedVersion
 			filtered[name] = pkg
+			continue
+		}
+
+		// Skip packages pinned via replace directive unless explicitly a replace update.
+		if !pkg.Replace && hasReplaceDirective(modFile, name) {
 			continue
 		}
 
