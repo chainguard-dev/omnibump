@@ -329,6 +329,10 @@ func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package,
 			log.Infof("Resolved %s@%s to %s", name, pkg.Version, resolvedVersion)
 		}
 
+		// For modules that don't use major version path suffixes (e.g., /v2, /v3), Go
+		// requires the +incompatible suffix for versions with major > 1.
+		resolvedVersion = appendIncompatibleIfNeeded(name, resolvedVersion)
+
 		// Get current version from go.mod
 		currentVersion := getVersion(modFile, name)
 
@@ -368,6 +372,28 @@ func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package,
 	}
 
 	return filtered, nil
+}
+
+// appendIncompatibleIfNeeded adds the +incompatible suffix when a module path does not
+// use major version path suffixes (e.g., /v2, /v3) but the version's major is greater
+// than v1. This is required by go.mod for pre-module-era packages.
+func appendIncompatibleIfNeeded(modulePath, version string) string {
+	if !semver.IsValid(version) {
+		return version
+	}
+	if strings.HasSuffix(version, "+incompatible") {
+		return version
+	}
+	major := semver.Major(version)
+	if major == "v0" || major == "v1" {
+		return version
+	}
+	// SplitPathVersion returns the major version suffix (e.g. "/v2") if present.
+	_, pathMajor, _ := module.SplitPathVersion(modulePath)
+	if pathMajor != "" {
+		return version
+	}
+	return version + "+incompatible"
 }
 
 // isVersionQuery checks if a version string is a query (like @latest, @upgrade, @patch).

@@ -102,6 +102,8 @@ func ParseGoModfileFromContent(filename string, content []byte) (*modfile.File, 
 func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateConfig) (*modfile.File, error) {
 	log := clog.FromContext(ctx)
 
+	normalizeIncompatibleVersions(pkgVersions)
+
 	var err error
 	goVersion := cfg.GoVersion
 	if goVersion == "" {
@@ -391,6 +393,15 @@ func verifyAndFinalize(ctx context.Context, modpath string, pkgVersions map[stri
 	}
 
 	return newModFile, nil
+}
+
+// normalizeIncompatibleVersions ensures all package versions have the +incompatible
+// suffix where required, so all code paths through DoUpdate receive correctly-suffixed
+// versions regardless of how DoUpdate was called.
+func normalizeIncompatibleVersions(pkgVersions map[string]*Package) {
+	for _, pkg := range pkgVersions {
+		pkg.Version = appendIncompatibleIfNeeded(pkg.Name, pkg.Version)
+	}
 }
 
 func orderPkgVersionsMap(pkgVersions map[string]*Package) []string {
