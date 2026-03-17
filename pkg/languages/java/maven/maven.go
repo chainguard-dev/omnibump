@@ -85,6 +85,20 @@ func (m *Maven) GetAnalyzer() analyzer.Analyzer {
 	return &MavenAnalyzer{}
 }
 
+// depDisplayName returns a human-readable identifier for a dependency,
+// preferring groupId:artifactId from metadata over the generic Name field.
+func depDisplayName(dep languages.Dependency) string {
+	if gid, ok := dep.Metadata["groupId"].(string); ok {
+		if aid, ok := dep.Metadata["artifactId"].(string); ok {
+			return gid + ":" + aid
+		}
+	}
+	if dep.Name != "" {
+		return dep.Name
+	}
+	return "<unknown>"
+}
+
 // Update performs dependency updates on a Maven project.
 func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	log := clog.FromContext(ctx)
@@ -93,12 +107,21 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	log.Infof("Dependencies to update: %d", len(cfg.Dependencies))
 	log.Infof("Properties to update: %d", len(cfg.Properties))
 
-	// Validate all dependency versions before any file writes (fail-fast)
+	// Validate all dependency versions before any file writes (fail-fast).
+	// Deps with no version are allowed — they are used to add scope-only entries to
+	// DependencyManagement (e.g. scope: provided with no version to suppress a
+	// relocated artifact via the Maven exclusion-by-provided-scope trick).
 	for _, dep := range cfg.Dependencies {
+		if dep.Version == "" {
+			log.Infof("Dependency %s has no version: will be written to DependencyManagement without <version>", depDisplayName(dep))
+			continue
+		}
 		if err := validateVersion(dep.Version); err != nil {
-			return fmt.Errorf("dependency %s: %w", dep.Name, err)
+			return fmt.Errorf("dependency %s: %w", depDisplayName(dep), err)
 		}
 	}
+
+	deps := cfg.Dependencies
 
 	// Validate all property values before any file writes (fail-fast)
 	for propName, propValue := range cfg.Properties {
@@ -118,13 +141,13 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	var patches []Patch
 	var err error
 	if len(cfg.Properties) > 0 {
-		patches, err = applyPrecedenceRules(ctx, pomPath, cfg.Dependencies, cfg.Properties)
+		patches, err = applyPrecedenceRules(ctx, pomPath, deps, cfg.Properties)
 		if err != nil {
 			return fmt.Errorf("failed to apply precedence rules: %w", err)
 		}
 	} else {
 		// No properties, convert all dependencies to patches
-		patches, err = convertDependenciesToPatches(cfg.Dependencies)
+		patches, err = convertDependenciesToPatches(deps)
 		if err != nil {
 			return fmt.Errorf("failed to convert dependencies to patches: %w", err)
 		}

@@ -520,6 +520,147 @@ func TestValidateVersion_InvalidVersions(t *testing.T) {
 	}
 }
 
+// TestDepDisplayName verifies that depDisplayName returns the expected identifier.
+func TestDepDisplayName(t *testing.T) {
+	tests := []struct {
+		dep  languages.Dependency
+		want string
+	}{
+		{
+			dep:  languages.Dependency{Metadata: map[string]any{"groupId": "org.example", "artifactId": "mylib"}},
+			want: "org.example:mylib",
+		},
+		{
+			dep:  languages.Dependency{Name: "some-module", Metadata: map[string]any{}},
+			want: "some-module",
+		},
+		{
+			dep:  languages.Dependency{Metadata: map[string]any{}},
+			want: "<unknown>",
+		},
+	}
+	for _, tt := range tests {
+		got := depDisplayName(tt.dep)
+		if got != tt.want {
+			t.Errorf("depDisplayName(%+v) = %q, want %q", tt.dep, got, tt.want)
+		}
+	}
+}
+
+// TestMaven_Update_EmptyVersionPreservesAndAdds verifies that Update() handles
+// dependencies with empty versions correctly:
+//   - An empty-version dep that ALREADY EXISTS in the POM has its version preserved
+//     (the existing version is not overwritten with "").
+//   - An empty-version dep that is ABSENT from the POM is added to DependencyManagement
+//     without a <version> element (Maven exclusion-by-provided-scope trick).
+func TestMaven_Update_EmptyVersionPreservesAndAdds(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	initialPOM := `<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>test-project</artifactId>
+  <version>1.0.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>org.example</groupId>
+      <artifactId>real-dep</artifactId>
+      <version>1.0.0</version>
+    </dependency>
+    <dependency>
+      <groupId>javax.servlet</groupId>
+      <artifactId>javax.servlet-api</artifactId>
+      <version>4.0.1</version>
+      <scope>provided</scope>
+    </dependency>
+  </dependencies>
+</project>`
+
+	pomPath := tmpDir + "/pom.xml"
+	if err := os.WriteFile(pomPath, []byte(initialPOM), 0o600); err != nil {
+		t.Fatalf("Failed to write initial POM: %v", err)
+	}
+
+	m := &Maven{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{
+				// Normal bump.
+				Version: "1.0.1",
+				Metadata: map[string]any{
+					"groupId":    "org.example",
+					"artifactId": "real-dep",
+				},
+			},
+			{
+				// Existing dep with no version — existing version must be preserved.
+				Version: "",
+				Scope:   "provided",
+				Metadata: map[string]any{
+					"groupId":    "javax.servlet",
+					"artifactId": "javax.servlet-api",
+				},
+			},
+			{
+				// Absent dep with no version — added to DependencyManagement without <version>
+				// (Maven exclusion-by-provided-scope trick for relocated artifacts).
+				Version: "",
+				Scope:   "provided",
+				Metadata: map[string]any{
+					"groupId":    "old.groupid",
+					"artifactId": "relocated-artifact",
+				},
+			},
+		},
+	}
+
+	if err := m.Update(context.Background(), cfg); err != nil {
+		t.Fatalf("Maven.Update() should not error for empty-version dep, got: %v", err)
+	}
+
+	// Verify the POM was written and existing version was not clobbered.
+	project, err := ParsePom(pomPath)
+	if err != nil {
+		t.Fatalf("Failed to parse updated POM: %v", err)
+	}
+
+	// real-dep must be bumped to 1.0.1.
+	for _, dep := range *project.Dependencies {
+		if dep.GroupID == "org.example" && dep.ArtifactID == "real-dep" {
+			if dep.Version != "1.0.1" {
+				t.Errorf("real-dep version = %q, want 1.0.1", dep.Version)
+			}
+		}
+		// javax.servlet-api version must be preserved (not blanked).
+		if dep.GroupID == "javax.servlet" && dep.ArtifactID == "javax.servlet-api" {
+			if dep.Version != "4.0.1" {
+				t.Errorf("javax.servlet-api version = %q, want 4.0.1 (must not be overwritten)", dep.Version)
+			}
+		}
+	}
+
+	// relocated-artifact must be present in DependencyManagement with scope provided and no version.
+	if project.DependencyManagement == nil || project.DependencyManagement.Dependencies == nil {
+		t.Fatal("DependencyManagement should not be nil after adding relocated-artifact")
+	}
+	found := false
+	for _, dep := range *project.DependencyManagement.Dependencies {
+		if dep.GroupID == "old.groupid" && dep.ArtifactID == "relocated-artifact" {
+			found = true
+			if dep.Version != "" {
+				t.Errorf("relocated-artifact version = %q, want empty (omitted)", dep.Version)
+			}
+			if dep.Scope != "provided" {
+				t.Errorf("relocated-artifact scope = %q, want provided", dep.Scope)
+			}
+		}
+	}
+	if !found {
+		t.Error("relocated-artifact was not added to DependencyManagement")
+	}
+}
+
 // TestMaven_Update_RejectsInvalidVersion verifies that Maven.Update() rejects invalid versions
 // and leaves the POM file unchanged.
 func TestMaven_Update_RejectsInvalidVersion(t *testing.T) {

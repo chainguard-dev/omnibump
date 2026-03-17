@@ -132,6 +132,14 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 						delete(missingDeps, patch)
 						continue
 					}
+					// A patch with no version is a scope-only entry (e.g. scope: provided
+					// to suppress a relocated artifact). Don't overwrite the existing version.
+					if patch.Version == "" {
+						log.Infof("Found %s:%s — patch has no version, preserving existing version %s",
+							patch.GroupID, patch.ArtifactID, dep.Version)
+						delete(missingDeps, patch)
+						continue
+					}
 					log.Infof("Patching %s:%s from %s to %s (scope: %s)",
 						patch.GroupID, patch.ArtifactID, dep.Version, patch.Version, patch.Scope)
 					(*project.Dependencies)[i].Version = patch.Version
@@ -150,6 +158,13 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 					// Skip patching if the dependency uses a property reference
 					if isPropertyReference(dep.Version) {
 						log.Warnf("Skipping patch for %s:%s (uses property %s, consider using --properties instead)",
+							patch.GroupID, patch.ArtifactID, dep.Version)
+						delete(missingDeps, patch)
+						continue
+					}
+					// A patch with no version is a scope-only entry. Don't overwrite the existing version.
+					if patch.Version == "" {
+						log.Infof("Found DM %s:%s — patch has no version, preserving existing version %s",
 							patch.GroupID, patch.ArtifactID, dep.Version)
 						delete(missingDeps, patch)
 						continue
