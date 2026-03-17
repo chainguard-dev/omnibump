@@ -615,7 +615,7 @@ func TestMaven_Update_EmptyVersionPreservesAndAdds(t *testing.T) {
 		},
 	}
 
-	if err := m.Update(context.Background(), cfg); err != nil {
+	if err := m.Update(t.Context(), cfg); err != nil {
 		t.Fatalf("Maven.Update() should not error for empty-version dep, got: %v", err)
 	}
 

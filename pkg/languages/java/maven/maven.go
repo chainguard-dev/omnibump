@@ -101,11 +101,9 @@ func depDisplayName(dep languages.Dependency) string {
 
 // Update performs dependency updates on a Maven project.
 func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
-	log := clog.FromContext(ctx)
-
-	log.Infof("Updating Maven project at: %s", cfg.RootDir)
-	log.Infof("Dependencies to update: %d", len(cfg.Dependencies))
-	log.Infof("Properties to update: %d", len(cfg.Properties))
+	clog.InfoContextf(ctx, "Updating Maven project at: %s", cfg.RootDir)
+	clog.InfoContextf(ctx, "Dependencies to update: %d", len(cfg.Dependencies))
+	clog.InfoContextf(ctx, "Properties to update: %d", len(cfg.Properties))
 
 	// Validate all dependency versions before any file writes (fail-fast).
 	// Deps with no version are allowed — they are used to add scope-only entries to
@@ -113,7 +111,7 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	// relocated artifact via the Maven exclusion-by-provided-scope trick).
 	for _, dep := range cfg.Dependencies {
 		if dep.Version == "" {
-			log.Infof("Dependency %s has no version: will be written to DependencyManagement without <version>", depDisplayName(dep))
+			clog.InfoContextf(ctx, "Dependency %s has no version: will be written to DependencyManagement without <version>", depDisplayName(dep))
 			continue
 		}
 		if err := validateVersion(dep.Version); err != nil {
@@ -160,7 +158,7 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	}
 
 	if cfg.DryRun {
-		log.Infof("Dry run mode: not writing changes to %s", pomPath)
+		clog.InfoContextf(ctx, "Dry run mode: not writing changes to %s", pomPath)
 		return nil
 	}
 
@@ -169,7 +167,7 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 		return fmt.Errorf("failed to write updated pom.xml: %w", err)
 	}
 
-	log.Infof("Successfully updated %s", pomPath)
+	clog.InfoContextf(ctx, "Successfully updated %s", pomPath)
 
 	return nil
 }
