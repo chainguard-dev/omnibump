@@ -445,6 +445,12 @@ func TestValidateVersion_ValidVersions(t *testing.T) {
 		"2.0+build.123",
 		"3.0_rc1",
 		"1.0.0-rc1+build.456",
+		// Maven version ranges
+		"[1.4.12,2.0.0)",
+		"[1.0,2.0]",
+		"(1.0,2.0)",
+		"(,1.0]",
+		"[1.0,)",
 	}
 
 	for _, version := range validVersions {
@@ -487,8 +493,6 @@ func TestValidateVersion_InvalidVersions(t *testing.T) {
 		{`1.0.0"`, "Double quote"},
 		{`1.0.0'`, "Single quote"},
 		{`1.0.0{}`, "Curly braces"},
-		{`1.0.0[]`, "Square brackets"},
-		{`1.0.0()`, "Parentheses"},
 		{`1.0.0<>`, "Angle brackets"},
 
 		// Whitespace and control characters

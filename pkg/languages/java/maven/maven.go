@@ -22,10 +22,11 @@ import (
 
 var (
 	// versionValidationRegex defines the allowlist for valid version strings.
-	// Only allows alphanumeric characters, dots, underscores, hyphens, and plus signs.
+	// Allows alphanumeric characters, dots, underscores, hyphens, plus signs,
+	// commas, and parentheses/brackets for Maven version ranges (e.g. [1.0,2.0)).
 	// This prevents injection of quotes, braces, newlines, and other
 	// characters that could be used for XML injection in Maven POM files.
-	versionValidationRegex = regexp.MustCompile(`^[a-zA-Z0-9._+-]+$`)
+	versionValidationRegex = regexp.MustCompile(`^[a-zA-Z0-9._+\-,()\[\]]+$`)
 
 	// ErrInvalidVersion is returned when a version string fails validation.
 	ErrInvalidVersion = errors.New("invalid version string")
