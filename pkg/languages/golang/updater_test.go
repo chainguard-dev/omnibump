@@ -13,6 +13,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/chainguard-dev/omnibump/pkg/languages"
 )
 
 // maybeParseFile will parse the file if the filename is not empty
@@ -380,7 +382,10 @@ func TestGoModTidySkipInitial(t *testing.T) {
 			},
 			tidySkipInitial: true,
 			wantError:       true,
-			errMsgContains:  "go mod tidy",
+			// With +incompatible normalization, v3.3.15+incompatible is a valid version so
+			// go mod tidy succeeds. Tidy then removes etcd from go.mod (it is not directly
+			// imported by confd), so verifyAndFinalize reports package not found.
+			errMsgContains: "package not found in go.mod",
 		},
 	}
 
@@ -491,6 +496,64 @@ func TestUpdateError(t *testing.T) {
 	}
 }
 
+// TestCrossPathReplacePreservedWithRequireUpdate verifies that a cross-path replace
+// directive (OldName != NewName) is preserved when a regular require update is also
+// being processed. The bug was that GoModEditReplaceModule writes to disk, but the
+// subsequent AddRequire + WriteFile path overwrites the disk file using a stale
+// in-memory modFile that was parsed before the replace was written.
+func TestCrossPathReplacePreservedWithRequireUpdate(t *testing.T) {
+	pkgVersions := map[string]*Package{
+		// Cross-path replace: github.com/google/gofuzz -> github.com/fakefuzz
+		"github.com/fakefuzz": {
+			OldName: "github.com/google/gofuzz",
+			Name:    "github.com/fakefuzz",
+			Version: "v1.2.3",
+			Replace: true,
+		},
+		// Regular require update: causes hasDirectEdits=true, triggering the WriteFile path
+		"github.com/google/uuid": {
+			Name:    "github.com/google/uuid",
+			Version: "v1.4.0",
+		},
+	}
+
+	tmpdir := t.TempDir()
+	copyFile(t, "testdata/aws-efs-csi-driver/go.mod", tmpdir)
+
+	modFile, err := DoUpdate(context.Background(), pkgVersions, &UpdateConfig{
+		Modroot: tmpdir,
+		Tidy:    false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify the require was updated
+	if got := getVersion(modFile, "github.com/google/uuid"); got != "v1.4.0" {
+		t.Errorf("github.com/google/uuid: expected v1.4.0, got %s", got)
+	}
+
+	// Verify the cross-path replace directive is still present.
+	// Without the fix, DoUpdate returns "package not found in go.mod: package github.com/fakefuzz"
+	// because the in-memory modFile write overwrites the replace that was written to disk.
+	if got := getVersion(modFile, "github.com/fakefuzz"); got != "v1.2.3" {
+		t.Errorf("github.com/fakefuzz: expected v1.2.3 in replace directive, got %q", got)
+	}
+
+	foundReplace := false
+	for _, r := range modFile.Replace {
+		if r.Old.Path == "github.com/google/gofuzz" && r.New.Path == "github.com/fakefuzz" {
+			foundReplace = true
+			if r.New.Version != "v1.2.3" {
+				t.Errorf("replace version: expected v1.2.3, got %s", r.New.Version)
+			}
+		}
+	}
+	if !foundReplace {
+		t.Error("cross-path replace directive was not preserved after require update")
+	}
+}
+
 func TestReplaces(t *testing.T) {
 	testCases := []struct {
 		name     string
@@ -537,6 +600,59 @@ func TestReplaces(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+func TestReplaceIncompatibleVersion(t *testing.T) {
+	// Verifies that +incompatible is correctly applied when updating a package
+	// via a replace directive (pkg.Replace == true).
+	tmpdir := t.TempDir()
+	initialMod := `module test
+
+go 1.21
+
+require github.com/example/legacy v2.0.0+incompatible
+
+replace github.com/example/legacy => github.com/example/legacy v2.0.0+incompatible
+`
+	if err := os.WriteFile(filepath.Join(tmpdir, "go.mod"), []byte(initialMod), 0o600); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
+
+	pkgVersions := map[string]*Package{
+		"github.com/example/legacy": {
+			OldName: "github.com/example/legacy",
+			Name:    "github.com/example/legacy",
+			Version: "v3.0.0", // deliberately omit +incompatible
+			Replace: true,
+		},
+	}
+
+	modFile, err := DoUpdate(context.Background(), pkgVersions, &UpdateConfig{
+		Modroot: tmpdir,
+		Tidy:    false,
+	})
+	if err != nil {
+		t.Fatalf("DoUpdate() error = %v", err)
+	}
+
+	// Verify the replace directive was updated with the correct +incompatible version.
+	found := false
+	for _, r := range modFile.Replace {
+		if r.Old.Path == "github.com/example/legacy" {
+			found = true
+			if r.New.Version != "v3.0.0+incompatible" {
+				t.Errorf("replace version: got %q, want %q", r.New.Version, "v3.0.0+incompatible")
+			}
+		}
+	}
+	if !found {
+		t.Error("replace directive for github.com/example/legacy not found after update")
+	}
+
+	// Verify the written go.mod parses cleanly.
+	if _, _, err := ParseGoModfile(filepath.Join(tmpdir, "go.mod")); err != nil {
+		t.Errorf("go.mod is not parseable after update: %v", err)
 	}
 }
 
@@ -908,6 +1024,129 @@ require github.com/example/dependency v1.4.0
 					t.Errorf("Expected %d error messages, but found %d in: %v",
 						len(tc.pkgVersions), errorCount, err)
 				}
+			}
+		})
+	}
+}
+
+// incompatibleVersionTestCases is shared between TestUpdateIncompatibleVersion and
+// TestDoUpdateIncompatibleVersion to verify +incompatible normalization through both
+// the Golang.Update() and DoUpdate() call paths.
+var incompatibleVersionTestCases = []struct {
+	name        string
+	depName     string
+	depVersion  string
+	initialMod  string
+	wantVersion string
+}{
+	{
+		name:       "bare version without +incompatible suffix",
+		depName:    "github.com/example/legacy",
+		depVersion: "v3.0.0",
+		initialMod: `module test
+
+go 1.21
+
+require github.com/example/legacy v2.0.0+incompatible
+`,
+		wantVersion: "v3.0.0+incompatible",
+	},
+	{
+		name:       "version already has +incompatible suffix",
+		depName:    "github.com/example/legacy",
+		depVersion: "v3.0.0+incompatible",
+		initialMod: `module test
+
+go 1.21
+
+require github.com/example/legacy v2.0.0+incompatible
+`,
+		wantVersion: "v3.0.0+incompatible",
+	},
+	{
+		name:       "module with /vN path suffix unaffected",
+		depName:    "github.com/example/modern/v3",
+		depVersion: "v3.1.0",
+		initialMod: `module test
+
+go 1.21
+
+require github.com/example/modern/v3 v3.0.0
+`,
+		wantVersion: "v3.1.0",
+	},
+}
+
+// TestUpdateIncompatibleVersion reproduces the bug where updating a module that uses
+// +incompatible versioning (e.g., github.com/docker/cli v28.4.0+incompatible -> v29.2.0)
+// would write "v29.2.0" to go.mod without the required +incompatible suffix, causing
+// modfile.Parse to reject it. Exercises the full path through Golang.Update() ->
+// resolveAndFilterPackages -> DoUpdate.
+func TestUpdateIncompatibleVersion(t *testing.T) {
+	for _, tc := range incompatibleVersionTestCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpdir := t.TempDir()
+			goModPath := filepath.Join(tmpdir, "go.mod")
+			if err := os.WriteFile(goModPath, []byte(tc.initialMod), 0o600); err != nil {
+				t.Fatalf("failed to write go.mod: %v", err)
+			}
+
+			g := &Golang{}
+			err := g.Update(context.Background(), &languages.UpdateConfig{
+				RootDir: tmpdir,
+				Dependencies: []languages.Dependency{
+					{Name: tc.depName, Version: tc.depVersion},
+				},
+				Tidy: false,
+			})
+			if err != nil {
+				t.Fatalf("Update() error = %v", err)
+			}
+
+			// Verify the written go.mod can be parsed — the primary regression check.
+			parsedMod, _, err := ParseGoModfile(goModPath)
+			if err != nil {
+				t.Fatalf("go.mod is not parseable after update: %v", err)
+			}
+
+			if got := getVersion(parsedMod, tc.depName); got != tc.wantVersion {
+				t.Errorf("package %s: got version %q, want %q", tc.depName, got, tc.wantVersion)
+			}
+		})
+	}
+}
+
+// TestDoUpdateIncompatibleVersion verifies that DoUpdate itself normalizes
+// +incompatible versions, so callers that bypass resolveAndFilterPackages are
+// also protected.
+func TestDoUpdateIncompatibleVersion(t *testing.T) {
+	for _, tc := range incompatibleVersionTestCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpdir := t.TempDir()
+			goModPath := filepath.Join(tmpdir, "go.mod")
+			if err := os.WriteFile(goModPath, []byte(tc.initialMod), 0o600); err != nil {
+				t.Fatalf("failed to write go.mod: %v", err)
+			}
+
+			pkgVersions := map[string]*Package{
+				tc.depName: {Name: tc.depName, Version: tc.depVersion},
+			}
+
+			modFile, err := DoUpdate(context.Background(), pkgVersions, &UpdateConfig{
+				Modroot: tmpdir,
+				Tidy:    false,
+			})
+			if err != nil {
+				t.Fatalf("DoUpdate() error = %v", err)
+			}
+
+			if got := getVersion(modFile, tc.depName); got != tc.wantVersion {
+				t.Errorf("got version %q, want %q", got, tc.wantVersion)
+			}
+
+			// Verify the written go.mod parses cleanly — primary regression check.
+			if _, _, err := ParseGoModfile(goModPath); err != nil {
+				t.Errorf("go.mod is not parseable after update: %v", err)
 			}
 		})
 	}

@@ -5,8 +5,8 @@
 ### From Source (Recommended)
 
 ```bash
-git clone https://github.com/chainguard-dev/mono/omnibump
-cd mono/omnibump
+git clone https://github.com/chainguard-dev/omnibump
+cd omnibump
 make build
 sudo make install
 ```

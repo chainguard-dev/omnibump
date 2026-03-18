@@ -19,6 +19,67 @@ import (
 	"golang.org/x/mod/module"
 )
 
+func TestAppendIncompatibleIfNeeded(t *testing.T) {
+	tests := []struct {
+		name       string
+		modulePath string
+		version    string
+		want       string
+	}{
+		{
+			name:       "no suffix needed for v1",
+			modulePath: "github.com/docker/cli",
+			version:    "v1.0.0",
+			want:       "v1.0.0",
+		},
+		{
+			name:       "no suffix needed for v0",
+			modulePath: "github.com/docker/cli",
+			version:    "v0.9.0",
+			want:       "v0.9.0",
+		},
+		{
+			name:       "adds +incompatible for v2+ without path suffix",
+			modulePath: "github.com/docker/cli",
+			version:    "v29.2.0",
+			want:       "v29.2.0+incompatible",
+		},
+		{
+			name:       "already has +incompatible, no change",
+			modulePath: "github.com/docker/cli",
+			version:    "v28.4.0+incompatible",
+			want:       "v28.4.0+incompatible",
+		},
+		{
+			name:       "module with /v2 path suffix, no +incompatible needed",
+			modulePath: "github.com/docker/cli/v2",
+			version:    "v2.1.0",
+			want:       "v2.1.0",
+		},
+		{
+			name:       "module with /v29 path suffix, no +incompatible needed",
+			modulePath: "github.com/docker/cli/v29",
+			version:    "v29.2.0",
+			want:       "v29.2.0",
+		},
+		{
+			name:       "non-semver version, no change",
+			modulePath: "github.com/docker/cli",
+			version:    "abc123def456",
+			want:       "abc123def456",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := appendIncompatibleIfNeeded(tt.modulePath, tt.version)
+			if got != tt.want {
+				t.Errorf("appendIncompatibleIfNeeded(%q, %q) = %q, want %q", tt.modulePath, tt.version, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsVersionQuery(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -175,6 +236,61 @@ func TestResolveAndFilterPackages(t *testing.T) {
 			skipResolver: true,
 		},
 		{
+			name: "package with versioned replace directive is skipped",
+			packages: map[string]*Package{
+				"k8s.io/apiserver": {
+					Name:    "k8s.io/apiserver",
+					Version: "v0.29.4",
+					Replace: false,
+				},
+			},
+			modFile: &modfile.File{
+				Module: &modfile.Module{
+					Mod: module.Version{Path: "test/module"},
+				},
+				Require: []*modfile.Require{
+					{Mod: module.Version{Path: "k8s.io/apiserver", Version: "v0.29.3"}},
+				},
+				Replace: []*modfile.Replace{
+					{
+						Old: module.Version{Path: "k8s.io/apiserver", Version: "v0.0.0"},
+						New: module.Version{Path: "k8s.io/apiserver", Version: "v0.29.3"},
+					},
+				},
+			},
+			wantFiltered: 0,
+			wantSkipped:  []string{"k8s.io/apiserver"},
+			skipResolver: true,
+		},
+		{
+			name: "package with replace directive is not skipped when explicitly marked Replace",
+			packages: map[string]*Package{
+				"k8s.io/apiserver": {
+					Name:    "k8s.io/apiserver",
+					OldName: "k8s.io/apiserver",
+					Version: "v0.29.4",
+					Replace: true,
+				},
+			},
+			modFile: &modfile.File{
+				Module: &modfile.Module{
+					Mod: module.Version{Path: "test/module"},
+				},
+				Require: []*modfile.Require{
+					{Mod: module.Version{Path: "k8s.io/apiserver", Version: "v0.29.3"}},
+				},
+				Replace: []*modfile.Replace{
+					{
+						Old: module.Version{Path: "k8s.io/apiserver", Version: "v0.0.0"},
+						New: module.Version{Path: "k8s.io/apiserver", Version: "v0.29.3"},
+					},
+				},
+			},
+			wantFiltered: 1,
+			wantSkipped:  nil,
+			skipResolver: true,
+		},
+		{
 			name: "multiple packages mixed scenario",
 			packages: map[string]*Package{
 				"example.com/upgrade": {
@@ -251,6 +367,9 @@ func resolveAndFilterPackagesForTest(packages map[string]*Package, modFile *modf
 		// Skip version resolution for tests - use version as-is
 		resolvedVersion := pkg.Version
 
+		// Mirror the normalization in the real resolveAndFilterPackages.
+		resolvedVersion = appendIncompatibleIfNeeded(name, resolvedVersion)
+
 		// Get current version from go.mod
 		currentVersion := getVersion(modFile, name)
 
@@ -258,6 +377,11 @@ func resolveAndFilterPackagesForTest(packages map[string]*Package, modFile *modf
 			// Package doesn't exist in go.mod, add it
 			pkg.Version = resolvedVersion
 			filtered[name] = pkg
+			continue
+		}
+
+		// Skip packages pinned via replace directive unless explicitly a replace update.
+		if !pkg.Replace && hasReplaceDirective(modFile, name) {
 			continue
 		}
 
@@ -1160,6 +1284,60 @@ require golang.org/x/crypto v0.45.0
 	modBActual, err := os.ReadFile(modBPath)
 	require.NoError(t, err)
 	require.NotContains(t, string(modBActual), "uuid", "moduleB should not be modified")
+}
+
+func TestGolang_Update_Workspace_IncompatibleVersion(t *testing.T) {
+	// Verifies that +incompatible is correctly applied when updating a package
+	// that lives in a go.work workspace module.
+	tmpDir := t.TempDir()
+
+	workContent := `go 1.21
+
+use (
+	.
+	./moduleA
+)
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "go.work"), []byte(workContent), 0o600))
+
+	// Root module without the incompatible dependency.
+	rootMod := `module test/workspace
+
+go 1.21
+
+require github.com/sirupsen/logrus v1.9.0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(rootMod), 0o600))
+
+	// moduleA has the +incompatible dependency.
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "moduleA"), 0o755))
+	modAContent := `module test/workspace/moduleA
+
+go 1.21
+
+require github.com/example/legacy v2.0.0+incompatible
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "moduleA", "go.mod"), []byte(modAContent), 0o600))
+
+	g := &Golang{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		// Deliberately omit +incompatible to test normalization.
+		Dependencies: []languages.Dependency{
+			{Name: "github.com/example/legacy", Version: "v3.0.0"},
+		},
+		Tidy: false,
+	}
+
+	require.NoError(t, g.Update(context.Background(), cfg))
+
+	// Verify moduleA's go.mod has the +incompatible suffix and parses cleanly.
+	modAPath := filepath.Join(tmpDir, "moduleA", "go.mod")
+	parsedMod, _, err := ParseGoModfile(modAPath)
+	require.NoError(t, err, "moduleA go.mod should be parseable after update")
+
+	got := getVersion(parsedMod, "github.com/example/legacy")
+	require.Equal(t, "v3.0.0+incompatible", got)
 }
 
 func TestGolang_Update_Workspace_OnlyTargetedModules(t *testing.T) {
