@@ -22,10 +22,11 @@ import (
 
 var (
 	// versionValidationRegex defines the allowlist for valid version strings.
-	// Only allows alphanumeric characters, dots, underscores, hyphens, and plus signs.
+	// Allows alphanumeric characters, dots, underscores, hyphens, plus signs,
+	// commas, and parentheses/brackets for Maven version ranges (e.g. [1.0,2.0)).
 	// This prevents injection of quotes, braces, newlines, and other
 	// characters that could be used for XML injection in Maven POM files.
-	versionValidationRegex = regexp.MustCompile(`^[a-zA-Z0-9._+-]+$`)
+	versionValidationRegex = regexp.MustCompile(`^[a-zA-Z0-9._+\-,()\[\]]+$`)
 
 	// ErrInvalidVersion is returned when a version string fails validation.
 	ErrInvalidVersion = errors.New("invalid version string")
@@ -84,20 +85,41 @@ func (m *Maven) GetAnalyzer() analyzer.Analyzer {
 	return &MavenAnalyzer{}
 }
 
-// Update performs dependency updates on a Maven project.
-func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
-	log := clog.FromContext(ctx)
-
-	log.Infof("Updating Maven project at: %s", cfg.RootDir)
-	log.Infof("Dependencies to update: %d", len(cfg.Dependencies))
-	log.Infof("Properties to update: %d", len(cfg.Properties))
-
-	// Validate all dependency versions before any file writes (fail-fast)
-	for _, dep := range cfg.Dependencies {
-		if err := validateVersion(dep.Version); err != nil {
-			return fmt.Errorf("dependency %s: %w", dep.Name, err)
+// depDisplayName returns a human-readable identifier for a dependency,
+// preferring groupId:artifactId from metadata over the generic Name field.
+func depDisplayName(dep languages.Dependency) string {
+	if gid, ok := dep.Metadata["groupId"].(string); ok {
+		if aid, ok := dep.Metadata["artifactId"].(string); ok {
+			return gid + ":" + aid
 		}
 	}
+	if dep.Name != "" {
+		return dep.Name
+	}
+	return "<unknown>"
+}
+
+// Update performs dependency updates on a Maven project.
+func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
+	clog.InfoContextf(ctx, "Updating Maven project at: %s", cfg.RootDir)
+	clog.InfoContextf(ctx, "Dependencies to update: %d", len(cfg.Dependencies))
+	clog.InfoContextf(ctx, "Properties to update: %d", len(cfg.Properties))
+
+	// Validate all dependency versions before any file writes (fail-fast).
+	// Deps with no version are allowed — they are used to add scope-only entries to
+	// DependencyManagement (e.g. scope: provided with no version to suppress a
+	// relocated artifact via the Maven exclusion-by-provided-scope trick).
+	for _, dep := range cfg.Dependencies {
+		if dep.Version == "" {
+			clog.InfoContextf(ctx, "Dependency %s has no version: will be written to DependencyManagement without <version>", depDisplayName(dep))
+			continue
+		}
+		if err := validateVersion(dep.Version); err != nil {
+			return fmt.Errorf("dependency %s: %w", depDisplayName(dep), err)
+		}
+	}
+
+	deps := cfg.Dependencies
 
 	// Validate all property values before any file writes (fail-fast)
 	for propName, propValue := range cfg.Properties {
@@ -117,13 +139,13 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	var patches []Patch
 	var err error
 	if len(cfg.Properties) > 0 {
-		patches, err = applyPrecedenceRules(ctx, pomPath, cfg.Dependencies, cfg.Properties)
+		patches, err = applyPrecedenceRules(ctx, pomPath, deps, cfg.Properties)
 		if err != nil {
 			return fmt.Errorf("failed to apply precedence rules: %w", err)
 		}
 	} else {
 		// No properties, convert all dependencies to patches
-		patches, err = convertDependenciesToPatches(cfg.Dependencies)
+		patches, err = convertDependenciesToPatches(deps)
 		if err != nil {
 			return fmt.Errorf("failed to convert dependencies to patches: %w", err)
 		}
@@ -136,7 +158,7 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	}
 
 	if cfg.DryRun {
-		log.Infof("Dry run mode: not writing changes to %s", pomPath)
+		clog.InfoContextf(ctx, "Dry run mode: not writing changes to %s", pomPath)
 		return nil
 	}
 
@@ -145,7 +167,7 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 		return fmt.Errorf("failed to write updated pom.xml: %w", err)
 	}
 
-	log.Infof("Successfully updated %s", pomPath)
+	clog.InfoContextf(ctx, "Successfully updated %s", pomPath)
 
 	return nil
 }
