@@ -6,7 +6,6 @@ SPDX-License-Identifier: Apache-2.0
 package golang
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,7 +18,7 @@ import (
 // TestResolveIndirectDependency_WithReplaceDirective tests that indirect resolution
 // is skipped when the dependency has a replace directive.
 func TestResolveIndirectDependency_WithReplaceDirective(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	tmpDir := t.TempDir()
 
 	// Create go.mod with replace directive for indirect dependency
@@ -101,7 +100,7 @@ replace github.com/example/other => github.com/example/other v1.0.0
 
 // TestHasReplaceConflicts tests the hasReplaceConflicts helper function.
 func TestHasReplaceConflicts(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	tests := []struct {
 		name             string
@@ -164,6 +163,19 @@ require (
 			expectedConflict: true,
 		},
 		{
+			name: "conflict - user has local path replace",
+			parentGoMod: `module parent
+
+require (
+	github.com/example/fork v1.0.0
+)
+`,
+			userReplaceMap: map[string]string{
+				"github.com/example/fork": "", // local path replace has no version
+			},
+			expectedConflict: true,
+		},
+		{
 			name: "conflict - parent uses v0.0.0 placeholder (k8s.io/kubernetes case)",
 			parentGoMod: `module k8s.io/kubernetes
 
@@ -204,7 +216,7 @@ replace (
 func TestResolveIndirectDependency_SkipsParentsWithReplaceConflicts(t *testing.T) {
 	t.Skip("Integration test - requires real packages from proxy")
 
-	ctx := context.Background()
+	ctx := t.Context()
 	tmpDir := t.TempDir()
 
 	// Simulate calico's go.mod with k8s replace directives

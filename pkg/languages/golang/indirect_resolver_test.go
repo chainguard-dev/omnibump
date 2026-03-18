@@ -260,7 +260,7 @@ func TestCheckIfDirectParentHasFix(t *testing.T) {
 		checkFunc      func(*testing.T, *ParentFixInfo)
 	}{
 		{
-			name:           "libp2p v0.47.0 has webtransport-go v0.10.0",
+			name:           "libp2p v0.48.0 has webtransport-go v0.10.0",
 			directDep:      "github.com/libp2p/go-libp2p",
 			currentVersion: "v0.46.0",
 			indirectPkg:    "github.com/quic-go/webtransport-go",
@@ -269,7 +269,7 @@ func TestCheckIfDirectParentHasFix(t *testing.T) {
 			checkFunc: func(t *testing.T, info *ParentFixInfo) {
 				assert.Equal(t, "github.com/libp2p/go-libp2p", info.DirectDep)
 				assert.Equal(t, "v0.46.0", info.CurrentVersion)
-				assert.Equal(t, "v0.47.0", info.FixVersion)
+				assert.Equal(t, "v0.48.0", info.FixVersion)
 				assert.Equal(t, "github.com/quic-go/webtransport-go", info.IndirectPkg)
 				assert.Equal(t, "v0.10.0", info.IndirectVersionIn)
 			},
@@ -503,13 +503,13 @@ func TestResolveIndirectDependency_K3S_Integration(t *testing.T) {
 	// Should find multiple possible bumps (libp2p and boxo at minimum)
 	assert.GreaterOrEqual(t, len(resolution.PossibleBumps), 1, "Should find at least one parent bump")
 
-	// Should include libp2p@v0.47.0
+	// Should include libp2p@v0.48.0
 	foundLibp2pBump := false
 	for _, bump := range resolution.PossibleBumps {
 		if bump.Package == "github.com/libp2p/go-libp2p" {
 			foundLibp2pBump = true
 			assert.Equal(t, "v0.46.0", bump.FromVersion)
-			assert.Equal(t, "v0.47.0", bump.ToVersion)
+			assert.Equal(t, "v0.48.0", bump.ToVersion)
 			assert.Equal(t, "github.com/quic-go/webtransport-go", bump.WillBringIn)
 			assert.Equal(t, "v0.10.0", bump.WillBringInVersion)
 			break

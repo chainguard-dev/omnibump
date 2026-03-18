@@ -302,7 +302,7 @@ func findVersionWithIndirectDep(
 	log := clog.FromContext(ctx)
 
 	// Build map of replace directives from user's go.mod
-	replaceMap := make(map[string]string)
+	replaceMap := make(map[string]string, len(userModFile.Replace))
 	for _, repl := range userModFile.Replace {
 		if repl != nil {
 			replaceMap[repl.Old.Path] = repl.New.Version
@@ -488,63 +488,53 @@ func extractModuleVersion(moduleWithVersion string) string {
 	return moduleWithVersion[idx+1:]
 }
 
-// hasReplaceDirective checks if a dependency has a replace directive in the go.mod.
-func hasReplaceDirective(modFile *modfile.File, packageName string) bool {
-	for _, repl := range modFile.Replace {
-		if repl != nil && repl.Old.Path == packageName {
-			return true
-		}
-	}
-	return false
-}
-
 // hasReplaceConflicts checks if a parent's dependencies would conflict with replace directives.
 // Returns true if there are conflicts (i.e., parent requires a version that would be replaced).
 func hasReplaceConflicts(ctx context.Context, parentModFile *modfile.File, replaceMap map[string]string) bool {
-	log := clog.FromContext(ctx)
-
-	conflictCount := 0
-
 	// Check each requirement in the parent's go.mod
 	for _, req := range parentModFile.Require {
 		if req == nil {
 			continue
 		}
 
-		// Check if this dependency has a replace directive in user's go.mod
-		if replacedVersion, hasReplace := replaceMap[req.Mod.Path]; hasReplace {
-			log.Debug("Checking replace conflict",
+		replacedVersion, hasReplace := replaceMap[req.Mod.Path]
+		if !hasReplace {
+			continue
+		}
+
+		clog.DebugContext(ctx, "Checking replace conflict",
+			"package", req.Mod.Path,
+			"parent_requires", req.Mod.Version,
+			"replaced_with", replacedVersion)
+
+		// A local path replace (e.g. replace foo => ../local) has no version string.
+		// Any parent requiring a specific version of such a dep is incompatible.
+		if replacedVersion == "" {
+			clog.DebugContext(ctx, "Replace conflict: user has local path replace for package",
+				"package", req.Mod.Path,
+				"parent_requires", req.Mod.Version)
+			return true
+		}
+
+		// v0.0.0 indicates the parent uses internal replace directives
+		// (like k8s.io/kubernetes which replaces k8s.io/* with ./staging/...)
+		// These won't work when the parent is imported as a dependency.
+		if req.Mod.Version == "v0.0.0" {
+			clog.DebugContext(ctx, "Replace conflict: parent uses v0.0.0 placeholder (internal replace)",
+				"package", req.Mod.Path,
+				"replaced_with", replacedVersion)
+			return true
+		}
+
+		// If parent requires newer than what's replaced, it's a conflict.
+		// Example: parent requires k8s.io/api@v0.35.2, but user replaces with v0.32.11
+		if semver.Compare(req.Mod.Version, replacedVersion) > 0 {
+			clog.DebugContext(ctx, "Replace conflict detected",
 				"package", req.Mod.Path,
 				"parent_requires", req.Mod.Version,
 				"replaced_with", replacedVersion)
-
-			// Special case: v0.0.0 indicates the parent uses internal replace directives
-			// (like k8s.io/kubernetes which replaces k8s.io/* with ./staging/...)
-			// These won't work when the parent is imported as a dependency
-			if req.Mod.Version == "v0.0.0" {
-				log.Info("Replace conflict: parent uses v0.0.0 placeholder (internal replace)",
-					"package", req.Mod.Path,
-					"parent_requires", req.Mod.Version,
-					"replaced_with", replacedVersion)
-				conflictCount++
-				continue
-			}
-
-			// Compare versions - if parent requires newer than what's replaced, it's a conflict
-			// Example: parent requires k8s.io/api@v0.35.2, but user replaces with v0.32.11
-			if semver.Compare(req.Mod.Version, replacedVersion) > 0 {
-				log.Info("Replace conflict detected",
-					"package", req.Mod.Path,
-					"parent_requires", req.Mod.Version,
-					"replaced_with", replacedVersion)
-				conflictCount++
-			}
+			return true
 		}
-	}
-
-	if conflictCount > 0 {
-		log.Info("Total replace conflicts found", "count", conflictCount)
-		return true
 	}
 
 	return false

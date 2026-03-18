@@ -205,7 +205,14 @@ func (ga *GolangAnalyzer) analyzeWorkspace(ctx context.Context, projectPath, wor
 
 	// Add module information to dependencies
 	for depName, modules := range depModules {
-		result.Dependencies[depName].Metadata["foundInModules"] = modules
+		dep := result.Dependencies[depName]
+		if dep == nil {
+			continue
+		}
+		if dep.Metadata == nil {
+			dep.Metadata = make(map[string]any)
+		}
+		dep.Metadata["foundInModules"] = modules
 	}
 
 	log.Infof("Workspace analysis complete: found %d unique dependencies across %d modules",
