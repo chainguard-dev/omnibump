@@ -304,6 +304,17 @@ func getOptionBool(options map[string]any, key string, defaultValue bool) bool {
 	return defaultValue
 }
 
+// hasReplaceDirective returns true if the go.mod has a replace directive with the
+// given module path on the left (Old) side.
+func hasReplaceDirective(modFile *modfile.File, packageName string) bool {
+	for _, r := range modFile.Replace {
+		if r.Old.Path == packageName {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveAndFilterPackages resolves version queries like @latest and filters out packages that don't need updating.
 func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package, modFile *modfile.File, modroot string) (map[string]*Package, error) {
 	log := clog.FromContext(ctx)
@@ -321,16 +332,23 @@ func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package,
 			resolvedVersion = resolved
 			log.Infof("Resolved %s@%s to %s", name, pkg.Version, resolvedVersion)
 		} else if len(pkg.Version) >= 2 && pkg.Version[0] == 'v' && pkg.Version[1] >= '0' && pkg.Version[1] <= '9' {
-			// It's a semantic version - resolve to get canonical form (+incompatible, etc.)
+			// It's a semantic version - resolve to get canonical form (+incompatible, etc.).
+			// Fall back gracefully if resolution fails (e.g. package unavailable, toolchain
+			// mismatch); appendIncompatibleIfNeeded below handles the suffix as a safety net.
 			resolved, err := resolveVersionQuery(ctx, name, pkg.Version, modroot)
 			if err != nil {
-				return nil, fmt.Errorf("failed to resolve %s@%s: %w", name, pkg.Version, err)
+				log.Debugf("Could not resolve canonical form of %s@%s, using as-is: %v", name, pkg.Version, err)
+			} else {
+				if resolved != pkg.Version {
+					log.Infof("Resolved %s@%s to canonical form %s", name, pkg.Version, resolved)
+				}
+				resolvedVersion = resolved
 			}
-			if resolved != pkg.Version {
-				log.Infof("Resolved %s@%s to canonical form %s", name, pkg.Version, resolved)
-			}
-			resolvedVersion = resolved
 		}
+
+		// For modules that don't use major version path suffixes (e.g., /v2, /v3), Go
+		// requires the +incompatible suffix for versions with major > 1.
+		resolvedVersion = appendIncompatibleIfNeeded(name, resolvedVersion)
 
 		// Get current version from go.mod
 		currentVersion := getVersion(modFile, name)
@@ -340,6 +358,15 @@ func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package,
 			pkg.Version = resolvedVersion
 			filtered[name] = pkg
 			log.Infof("Package %s not found in go.mod, will add at %s", name, resolvedVersion)
+			continue
+		}
+
+		// Skip packages that are pinned via a replace directive unless the caller
+		// explicitly requested a replace update (pkg.Replace == true). Replace-pinned
+		// packages must be updated through --replaces, not --deps, because only
+		// updating the require directive leaves the replace pin in place.
+		if !pkg.Replace && hasReplaceDirective(modFile, name) {
+			log.Warnf("Package %s is pinned via a replace directive — skipping. Use --replaces %s=%s@%s to update the pin.", name, name, name, resolvedVersion)
 			continue
 		}
 
@@ -440,6 +467,28 @@ func collectMissingDeps(ctx context.Context, missingDeps []MissingDependency, pa
 			allMissingDeps[dep.Package] = dep
 		}
 	}
+}
+
+// appendIncompatibleIfNeeded adds the +incompatible suffix when a module path does not
+// use major version path suffixes (e.g., /v2, /v3) but the version's major is greater
+// than v1. This is required by go.mod for pre-module-era packages.
+func appendIncompatibleIfNeeded(modulePath, version string) string {
+	if !semver.IsValid(version) {
+		return version
+	}
+	if strings.HasSuffix(version, "+incompatible") {
+		return version
+	}
+	major := semver.Major(version)
+	if major == "v0" || major == "v1" {
+		return version
+	}
+	// SplitPathVersion returns the major version suffix (e.g. "/v2") if present.
+	_, pathMajor, _ := module.SplitPathVersion(modulePath)
+	if pathMajor != "" {
+		return version
+	}
+	return version + "+incompatible"
 }
 
 // isVersionQuery checks if a version string is a query (like @latest, @upgrade, @patch).

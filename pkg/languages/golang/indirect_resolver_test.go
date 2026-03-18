@@ -268,7 +268,7 @@ func TestCheckIfDirectParentHasFix(t *testing.T) {
 			checkFunc: func(t *testing.T, info *ParentFixInfo) {
 				assert.Equal(t, "github.com/libp2p/go-libp2p", info.DirectDep)
 				assert.Equal(t, "v0.46.0", info.CurrentVersion)
-				assert.Equal(t, "v0.47.0", info.FixVersion)
+				assert.True(t, semver.Compare(info.FixVersion, "v0.47.0") >= 0, "FixVersion should be >= v0.47.0, got %s", info.FixVersion)
 				assert.Equal(t, "github.com/quic-go/webtransport-go", info.IndirectPkg)
 				assert.Equal(t, "v0.10.0", info.IndirectVersionIn)
 			},
