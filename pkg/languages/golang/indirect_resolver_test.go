@@ -259,7 +259,7 @@ func TestCheckIfDirectParentHasFix(t *testing.T) {
 		checkFunc      func(*testing.T, *ParentFixInfo)
 	}{
 		{
-			name:           "libp2p v0.47.0 has webtransport-go v0.10.0",
+			name:           "libp2p v0.48.0 has webtransport-go v0.10.0",
 			directDep:      "github.com/libp2p/go-libp2p",
 			currentVersion: "v0.46.0",
 			indirectPkg:    "github.com/quic-go/webtransport-go",
@@ -268,7 +268,7 @@ func TestCheckIfDirectParentHasFix(t *testing.T) {
 			checkFunc: func(t *testing.T, info *ParentFixInfo) {
 				assert.Equal(t, "github.com/libp2p/go-libp2p", info.DirectDep)
 				assert.Equal(t, "v0.46.0", info.CurrentVersion)
-				assert.Equal(t, "v0.47.0", info.FixVersion)
+				assert.Equal(t, "v0.48.0", info.FixVersion)
 				assert.Equal(t, "github.com/quic-go/webtransport-go", info.IndirectPkg)
 				assert.Equal(t, "v0.10.0", info.IndirectVersionIn)
 			},

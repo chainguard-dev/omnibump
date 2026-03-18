@@ -74,8 +74,6 @@ type PropertyList struct {
 // UpdatePom updates a POM file with the given patches and properties.
 // Returns the marshaled XML content of the updated POM.
 func UpdatePom(ctx context.Context, pomPath string, patches []Patch, properties map[string]string) ([]byte, error) {
-	log := clog.FromContext(ctx)
-
 	// Parse the POM
 	project, err := ParsePom(pomPath)
 	if err != nil {
@@ -94,7 +92,7 @@ func UpdatePom(ctx context.Context, pomPath string, patches []Patch, properties 
 		return nil, fmt.Errorf("failed to marshal POM: %w", err)
 	}
 
-	log.Infof("Successfully updated POM file")
+	clog.InfoContextf(ctx, "Successfully updated POM file")
 	return xmlBytes, nil
 }
 
@@ -104,10 +102,47 @@ func isPropertyReference(version string) bool {
 }
 
 // PatchProject updates a gopom.Project with the given patches and properties.
-// Ported from pombump/pkg/patch.go:PatchProject.
-func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, propertyPatches map[string]string) (*gopom.Project, error) {
-	log := clog.FromContext(ctx)
+// applyPatchesToDeps applies patches to a dep slice in place, removing matched
+// entries from missingDeps. A nil deps slice is a no-op.
+// A patch whose version is empty is treated as a scope-only entry: if the dep
+// already exists its version is preserved; if absent it stays in missingDeps
+// so it is later added to DependencyManagement without a <version> element.
+func applyPatchesToDeps(ctx context.Context, deps *[]gopom.Dependency, patches []Patch, missingDeps map[Patch]Patch) {
+	if deps == nil {
+		return
+	}
+	for i, dep := range *deps {
+		clog.DebugContextf(ctx, "Checking dependency: %s:%s @ %s", dep.GroupID, dep.ArtifactID, dep.Version)
+		for _, patch := range patches {
+			if dep.ArtifactID != patch.ArtifactID || dep.GroupID != patch.GroupID {
+				continue
+			}
+			if isPropertyReference(dep.Version) {
+				clog.WarnContextf(ctx, "Skipping patch for %s:%s (uses property %s, consider using --properties instead)",
+					patch.GroupID, patch.ArtifactID, dep.Version)
+				delete(missingDeps, patch)
+				continue
+			}
+			// A patch with no version is a scope-only entry (e.g. scope: provided
+			// to suppress a relocated artifact). Don't overwrite the existing version.
+			if patch.Version == "" {
+				clog.InfoContextf(ctx, "Found %s:%s — patch has no version, preserving existing version %s",
+					patch.GroupID, patch.ArtifactID, dep.Version)
+				delete(missingDeps, patch)
+				continue
+			}
+			clog.InfoContextf(ctx, "Patching %s:%s from %s to %s (scope: %s)",
+				patch.GroupID, patch.ArtifactID, dep.Version, patch.Version, patch.Scope)
+			(*deps)[i].Version = patch.Version
+			delete(missingDeps, patch)
+		}
+	}
+}
 
+// PatchProject applies dependency and property patches to a parsed pom.xml.
+// project is a gopom.Project — a Go struct that mirrors the Maven POM XML
+// schema and can be round-tripped back to XML via project.Marshal().
+func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, propertyPatches map[string]string) (*gopom.Project, error) {
 	if project == nil {
 		return nil, ErrProjectNil
 	}
@@ -115,52 +150,13 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 	// Track dependencies that weren't found (will be added to DependencyManagement)
 	missingDeps := make(map[Patch]Patch)
 	for _, p := range patches {
-		log.Infof("Processing patch: %s:%s @ %s", p.GroupID, p.ArtifactID, p.Version)
+		clog.InfoContextf(ctx, "Processing patch: %s:%s @ %s", p.GroupID, p.ArtifactID, p.Version)
 		missingDeps[p] = p
 	}
 
-	// Patch direct dependencies
-	if project.Dependencies != nil {
-		for i, dep := range *project.Dependencies {
-			log.Debugf("Checking dependency: %s:%s @ %s", dep.GroupID, dep.ArtifactID, dep.Version)
-			for _, patch := range patches {
-				if dep.ArtifactID == patch.ArtifactID && dep.GroupID == patch.GroupID {
-					// Skip patching if the dependency uses a property reference
-					if isPropertyReference(dep.Version) {
-						log.Warnf("Skipping patch for %s:%s (uses property %s, consider using --properties instead)",
-							patch.GroupID, patch.ArtifactID, dep.Version)
-						delete(missingDeps, patch)
-						continue
-					}
-					log.Infof("Patching %s:%s from %s to %s (scope: %s)",
-						patch.GroupID, patch.ArtifactID, dep.Version, patch.Version, patch.Scope)
-					(*project.Dependencies)[i].Version = patch.Version
-					delete(missingDeps, patch)
-				}
-			}
-		}
-	}
-
-	// Patch dependency management
-	if project.DependencyManagement != nil && project.DependencyManagement.Dependencies != nil {
-		for i, dep := range *project.DependencyManagement.Dependencies {
-			log.Debugf("Checking DM dependency: %s:%s @ %s", dep.GroupID, dep.ArtifactID, dep.Version)
-			for _, patch := range patches {
-				if dep.ArtifactID == patch.ArtifactID && dep.GroupID == patch.GroupID {
-					// Skip patching if the dependency uses a property reference
-					if isPropertyReference(dep.Version) {
-						log.Warnf("Skipping patch for %s:%s (uses property %s, consider using --properties instead)",
-							patch.GroupID, patch.ArtifactID, dep.Version)
-						delete(missingDeps, patch)
-						continue
-					}
-					log.Infof("Patching DM dependency %s:%s from %s to %s (scope: %s)",
-						patch.GroupID, patch.ArtifactID, dep.Version, patch.Version, patch.Scope)
-					(*project.DependencyManagement.Dependencies)[i].Version = patch.Version
-					delete(missingDeps, patch)
-				}
-			}
-		}
+	applyPatchesToDeps(ctx, project.Dependencies, patches, missingDeps)
+	if project.DependencyManagement != nil {
+		applyPatchesToDeps(ctx, project.DependencyManagement.Dependencies, patches, missingDeps)
 	}
 
 	// Add missing dependencies to DependencyManagement
@@ -174,7 +170,7 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 		}
 
 		for _, md := range missingDeps {
-			log.Infof("Adding missing dependency: %s:%s @ %s", md.GroupID, md.ArtifactID, md.Version)
+			clog.InfoContextf(ctx, "Adding missing dependency: %s:%s @ %s", md.GroupID, md.ArtifactID, md.Version)
 			*project.DependencyManagement.Dependencies = append(*project.DependencyManagement.Dependencies, gopom.Dependency{
 				GroupID:    md.GroupID,
 				ArtifactID: md.ArtifactID,
@@ -200,9 +196,9 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 	for k, v := range propertyPatches {
 		val, exists := project.Properties.Entries[k]
 		if exists {
-			log.Infof("Updating property: %s from %s to %s", k, val, v)
+			clog.InfoContextf(ctx, "Updating property: %s from %s to %s", k, val, v)
 		} else {
-			log.Infof("Creating property: %s = %s", k, v)
+			clog.InfoContextf(ctx, "Creating property: %s = %s", k, v)
 		}
 		project.Properties.Entries[k] = v
 	}
