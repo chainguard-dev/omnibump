@@ -315,35 +315,47 @@ func hasReplaceDirective(modFile *modfile.File, packageName string) bool {
 	return false
 }
 
+// resolvePackageVersion returns the canonical version for a package. Version queries
+// like @latest are resolved via go list. Concrete semver versions are also resolved
+// to pick up the +incompatible suffix when needed, falling back to the provided version
+// if the proxy is unavailable.
+func resolvePackageVersion(ctx context.Context, name, version, modroot string) (string, error) {
+	log := clog.FromContext(ctx)
+
+	if isVersionQuery(version) {
+		resolved, err := resolveVersionQuery(ctx, name, version, modroot)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve %s@%s: %w", name, version, err)
+		}
+		log.Infof("Resolved %s@%s to %s", name, version, resolved)
+		return resolved, nil
+	}
+
+	if len(version) >= 2 && version[0] == 'v' && version[1] >= '0' && version[1] <= '9' {
+		resolved, err := resolveVersionQuery(ctx, name, version, modroot)
+		if err != nil {
+			// Fall back to the provided version; appendIncompatibleIfNeeded handles the suffix.
+			log.Debugf("Could not resolve canonical form of %s@%s, using as-is: %v", name, version, err)
+			return version, nil
+		}
+		if resolved != version {
+			log.Infof("Resolved %s@%s to canonical form %s", name, version, resolved)
+		}
+		return resolved, nil
+	}
+
+	return version, nil
+}
+
 // resolveAndFilterPackages resolves version queries like @latest and filters out packages that don't need updating.
 func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package, modFile *modfile.File, modroot string) (map[string]*Package, error) {
 	log := clog.FromContext(ctx)
 	filtered := make(map[string]*Package)
 
 	for name, pkg := range packages {
-		// Always resolve version to get canonical format (handles +incompatible, pseudo-versions, etc.)
-		resolvedVersion := pkg.Version
-		if isVersionQuery(pkg.Version) {
-			// It's a query like @latest, @upgrade, @patch
-			resolved, err := resolveVersionQuery(ctx, name, pkg.Version, modroot)
-			if err != nil {
-				return nil, fmt.Errorf("failed to resolve %s@%s: %w", name, pkg.Version, err)
-			}
-			resolvedVersion = resolved
-			log.Infof("Resolved %s@%s to %s", name, pkg.Version, resolvedVersion)
-		} else if len(pkg.Version) >= 2 && pkg.Version[0] == 'v' && pkg.Version[1] >= '0' && pkg.Version[1] <= '9' {
-			// It's a semantic version - resolve to get canonical form (+incompatible, etc.).
-			// Fall back gracefully if resolution fails (e.g. package unavailable, toolchain
-			// mismatch); appendIncompatibleIfNeeded below handles the suffix as a safety net.
-			resolved, err := resolveVersionQuery(ctx, name, pkg.Version, modroot)
-			if err != nil {
-				log.Debugf("Could not resolve canonical form of %s@%s, using as-is: %v", name, pkg.Version, err)
-			} else {
-				if resolved != pkg.Version {
-					log.Infof("Resolved %s@%s to canonical form %s", name, pkg.Version, resolved)
-				}
-				resolvedVersion = resolved
-			}
+		resolvedVersion, err := resolvePackageVersion(ctx, name, pkg.Version, modroot)
+		if err != nil {
+			return nil, err
 		}
 
 		// For modules that don't use major version path suffixes (e.g., /v2, /v3), Go
