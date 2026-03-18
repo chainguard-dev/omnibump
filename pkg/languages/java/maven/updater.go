@@ -102,7 +102,46 @@ func isPropertyReference(version string) bool {
 }
 
 // PatchProject updates a gopom.Project with the given patches and properties.
-// Ported from pombump/pkg/patch.go:PatchProject.
+// applyPatchesToDeps applies patches to a dep slice in place, removing matched
+// entries from missingDeps. A nil deps slice is a no-op.
+// A patch whose version is empty is treated as a scope-only entry: if the dep
+// already exists its version is preserved; if absent it stays in missingDeps
+// so it is later added to DependencyManagement without a <version> element.
+func applyPatchesToDeps(ctx context.Context, deps *[]gopom.Dependency, patches []Patch, missingDeps map[Patch]Patch) {
+	if deps == nil {
+		return
+	}
+	for i, dep := range *deps {
+		clog.DebugContextf(ctx, "Checking dependency: %s:%s @ %s", dep.GroupID, dep.ArtifactID, dep.Version)
+		for _, patch := range patches {
+			if dep.ArtifactID != patch.ArtifactID || dep.GroupID != patch.GroupID {
+				continue
+			}
+			if isPropertyReference(dep.Version) {
+				clog.WarnContextf(ctx, "Skipping patch for %s:%s (uses property %s, consider using --properties instead)",
+					patch.GroupID, patch.ArtifactID, dep.Version)
+				delete(missingDeps, patch)
+				continue
+			}
+			// A patch with no version is a scope-only entry (e.g. scope: provided
+			// to suppress a relocated artifact). Don't overwrite the existing version.
+			if patch.Version == "" {
+				clog.InfoContextf(ctx, "Found %s:%s — patch has no version, preserving existing version %s",
+					patch.GroupID, patch.ArtifactID, dep.Version)
+				delete(missingDeps, patch)
+				continue
+			}
+			clog.InfoContextf(ctx, "Patching %s:%s from %s to %s (scope: %s)",
+				patch.GroupID, patch.ArtifactID, dep.Version, patch.Version, patch.Scope)
+			(*deps)[i].Version = patch.Version
+			delete(missingDeps, patch)
+		}
+	}
+}
+
+// PatchProject applies dependency and property patches to a parsed pom.xml.
+// project is a gopom.Project — a Go struct that mirrors the Maven POM XML
+// schema and can be round-tripped back to XML via project.Marshal().
 func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, propertyPatches map[string]string) (*gopom.Project, error) {
 	if project == nil {
 		return nil, ErrProjectNil
@@ -115,63 +154,9 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 		missingDeps[p] = p
 	}
 
-	// Patch direct dependencies
-	if project.Dependencies != nil {
-		for i, dep := range *project.Dependencies {
-			clog.DebugContextf(ctx, "Checking dependency: %s:%s @ %s", dep.GroupID, dep.ArtifactID, dep.Version)
-			for _, patch := range patches {
-				if dep.ArtifactID == patch.ArtifactID && dep.GroupID == patch.GroupID {
-					// Skip patching if the dependency uses a property reference
-					if isPropertyReference(dep.Version) {
-						clog.WarnContextf(ctx, "Skipping patch for %s:%s (uses property %s, consider using --properties instead)",
-							patch.GroupID, patch.ArtifactID, dep.Version)
-						delete(missingDeps, patch)
-						continue
-					}
-					// A patch with no version is a scope-only entry (e.g. scope: provided
-					// to suppress a relocated artifact). Don't overwrite the existing version.
-					if patch.Version == "" {
-						clog.InfoContextf(ctx, "Found %s:%s — patch has no version, preserving existing version %s",
-							patch.GroupID, patch.ArtifactID, dep.Version)
-						delete(missingDeps, patch)
-						continue
-					}
-					clog.InfoContextf(ctx, "Patching %s:%s from %s to %s (scope: %s)",
-						patch.GroupID, patch.ArtifactID, dep.Version, patch.Version, patch.Scope)
-					(*project.Dependencies)[i].Version = patch.Version
-					delete(missingDeps, patch)
-				}
-			}
-		}
-	}
-
-	// Patch dependency management
-	if project.DependencyManagement != nil && project.DependencyManagement.Dependencies != nil {
-		for i, dep := range *project.DependencyManagement.Dependencies {
-			clog.DebugContextf(ctx, "Checking DM dependency: %s:%s @ %s", dep.GroupID, dep.ArtifactID, dep.Version)
-			for _, patch := range patches {
-				if dep.ArtifactID == patch.ArtifactID && dep.GroupID == patch.GroupID {
-					// Skip patching if the dependency uses a property reference
-					if isPropertyReference(dep.Version) {
-						clog.WarnContextf(ctx, "Skipping patch for %s:%s (uses property %s, consider using --properties instead)",
-							patch.GroupID, patch.ArtifactID, dep.Version)
-						delete(missingDeps, patch)
-						continue
-					}
-					// A patch with no version is a scope-only entry. Don't overwrite the existing version.
-					if patch.Version == "" {
-						clog.InfoContextf(ctx, "Found DM %s:%s — patch has no version, preserving existing version %s",
-							patch.GroupID, patch.ArtifactID, dep.Version)
-						delete(missingDeps, patch)
-						continue
-					}
-					clog.InfoContextf(ctx, "Patching DM dependency %s:%s from %s to %s (scope: %s)",
-						patch.GroupID, patch.ArtifactID, dep.Version, patch.Version, patch.Scope)
-					(*project.DependencyManagement.Dependencies)[i].Version = patch.Version
-					delete(missingDeps, patch)
-				}
-			}
-		}
+	applyPatchesToDeps(ctx, project.Dependencies, patches, missingDeps)
+	if project.DependencyManagement != nil {
+		applyPatchesToDeps(ctx, project.DependencyManagement.Dependencies, patches, missingDeps)
 	}
 
 	// Add missing dependencies to DependencyManagement
