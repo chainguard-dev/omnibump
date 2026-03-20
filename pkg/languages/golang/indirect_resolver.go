@@ -489,10 +489,12 @@ func CheckTransitiveRequirements(
 		}
 	}
 
-	// Check each requirement of the target version
+	// Check each requirement of the target version.
+	// Only consider direct requirements (non-indirect) from the target's go.mod —
+	// indirect ones are resolved automatically by MVS when go get or go mod tidy runs.
 	var missing []MissingDependency
 	for _, req := range targetModFile.Require {
-		if req == nil {
+		if req == nil || req.Indirect {
 			continue
 		}
 
