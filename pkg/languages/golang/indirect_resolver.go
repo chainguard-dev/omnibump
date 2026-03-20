@@ -275,7 +275,14 @@ func CheckIfDirectParentHasFix(
 	return findVersionWithIndirectDep(ctx, versions, currentVersion, directDep, indirectPkg, targetVersion)
 }
 
+// maxVersionsToCheck limits how many newer versions of a parent package are scanned
+// when searching for one that brings in the required indirect dependency. Packages like
+// github.com/elastic/beats/v7 can have thousands of pseudo-versions, and checking each
+// requires an HTTP round-trip, which would cause the analysis to hang indefinitely.
+const maxVersionsToCheck = 50
+
 // findVersionWithIndirectDep searches through versions to find one that has the required indirect dependency.
+// It checks at most maxVersionsToCheck versions newer than the current version.
 func findVersionWithIndirectDep(
 	ctx context.Context,
 	versions []string,
@@ -286,12 +293,22 @@ func findVersionWithIndirectDep(
 ) (*ParentFixInfo, error) {
 	log := clog.FromContext(ctx)
 
-	// Check each version newer than current
+	checked := 0
+	// Check each version newer than current, capped at maxVersionsToCheck.
+	// Versions are sorted newest-first so we find the minimal required bump quickly.
 	for _, ver := range versions {
 		// Skip older or equal versions
 		if semver.Compare(ver, currentVersion) <= 0 {
 			continue
 		}
+
+		if checked >= maxVersionsToCheck {
+			log.Debug("Reached version check limit, stopping search",
+				"package", directDep,
+				"limit", maxVersionsToCheck)
+			break
+		}
+		checked++
 
 		// Fetch this version's go.mod
 		modFile, err := fetchGoModForPackage(ctx, directDep, ver)
