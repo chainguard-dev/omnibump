@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/chainguard-dev/clog"
 	"golang.org/x/mod/modfile"
@@ -181,9 +183,10 @@ func ResolveIndirectDependency(
 func FindDirectParents(ctx context.Context, modRoot, indirectPkg string) ([]DirectParent, error) {
 	log := clog.FromContext(ctx)
 
-	// Run go mod graph
+	// Run go mod graph with workspace mode off to avoid scanning all workspace modules.
 	cmd := exec.CommandContext(ctx, "go", "mod", "graph")
 	cmd.Dir = modRoot
+	cmd.Env = append(os.Environ(), "GOWORK=off")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("go mod graph failed: %w", err)
@@ -342,13 +345,16 @@ func checkModFileForIndirectDep(
 // fetchFromProxy performs an HTTP GET request to the Go module proxy and returns the response body.
 //
 //nolint:gosec // G107: URL is constructed from validated module paths via module.EscapePath
+// proxyClient is used for all Go module proxy requests with a reasonable timeout.
+var proxyClient = &http.Client{Timeout: 30 * time.Second}
+
 func fetchFromProxy(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := proxyClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
