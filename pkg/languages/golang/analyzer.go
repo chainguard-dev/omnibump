@@ -403,6 +403,11 @@ func (ga *GolangAnalyzer) RecommendStrategy(ctx context.Context, analysis *analy
 	// Check transitive requirements for all packages being updated
 	ga.checkTransitiveRequirementsForStrategy(ctx, analysis, strategy)
 
+	// Deduplicate DirectUpdates — the same package can be added from multiple paths
+	// (direct update, parent bump for an indirect dep, transitive co-update).
+	// Keep the highest required version for each package.
+	strategy.DirectUpdates = deduplicateDependencies(strategy.DirectUpdates)
+
 	log.Infof("Strategy: %d direct updates", len(strategy.DirectUpdates))
 	return strategy, nil
 }
@@ -580,6 +585,34 @@ func (ga *GolangAnalyzer) addParentBumpsToStrategy(
 				originalDep.Name,
 				len(resolution.PossibleBumps)))
 	}
+}
+
+// deduplicateDependencies removes duplicate entries from a dependency list.
+// When the same package appears more than once, the entry with the highest
+// semver version is kept. Non-semver versions are kept as-is (last write wins).
+func deduplicateDependencies(deps []analyzer.Dependency) []analyzer.Dependency {
+	seen := make(map[string]int) // package name -> index in result
+	result := make([]analyzer.Dependency, 0, len(deps))
+
+	for _, dep := range deps {
+		idx, exists := seen[dep.Name]
+		if !exists {
+			seen[dep.Name] = len(result)
+			result = append(result, dep)
+			continue
+		}
+
+		// Package already seen — keep whichever has the higher version.
+		existing := result[idx]
+		if semver.IsValid(dep.Version) && semver.IsValid(existing.Version) {
+			if semver.Compare(dep.Version, existing.Version) > 0 {
+				result[idx] = dep
+			}
+		}
+		// For non-semver versions (pseudo-versions, etc.) keep the first occurrence.
+	}
+
+	return result
 }
 
 // countDirect counts direct dependencies.
