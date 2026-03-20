@@ -39,9 +39,6 @@ var (
 	// ErrMainModuleBump is returned when trying to bump the main module.
 	ErrMainModuleBump = errors.New("bumping the main module is not allowed")
 
-	// ErrValidationFailed is returned when package validation fails.
-	ErrValidationFailed = errors.New("validation failed")
-
 	// ErrUnexpectedGoVersion is returned when go version output has unexpected format.
 	ErrUnexpectedGoVersion = errors.New("unexpected format of go version output")
 
@@ -236,7 +233,7 @@ func CheckPackageValues(ctx context.Context, pkgVersions map[string]*Package, mo
 		return fmt.Errorf("%w: '%s'", ErrMainModuleBump, modFile.Module.Mod.Path)
 	}
 
-	errorPkgVer := make(map[string]pkgVersion)
+	warnPkgVer := make(map[string]pkgVersion)
 	// Track which packages have replace directives (replace takes precedence over require in Go)
 	replacedPackages := make(map[string]bool)
 
@@ -245,7 +242,7 @@ func CheckPackageValues(ctx context.Context, pkgVersions map[string]*Package, mo
 		if replace == nil {
 			continue
 		}
-		processReplaceDirective(log, replace, pkgVersions, replacedPackages, errorPkgVer)
+		processReplaceDirective(log, replace, pkgVersions, replacedPackages, warnPkgVer)
 	}
 
 	// Detect if the list of packages contain any require statement for the package
@@ -254,23 +251,19 @@ func CheckPackageValues(ctx context.Context, pkgVersions map[string]*Package, mo
 		if require == nil {
 			continue
 		}
-		processRequireDirective(log, require, pkgVersions, replacedPackages, errorPkgVer)
+		processRequireDirective(log, require, pkgVersions, replacedPackages, warnPkgVer)
 	}
 
-	if len(errorPkgVer) > 0 {
-		var errorMsg strings.Builder
-		errorMsg.WriteString("The following errors were found:\n")
-		for pkg, ver := range errorPkgVer {
-			fmt.Fprintf(&errorMsg, "  - package %s: requested version '%s', is already at version '%s'\n", pkg, ver.ReqVersion, ver.AvailableVersion)
-		}
-		return fmt.Errorf("%w:\n%s", ErrValidationFailed, errorMsg.String())
+	for pkg, ver := range warnPkgVer {
+		clog.WarnContextf(ctx, "Package %s: requested version %q is older than current version %q, skipping", pkg, ver.ReqVersion, ver.AvailableVersion)
+		delete(pkgVersions, pkg)
 	}
 
 	return nil
 }
 
 // processReplaceDirective processes a single replace directive for package validation.
-func processReplaceDirective(log *clog.Logger, replace *modfile.Replace, pkgVersions map[string]*Package, replacedPackages map[string]bool, errorPkgVer map[string]pkgVersion) {
+func processReplaceDirective(log *clog.Logger, replace *modfile.Replace, pkgVersions map[string]*Package, replacedPackages map[string]bool, warnPkgVer map[string]pkgVersion) {
 	pkg, ok := pkgVersions[replace.New.Path]
 	if !ok {
 		return
@@ -288,8 +281,12 @@ func processReplaceDirective(log *clog.Logger, replace *modfile.Replace, pkgVers
 		return
 	}
 
+	if pkg.Force {
+		return
+	}
+
 	if semver.Compare(replace.New.Version, pkg.Version) > 0 {
-		errorPkgVer[replace.New.Path] = pkgVersion{
+		warnPkgVer[replace.New.Path] = pkgVersion{
 			ReqVersion:       pkg.Version,
 			AvailableVersion: replace.New.Version,
 		}
@@ -297,7 +294,7 @@ func processReplaceDirective(log *clog.Logger, replace *modfile.Replace, pkgVers
 }
 
 // processRequireDirective processes a single require directive for package validation.
-func processRequireDirective(log *clog.Logger, require *modfile.Require, pkgVersions map[string]*Package, replacedPackages map[string]bool, errorPkgVer map[string]pkgVersion) {
+func processRequireDirective(log *clog.Logger, require *modfile.Require, pkgVersions map[string]*Package, replacedPackages map[string]bool, warnPkgVer map[string]pkgVersion) {
 	pkg, ok := pkgVersions[require.Mod.Path]
 	if !ok {
 		return
@@ -315,20 +312,24 @@ func processRequireDirective(log *clog.Logger, require *modfile.Require, pkgVers
 		return
 	}
 
+	if pkg.Force {
+		return
+	}
+
 	if semver.Compare(require.Mod.Version, pkg.Version) <= 0 {
 		return
 	}
 
-	// Check if we need to update or add new error
-	if existingPkg, exists := errorPkgVer[require.Mod.Path]; exists {
+	// Track the highest known current version for this package across multiple require entries
+	if existingPkg, exists := warnPkgVer[require.Mod.Path]; exists {
 		if semver.Compare(require.Mod.Version, existingPkg.AvailableVersion) > 0 {
-			errorPkgVer[require.Mod.Path] = pkgVersion{
+			warnPkgVer[require.Mod.Path] = pkgVersion{
 				ReqVersion:       pkg.Version,
 				AvailableVersion: require.Mod.Version,
 			}
 		}
 	} else {
-		errorPkgVer[require.Mod.Path] = pkgVersion{
+		warnPkgVer[require.Mod.Path] = pkgVersion{
 			ReqVersion:       pkg.Version,
 			AvailableVersion: require.Mod.Version,
 		}
