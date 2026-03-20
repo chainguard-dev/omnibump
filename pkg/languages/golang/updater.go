@@ -230,7 +230,7 @@ func CheckPackageValues(ctx context.Context, pkgVersions map[string]*Package, mo
 	log := clog.FromContext(ctx)
 
 	if _, ok := pkgVersions[modFile.Module.Mod.Path]; ok {
-		return fmt.Errorf("%w: '%s'", ErrMainModuleBump, modFile.Module.Mod.Path)
+		return fmt.Errorf("%w: %q", ErrMainModuleBump, modFile.Module.Mod.Path)
 	}
 
 	warnPkgVer := make(map[string]pkgVersion)

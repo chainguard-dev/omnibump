@@ -192,7 +192,7 @@ func TestGoModTidy(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "bumping the main module is not allowed: 'github.com/puerco/hello'",
+			errMsg:  "bumping the main module is not allowed: \"github.com/puerco/hello\"",
 		},
 	}
 
@@ -915,10 +915,10 @@ require (
 
 func TestDowngradeHandling(t *testing.T) {
 	testCases := []struct {
-		name            string
-		pkgVersions     map[string]*Package
-		setupFunc       func(string)
-		wantErr         bool
+		name        string
+		pkgVersions map[string]*Package
+		setupFunc   func(string)
+		wantErr     bool
 		// wantVersions maps package name to the version expected in go.mod after the update
 		wantVersions map[string]string
 	}{
@@ -991,7 +991,7 @@ require github.com/example/dependency v1.4.0
 				copyFile(t, "testdata/aws-efs-csi-driver/go.mod", dir)
 			},
 			wantVersions: map[string]string{
-				"github.com/google/uuid":    "v1.3.1",   // unchanged
+				"github.com/google/uuid":    "v1.3.1",    // unchanged
 				"github.com/aws/aws-sdk-go": "v1.44.116", // unchanged
 				"k8s.io/api":                "v0.26.10",  // unchanged
 			},
