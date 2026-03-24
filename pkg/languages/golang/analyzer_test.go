@@ -512,7 +512,7 @@ func TestDeduplicateDependencies(t *testing.T) {
 			},
 			wantLen: 2,
 			wantDeps: map[string]string{
-				"github.com/aquasecurity/trivy":   "v0.69.4",
+				"github.com/aquasecurity/trivy":    "v0.69.4",
 				"github.com/open-policy-agent/opa": "v1.14.1",
 			},
 		},

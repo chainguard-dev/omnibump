@@ -359,19 +359,21 @@ func checkModFileForIndirectDep(
 	return nil
 }
 
-// fetchFromProxy performs an HTTP GET request to the Go module proxy and returns the response body.
-//
-//nolint:gosec // G107: URL is constructed from validated module paths via module.EscapePath
+// goProxyBase is the base URL for the Go module proxy.
+const goProxyBase = "https://proxy.golang.org"
+
 // proxyClient is used for all Go module proxy requests with a reasonable timeout.
 var proxyClient = &http.Client{Timeout: 30 * time.Second}
 
-func fetchFromProxy(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+// fetchFromProxy performs an HTTP GET request to the Go module proxy and returns the response body.
+// path must begin with "/" and is appended to goProxyBase.
+func fetchFromProxy(ctx context.Context, path string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", goProxyBase+path, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := proxyClient.Do(req)
+	resp, err := proxyClient.Do(req) //nolint:gosec // G704: URL is always goProxyBase + an escaped module path/version
 	if err != nil {
 		return nil, err
 	}
@@ -383,7 +385,7 @@ func fetchFromProxy(ctx context.Context, url string) ([]byte, error) {
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: status %d for %s", ErrProxyRequestFailed, resp.StatusCode, url)
+		return nil, fmt.Errorf("%w: status %d for %s", ErrProxyRequestFailed, resp.StatusCode, goProxyBase+path)
 	}
 
 	return io.ReadAll(resp.Body)
@@ -395,9 +397,7 @@ func fetchAvailableVersions(ctx context.Context, modulePath string) ([]string, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to escape module path: %w", err)
 	}
-	url := fmt.Sprintf("https://proxy.golang.org/%s/@v/list", escapedPath)
-
-	body, err := fetchFromProxy(ctx, url)
+	body, err := fetchFromProxy(ctx, fmt.Sprintf("/%s/@v/list", escapedPath))
 	if err != nil {
 		return nil, err
 	}
@@ -431,9 +431,7 @@ func fetchGoModForPackage(ctx context.Context, pkgPath, version string) (*modfil
 	if err != nil {
 		return nil, fmt.Errorf("failed to escape version: %w", err)
 	}
-	url := fmt.Sprintf("https://proxy.golang.org/%s/@v/%s.mod", escapedPath, escapedVersion)
-
-	body, err := fetchFromProxy(ctx, url)
+	body, err := fetchFromProxy(ctx, fmt.Sprintf("/%s/@v/%s.mod", escapedPath, escapedVersion))
 	if err != nil {
 		return nil, err
 	}
