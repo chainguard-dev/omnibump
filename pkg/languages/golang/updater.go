@@ -174,21 +174,9 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 	// First pass: run go get for new dependencies and non-semver versions.
 	// go get writes directly to disk, so it must complete before any in-memory
 	// AddRequire edits are applied to avoid overwriting its changes.
-	hasGoGetUpdates := false
-	for _, k := range depsBumpOrdered {
-		pkg := pkgVersions[k]
-		if pkg == nil || pkg.Replace {
-			continue
-		}
-		if pkg.Require && semver.IsValid(pkg.Version) {
-			// Handled in the AddRequire pass below.
-			continue
-		}
-		log.Infof("Update package: %s", k)
-		if err := goGetPackage(ctx, log, pkg, cfg.Modroot); err != nil {
-			return nil, err
-		}
-		hasGoGetUpdates = true
+	hasGoGetUpdates, err := performGoGetPass(ctx, log, cfg.Modroot, depsBumpOrdered, pkgVersions)
+	if err != nil {
+		return nil, err
 	}
 
 	// Re-parse go.mod after go get writes so AddRequire edits are based on the
@@ -201,20 +189,9 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 	}
 
 	// Second pass: apply in-memory AddRequire edits for existing semver deps.
-	hasDirectEdits := false
-	for _, k := range depsBumpOrdered {
-		pkg := pkgVersions[k]
-		if pkg == nil || pkg.Replace {
-			continue
-		}
-		if !pkg.Require || !semver.IsValid(pkg.Version) {
-			continue
-		}
-		log.Infof("Update package: %s", k)
-		if err := addRequirePackage(ctx, log, pkg, modFile); err != nil {
-			return nil, err
-		}
-		hasDirectEdits = true
+	hasDirectEdits, err := performAddRequirePass(log, depsBumpOrdered, pkgVersions, modFile)
+	if err != nil {
+		return nil, err
 	}
 
 	// Write the updated go.mod file back to disk (only if we used AddRequire)
@@ -372,12 +349,53 @@ func goGetPackage(ctx context.Context, log *clog.Logger, pkg *Package, modroot s
 }
 
 // addRequirePackage updates an existing require directive in-memory via AddRequire.
-func addRequirePackage(ctx context.Context, log *clog.Logger, pkg *Package, modFile *modfile.File) error {
+func addRequirePackage(log *clog.Logger, pkg *Package, modFile *modfile.File) error {
 	log.Infof("Updating existing require with AddRequire ...")
 	if err := modFile.AddRequire(pkg.Name, pkg.Version); err != nil {
 		return fmt.Errorf("failed to update require for %s@%s: %w", pkg.Name, pkg.Version, err)
 	}
 	return nil
+}
+
+// performGoGetPass runs go get for packages that need it (new deps or non-semver versions).
+func performGoGetPass(ctx context.Context, log *clog.Logger, modroot string, depsBumpOrdered []string, pkgVersions map[string]*Package) (bool, error) {
+	hasGoGetUpdates := false
+	for _, k := range depsBumpOrdered {
+		pkg := pkgVersions[k]
+		if pkg == nil || pkg.Replace {
+			continue
+		}
+		if pkg.Require && semver.IsValid(pkg.Version) {
+			// Handled in the AddRequire pass below.
+			continue
+		}
+		log.Infof("Update package: %s", k)
+		if err := goGetPackage(ctx, log, pkg, modroot); err != nil {
+			return false, err
+		}
+		hasGoGetUpdates = true
+	}
+	return hasGoGetUpdates, nil
+}
+
+// performAddRequirePass applies in-memory AddRequire edits for existing semver deps.
+func performAddRequirePass(log *clog.Logger, depsBumpOrdered []string, pkgVersions map[string]*Package, modFile *modfile.File) (bool, error) {
+	hasDirectEdits := false
+	for _, k := range depsBumpOrdered {
+		pkg := pkgVersions[k]
+		if pkg == nil || pkg.Replace {
+			continue
+		}
+		if !pkg.Require || !semver.IsValid(pkg.Version) {
+			continue
+		}
+		log.Infof("Update package: %s", k)
+		if err := addRequirePackage(log, pkg, modFile); err != nil {
+			return false, err
+		}
+		hasDirectEdits = true
+	}
+	return hasDirectEdits, nil
 }
 
 // verifyAndFinalize verifies package versions and handles final tasks.
