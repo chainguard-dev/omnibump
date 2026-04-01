@@ -364,6 +364,7 @@ func TestGoModTidySkipInitial(t *testing.T) {
 			},
 			tidySkipInitial: false,
 			wantError:       true,
+			want:            map[string]string{},
 			errMsgContains:  "ambiguous import",
 		},
 		{
@@ -381,11 +382,13 @@ func TestGoModTidySkipInitial(t *testing.T) {
 				},
 			},
 			tidySkipInitial: true,
-			wantError:       true,
+			wantError:       false,
+			want:            map[string]string{},
 			// With +incompatible normalization, v3.3.15+incompatible is a valid version so
 			// go mod tidy succeeds. Tidy then removes etcd from go.mod (it is not directly
-			// imported by confd), so verifyAndFinalize reports package not found.
-			errMsgContains: "package not found in go.mod",
+			// imported by confd). When Tidy is true, verifyAndFinalize warns and skips
+			// packages that disappear after tidy rather than returning an error, since they
+			// may have been superseded by a major version upgrade from another updated dep.
 		},
 	}
 

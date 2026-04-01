@@ -241,7 +241,7 @@ func (g *Golang) Validate(ctx context.Context, cfg *languages.UpdateConfig) erro
 	for _, dep := range cfg.Dependencies {
 		version := getVersion(modFile, dep.Name)
 		if version == "" {
-			log.Warnf("Dependency not found in go.mod: %s", dep.Name)
+			log.Warnf("Dependency %s@%s not found in go.mod after update; it may have been superseded by a major version upgrade", dep.Name, dep.Version)
 			continue
 		}
 
