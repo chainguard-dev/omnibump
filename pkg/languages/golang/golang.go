@@ -305,7 +305,7 @@ func getOptionBool(options map[string]any, key string, defaultValue bool) bool {
 // given module path on the left (Old) side.
 func hasReplaceDirective(modFile *modfile.File, packageName string) bool {
 	for _, r := range modFile.Replace {
-		if r.Old.Path == packageName {
+		if r != nil && r.Old.Path == packageName {
 			return true
 		}
 	}

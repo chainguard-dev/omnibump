@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
 )
 
@@ -283,13 +284,19 @@ func TestCheckIfDirectParentHasFix(t *testing.T) {
 		},
 	}
 
+	// Create an empty modfile for testing (no replace directives)
+	emptyModFile := &modfile.File{
+		Module: &modfile.Module{Mod: module.Version{Path: "test"}},
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			info, err := CheckIfDirectParentHasFix(ctx,
 				tt.directDep,
 				tt.currentVersion,
 				tt.indirectPkg,
-				tt.targetVersion)
+				tt.targetVersion,
+				emptyModFile)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -496,13 +503,13 @@ func TestResolveIndirectDependency_K3S_Integration(t *testing.T) {
 	// Should find multiple possible bumps (libp2p and boxo at minimum)
 	assert.GreaterOrEqual(t, len(resolution.PossibleBumps), 1, "Should find at least one parent bump")
 
-	// Should include libp2p@v0.47.0
+	// Should include libp2p@v0.48.0
 	foundLibp2pBump := false
 	for _, bump := range resolution.PossibleBumps {
 		if bump.Package == "github.com/libp2p/go-libp2p" {
 			foundLibp2pBump = true
 			assert.Equal(t, "v0.46.0", bump.FromVersion)
-			assert.Equal(t, "v0.47.0", bump.ToVersion)
+			assert.Equal(t, "v0.48.0", bump.ToVersion)
 			assert.Equal(t, "github.com/quic-go/webtransport-go", bump.WillBringIn)
 			assert.Equal(t, "v0.10.0", bump.WillBringInVersion)
 			break

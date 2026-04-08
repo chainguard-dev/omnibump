@@ -100,6 +100,19 @@ func ResolveIndirectDependency(
 		return &IndirectResolution{IsIndirect: false}, nil
 	}
 
+	// Check if the dependency has a replace directive
+	// If it does, we should NOT try to resolve via parents because:
+	// - Replace directives are intentional (compatibility, forks, etc.)
+	// - Auto-updating would bypass the replace directive
+	// - CVE bot skips these for the same reason
+	if hasReplaceDirective(modFile, indirectPkg) {
+		log.Info("Package has replace directive - skipping parent resolution", "package", indirectPkg)
+		return &IndirectResolution{
+			IsIndirect:      true,
+			FallbackAllowed: false, // Don't allow direct bump either - respect the replace
+		}, nil
+	}
+
 	log.Info("Package is indirect - analyzing resolution options", "package", indirectPkg)
 
 	result := &IndirectResolution{
@@ -129,7 +142,8 @@ func ResolveIndirectDependency(
 			parent.Package,
 			parent.CurrentVersion,
 			indirectPkg,
-			targetVersion)
+			targetVersion,
+			modFile)
 		if err != nil {
 			log.Debug("Parent cannot provide fix", "parent", parent.Package, "error", err)
 			continue
@@ -252,12 +266,14 @@ func FindDirectParents(ctx context.Context, modRoot, indirectPkg string) ([]Dire
 
 // CheckIfDirectParentHasFix checks if updating a direct parent would bring in the target version.
 // It searches through newer versions of the parent to find one that has the required indirect version.
+// Also checks that the parent version won't conflict with existing replace directives.
 func CheckIfDirectParentHasFix(
 	ctx context.Context,
 	directDep string,
 	currentVersion string,
 	indirectPkg string,
 	targetVersion string,
+	modFile *modfile.File,
 ) (*ParentFixInfo, error) {
 	log := clog.FromContext(ctx)
 
@@ -269,10 +285,11 @@ func CheckIfDirectParentHasFix(
 
 	log.Debug("Checking versions for fix", "count", len(versions), "direct_dep", directDep)
 
-	return findVersionWithIndirectDep(ctx, versions, currentVersion, directDep, indirectPkg, targetVersion)
+	return findVersionWithIndirectDep(ctx, versions, currentVersion, directDep, indirectPkg, targetVersion, modFile)
 }
 
 // findVersionWithIndirectDep searches through versions to find one that has the required indirect dependency.
+// Also checks that the version won't conflict with existing replace directives in userModFile.
 func findVersionWithIndirectDep(
 	ctx context.Context,
 	versions []string,
@@ -280,8 +297,17 @@ func findVersionWithIndirectDep(
 	directDep string,
 	indirectPkg string,
 	targetVersion string,
+	userModFile *modfile.File,
 ) (*ParentFixInfo, error) {
 	log := clog.FromContext(ctx)
+
+	// Build map of replace directives from user's go.mod
+	replaceMap := make(map[string]string, len(userModFile.Replace))
+	for _, repl := range userModFile.Replace {
+		if repl != nil {
+			replaceMap[repl.Old.Path] = repl.New.Version
+		}
+	}
 
 	// Check each version newer than current
 	for _, ver := range versions {
@@ -291,14 +317,22 @@ func findVersionWithIndirectDep(
 		}
 
 		// Fetch this version's go.mod
-		modFile, err := fetchGoModForPackage(ctx, directDep, ver)
+		parentModFile, err := fetchGoModForPackage(ctx, directDep, ver)
 		if err != nil {
 			log.Debug("Could not fetch version", "package", directDep, "version", ver, "error", err)
 			continue
 		}
 
+		// Check if this version would conflict with replace directives
+		if hasReplaceConflicts(ctx, parentModFile, replaceMap) {
+			log.Debug("Skipping version due to replace conflicts",
+				"package", directDep,
+				"version", ver)
+			continue
+		}
+
 		// Check if this version has the target indirect dependency version
-		fixInfo := checkModFileForIndirectDep(modFile, directDep, currentVersion, ver, indirectPkg, targetVersion)
+		fixInfo := checkModFileForIndirectDep(parentModFile, directDep, currentVersion, ver, indirectPkg, targetVersion)
 		if fixInfo != nil {
 			log.Info("Found fix in version",
 				"direct_dep", directDep,
@@ -452,4 +486,56 @@ func extractModuleVersion(moduleWithVersion string) string {
 		return ""
 	}
 	return moduleWithVersion[idx+1:]
+}
+
+// hasReplaceConflicts checks if a parent's dependencies would conflict with replace directives.
+// Returns true if there are conflicts (i.e., parent requires a version that would be replaced).
+func hasReplaceConflicts(ctx context.Context, parentModFile *modfile.File, replaceMap map[string]string) bool {
+	// Check each requirement in the parent's go.mod
+	for _, req := range parentModFile.Require {
+		if req == nil {
+			continue
+		}
+
+		replacedVersion, hasReplace := replaceMap[req.Mod.Path]
+		if !hasReplace {
+			continue
+		}
+
+		clog.DebugContext(ctx, "Checking replace conflict",
+			"package", req.Mod.Path,
+			"parent_requires", req.Mod.Version,
+			"replaced_with", replacedVersion)
+
+		// A local path replace (e.g. replace foo => ../local) has no version string.
+		// Any parent requiring a specific version of such a dep is incompatible.
+		if replacedVersion == "" {
+			clog.DebugContext(ctx, "Replace conflict: user has local path replace for package",
+				"package", req.Mod.Path,
+				"parent_requires", req.Mod.Version)
+			return true
+		}
+
+		// v0.0.0 indicates the parent uses internal replace directives
+		// (like k8s.io/kubernetes which replaces k8s.io/* with ./staging/...)
+		// These won't work when the parent is imported as a dependency.
+		if req.Mod.Version == "v0.0.0" {
+			clog.DebugContext(ctx, "Replace conflict: parent uses v0.0.0 placeholder (internal replace)",
+				"package", req.Mod.Path,
+				"replaced_with", replacedVersion)
+			return true
+		}
+
+		// If parent requires newer than what's replaced, it's a conflict.
+		// Example: parent requires k8s.io/api@v0.35.2, but user replaces with v0.32.11
+		if semver.Compare(req.Mod.Version, replacedVersion) > 0 {
+			clog.DebugContext(ctx, "Replace conflict detected",
+				"package", req.Mod.Path,
+				"parent_requires", req.Mod.Version,
+				"replaced_with", replacedVersion)
+			return true
+		}
+	}
+
+	return false
 }
