@@ -487,10 +487,16 @@ func (ga *GolangAnalyzer) checkTransitiveRequirementsForStrategy(
 		}
 	}
 
-	// Add missing dependencies to DirectUpdates
+	// Add missing dependencies to DirectUpdates, skipping no-ops (where version isn't changing)
 	if len(allMissingDeps) > 0 {
 		log.Infof("Found %d additional dependencies that need co-updating", len(allMissingDeps))
 		for _, missing := range allMissingDeps {
+			// Skip no-op updates (where required version equals current version)
+			if missing.CurrentVersion == missing.RequiredVersion {
+				log.Debugf("Skipping no-op update for %s (already at %s)", missing.Package, missing.CurrentVersion)
+				continue
+			}
+
 			strategy.DirectUpdates = append(strategy.DirectUpdates, analyzer.Dependency{
 				Name:    missing.Package,
 				Version: missing.RequiredVersion,

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
@@ -418,7 +419,19 @@ func printPropertyUpdates(analysis *analyzer.AnalysisResult, strategy *analyzer.
 func printDirectUpdates(analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy) {
 	fmt.Println("Direct Dependency Updates:")
 	fmt.Println("--------------------------")
-	for _, dep := range strategy.DirectUpdates {
+	// Sort dependencies by name for consistent output
+	sorted := make([]analyzer.Dependency, len(strategy.DirectUpdates))
+	copy(sorted, strategy.DirectUpdates)
+	slices.SortStableFunc(sorted, func(a, b analyzer.Dependency) int {
+		if a.Name < b.Name {
+			return -1
+		}
+		if a.Name > b.Name {
+			return 1
+		}
+		return 0
+	})
+	for _, dep := range sorted {
 		printDependencyUpdate(analysis, dep)
 	}
 	fmt.Println()
