@@ -456,12 +456,12 @@ func (ga *GolangAnalyzer) checkTransitiveRequirementsForStrategy(
 		apiIssues, err := CheckAPICompatibility(ctx, dep.Name, dep.Version, modFile)
 		if err != nil {
 			log.Debugf("Could not check API compatibility for %s@%s: %v", dep.Name, dep.Version, err)
-		} else {
-			// Add API compatibility issues as warnings, not missing deps
-			// (we flag them for review but don't know what version to update to)
+		} else if len(apiIssues) > 0 {
+			// Collect API compatibility issues for grouped warning
 			for _, issue := range apiIssues {
 				strategy.Warnings = append(strategy.Warnings,
-					fmt.Sprintf("API compatibility alert: %s (reason: %s)", issue.Package, issue.Reason))
+					fmt.Sprintf("API Compatibility Alert - %s imports %s which is being updated to %s (may require manual version bump)",
+						issue.Package, dep.Name, dep.Version))
 				log.Infof("API compatibility alert for %s", issue.Package)
 			}
 		}

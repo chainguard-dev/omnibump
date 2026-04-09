@@ -148,9 +148,10 @@ func (g *Golang) updateSingleModule(ctx context.Context, cfg *languages.UpdateCo
 }
 
 // updateWorkspace updates all modules in a Go workspace that contain the target dependencies.
+// Only dependencies already present in each module's go.mod are passed to that module's update;
+// packages absent from a sub-module are skipped rather than added, because workspace sub-modules
+// manage their own dependency sets independently.
 func (g *Golang) updateWorkspace(ctx context.Context, cfg *languages.UpdateConfig, workPath string) error {
-	log := clog.FromContext(ctx)
-
 	// Parse go.work file
 	workFile, err := parseGoWork(workPath)
 	if err != nil {
@@ -159,73 +160,80 @@ func (g *Golang) updateWorkspace(ctx context.Context, cfg *languages.UpdateConfi
 
 	// Get all module paths from workspace
 	modulePaths := getWorkspaceModulePaths(workFile)
-	log.Infof("Found %d modules in workspace", len(modulePaths))
+	clog.InfoContextf(ctx, "Found %d modules in workspace", len(modulePaths))
 
-	// First, determine which modules contain the dependencies we want to update
-	modulesToUpdate := make([]string, 0)
-	dependencyNames := make(map[string]bool)
-	for _, dep := range cfg.Dependencies {
-		dependencyNames[dep.Name] = true
-	}
-
+	updatedCount := 0
 	for _, modPath := range modulePaths {
 		fullModPath := filepath.Join(cfg.RootDir, modPath)
 		goModPath := filepath.Join(fullModPath, "go.mod")
 
-		// Parse go.mod to see if it contains any of our target dependencies
 		modFile, _, err := ParseGoModfile(goModPath)
 		if err != nil {
-			log.Warnf("Failed to parse %s: %v", goModPath, err)
+			clog.WarnContextf(ctx, "Failed to parse %s: %v", goModPath, err)
 			continue
 		}
 
-		// Check if this module contains any of the dependencies
-		hasTargetDep := false
-		for _, req := range modFile.Require {
-			if req != nil && dependencyNames[req.Mod.Path] {
-				hasTargetDep = true
-				break
-			}
+		// Only pass deps that are already present in this module's go.mod.
+		moduleDeps := filterDepsForModule(cfg.Dependencies, modFile)
+		if len(moduleDeps) == 0 {
+			clog.DebugContextf(ctx, "Module %s has none of the target dependencies, skipping", modPath)
+			continue
 		}
 
-		if hasTargetDep {
-			modulesToUpdate = append(modulesToUpdate, modPath)
-		}
-	}
+		clog.InfoContextf(ctx, "Updating module: %s", modPath)
 
-	if len(modulesToUpdate) == 0 {
-		log.Infof("None of the workspace modules contain the target dependencies")
-		return nil
-	}
-
-	log.Infof("Will update %d modules that contain target dependencies", len(modulesToUpdate))
-
-	// Update each module
-	updatedCount := 0
-	for _, modPath := range modulesToUpdate {
-		fullModPath := filepath.Join(cfg.RootDir, modPath)
-		log.Infof("Updating module: %s", modPath)
-
-		// Create a copy of cfg with the module-specific directory
 		moduleCfg := &languages.UpdateConfig{
 			RootDir:      fullModPath,
-			Dependencies: cfg.Dependencies,
+			Dependencies: moduleDeps,
 			DryRun:       cfg.DryRun,
 			Tidy:         cfg.Tidy,
 			ShowDiff:     cfg.ShowDiff,
 			Options:      cfg.Options,
 		}
 
-		// Update this module
 		if err := g.updateSingleModule(ctx, moduleCfg, fullModPath); err != nil {
-			log.Errorf("Failed to update module %s: %v", modPath, err)
+			clog.ErrorContextf(ctx, "Failed to update module %s: %v", modPath, err)
 			return fmt.Errorf("failed to update module %s: %w", modPath, err)
 		}
 		updatedCount++
 	}
 
-	log.Infof("Successfully updated %d modules in workspace", updatedCount)
+	if updatedCount == 0 {
+		clog.InfoContextf(ctx, "None of the workspace modules contain the target dependencies")
+		return nil
+	}
+
+	clog.InfoContextf(ctx, "Successfully updated %d modules in workspace", updatedCount)
 	return nil
+}
+
+// filterDepsForModule returns only the dependencies already present in the given
+// module's go.mod as require or replace directives. This prevents omnibump from
+// adding packages to workspace sub-modules that don't already have them, which
+// would be undone by go mod tidy and cause a verification failure.
+func filterDepsForModule(deps []languages.Dependency, modFile *modfile.File) []languages.Dependency {
+	present := make(map[string]struct{}, len(modFile.Require)+len(modFile.Replace)*2)
+	for _, req := range modFile.Require {
+		if req != nil {
+			present[req.Mod.Path] = struct{}{}
+		}
+	}
+	for _, repl := range modFile.Replace {
+		if repl != nil {
+			present[repl.Old.Path] = struct{}{}
+			present[repl.New.Path] = struct{}{}
+		}
+	}
+
+	filtered := make([]languages.Dependency, 0, len(deps))
+	for _, dep := range deps {
+		_, namePresent := present[dep.Name]
+		_, oldNamePresent := present[dep.OldName]
+		if namePresent || (dep.OldName != "" && oldNamePresent) {
+			filtered = append(filtered, dep)
+		}
+	}
+	return filtered
 }
 
 // Validate checks if the updates were applied successfully.
@@ -420,6 +428,7 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 	}
 
 	allMissingDeps := make(map[string]MissingDependency)
+	apiCompatibilityAlerts := make(map[string]bool)
 
 	for name, pkg := range filtered {
 		missingDeps, err := CheckTransitiveRequirements(ctx, name, pkg.Version, modFile)
@@ -428,32 +437,66 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 			continue
 		}
 		collectMissingDeps(ctx, missingDeps, packagesBeingUpdated, allMissingDeps)
+
+		// Also check for API compatibility issues
+		apiIssues, err := CheckAPICompatibility(ctx, name, pkg.Version, modFile)
+		if err != nil {
+			log.Debugf("Could not check API compatibility for %s@%s: %v", name, pkg.Version, err)
+		} else {
+			for _, issue := range apiIssues {
+				apiCompatibilityAlerts[issue.Package] = true
+				log.Infof("API compatibility alert for %s", issue.Package)
+			}
+		}
 	}
 
-	if len(allMissingDeps) == 0 {
+	if len(allMissingDeps) == 0 && len(apiCompatibilityAlerts) == 0 {
 		return nil
 	}
 
 	var msg strings.Builder
-	fmt.Fprintf(&msg, "the following dependencies need to be co-updated:\n")
-	for _, dep := range allMissingDeps {
-		fmt.Fprintf(&msg, "  - %s: current %s, required >= %s\n", dep.Package, dep.CurrentVersion, dep.RequiredVersion)
-	}
-	fmt.Fprintf(&msg, "\nTo proceed, add these packages to your update:\n")
-	fmt.Fprintf(&msg, "  omnibump --packages \"")
-	first := true
-	for name, pkg := range filtered {
-		if !first {
-			fmt.Fprintf(&msg, " ")
+
+	// Show required co-updates first
+	if len(allMissingDeps) > 0 {
+		fmt.Fprintf(&msg, "the following dependencies need to be co-updated:\n")
+		for _, dep := range allMissingDeps {
+			fmt.Fprintf(&msg, "  - %s: current %s, required >= %s\n", dep.Package, dep.CurrentVersion, dep.RequiredVersion)
 		}
-		fmt.Fprintf(&msg, "%s@%s", name, pkg.Version)
-		first = false
 	}
-	for _, dep := range allMissingDeps {
-		fmt.Fprintf(&msg, " %s@%s", dep.Package, dep.RequiredVersion)
+
+	// Show API compatibility alerts
+	if len(apiCompatibilityAlerts) > 0 {
+		if len(allMissingDeps) > 0 {
+			fmt.Fprintf(&msg, "\n")
+		}
+		fmt.Fprintf(&msg, "API Compatibility Alerts:\nThe following packages import updated dependencies and may require version bumps:\n")
+		for pkg := range apiCompatibilityAlerts {
+			fmt.Fprintf(&msg, "  - %s\n", pkg)
+		}
 	}
-	fmt.Fprintf(&msg, "\"")
-	return fmt.Errorf("%w:\n%s", ErrTransitiveDepsRequired, msg.String())
+
+	// Only error if there are required co-updates; API alerts are informational
+	if len(allMissingDeps) > 0 {
+		fmt.Fprintf(&msg, "\nTo proceed, add these packages to your update:\n")
+		fmt.Fprintf(&msg, "  omnibump --packages \"")
+		first := true
+		for name, pkg := range filtered {
+			if !first {
+				fmt.Fprintf(&msg, " ")
+			}
+			fmt.Fprintf(&msg, "%s@%s", name, pkg.Version)
+			first = false
+		}
+		for _, dep := range allMissingDeps {
+			fmt.Fprintf(&msg, " %s@%s", dep.Package, dep.RequiredVersion)
+		}
+		fmt.Fprintf(&msg, "\"")
+		return fmt.Errorf("%w:\n%s", ErrTransitiveDepsRequired, msg.String())
+	}
+
+	// If only API alerts (no required co-updates), just log as warning
+	log.Warnf("API compatibility alerts:\n%s", msg.String())
+	return nil
 }
 
 // collectMissingDeps adds missing transitive dependencies to allMissingDeps,
