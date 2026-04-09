@@ -457,7 +457,13 @@ func (ga *GolangAnalyzer) checkTransitiveRequirementsForStrategy(
 		if err != nil {
 			log.Debugf("Could not check API compatibility for %s@%s: %v", dep.Name, dep.Version, err)
 		} else {
-			missingDeps = append(missingDeps, apiIssues...)
+			// Add API compatibility issues as warnings, not missing deps
+			// (we flag them for review but don't know what version to update to)
+			for _, issue := range apiIssues {
+				strategy.Warnings = append(strategy.Warnings,
+					fmt.Sprintf("API compatibility alert: %s (reason: %s)", issue.Package, issue.Reason))
+				log.Infof("API compatibility alert for %s", issue.Package)
+			}
 		}
 
 		// Only add missing deps that are NOT already being updated
