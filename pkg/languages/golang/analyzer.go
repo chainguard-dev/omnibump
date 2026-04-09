@@ -388,10 +388,9 @@ func (ga *GolangAnalyzer) RecommendStrategy(ctx context.Context, analysis *analy
 
 			// Check if it's an indirect dependency and try to resolve
 			if depInfo.Transitive {
-				handled := ga.handleIndirectDependency(ctx, analysis, dep, strategy)
-				if handled {
-					continue // Indirect dependency was resolved to parent bumps
-				}
+				ga.handleIndirectDependency(ctx, analysis, dep, strategy)
+				// Note: handleIndirectDependency adds parent bump alternatives to strategy.
+				// We still add the original package since the user explicitly requested it.
 			}
 		}
 
