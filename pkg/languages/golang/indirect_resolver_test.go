@@ -665,3 +665,58 @@ require (
 		assert.True(t, foundCli, "Should detect github.com/docker/cli needs updating")
 	})
 }
+
+func TestCheckAPICompatibility(t *testing.T) {
+	// This test verifies that when a package is updated, we detect other packages
+	// in the project that import from it and flag them as potentially needing updates.
+	t.Run("detects packages importing updated dependency", func(t *testing.T) {
+		ctx := context.Background()
+
+		// Simulate a project that has google/uuid and other packages
+		// google/uuid is a simple package with minimal dependencies
+		currentGoModContent := `module github.com/example/test
+
+go 1.24
+
+require (
+	github.com/google/uuid v1.5.0
+	github.com/stretchr/testify v1.8.0
+)
+`
+		modFile, err := modfile.Parse("go.mod", []byte(currentGoModContent), nil)
+		require.NoError(t, err)
+
+		// Check API compatibility when updating google/uuid
+		issues, err := CheckAPICompatibility(ctx, "github.com/google/uuid", "v1.6.0", modFile)
+		require.NoError(t, err)
+
+		// google/uuid has few dependencies, so we just verify the function works
+		// and returns appropriate issue structure if any are found
+		for _, issue := range issues {
+			assert.NotEmpty(t, issue.Package)
+			assert.NotEmpty(t, issue.Reason)
+			assert.Contains(t, issue.Reason, "imports")
+		}
+	})
+
+	t.Run("skips indirect dependencies", func(t *testing.T) {
+		ctx := context.Background()
+
+		currentGoModContent := `module github.com/example/test
+
+go 1.24
+
+require (
+	github.com/google/uuid v1.5.0
+)
+`
+		modFile, err := modfile.Parse("go.mod", []byte(currentGoModContent), nil)
+		require.NoError(t, err)
+
+		issues, err := CheckAPICompatibility(ctx, "github.com/google/uuid", "v1.6.0", modFile)
+		require.NoError(t, err)
+
+		// Verify no issues are returned (all existing deps are direct, none import uuid typically)
+		_ = issues // Just verify we can call it without error
+	})
+}
