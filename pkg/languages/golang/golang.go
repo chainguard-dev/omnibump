@@ -456,51 +456,60 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 
 	var msg strings.Builder
 
-	// Show required co-updates first
+	fmt.Fprintf(&msg, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
+
+	// Show required co-updates
 	if len(allMissingDeps) > 0 {
-		fmt.Fprintf(&msg, "the following dependencies need to be co-updated:\n")
+		fmt.Fprintf(&msg, "REQUIRED CO-UPDATES\n")
+		fmt.Fprintf(&msg, "───────────────────\n")
+		fmt.Fprintf(&msg, "These packages must be updated due to explicit version requirements:\n\n")
 		for _, dep := range allMissingDeps {
-			fmt.Fprintf(&msg, "  - %s: current %s, required >= %s\n", dep.Package, dep.CurrentVersion, dep.RequiredVersion)
+			fmt.Fprintf(&msg, "  • %s\n", dep.Package)
+			fmt.Fprintf(&msg, "    current: %s → required: >= %s\n\n", dep.CurrentVersion, dep.RequiredVersion)
 		}
 	}
 
 	// Show API compatibility alerts
 	if len(apiCompatibilityAlerts) > 0 {
-		if len(allMissingDeps) > 0 {
-			fmt.Fprintf(&msg, "\n")
-		}
-		fmt.Fprintf(&msg, "API Compatibility Alerts:\nThe following packages import updated dependencies and may require version bumps:\n")
+		fmt.Fprintf(&msg, "API COMPATIBILITY ALERTS\n")
+		fmt.Fprintf(&msg, "────────────────────────\n")
+		fmt.Fprintf(&msg, "These packages import updated dependencies and may require version bumps:\n\n")
 		for pkg := range apiCompatibilityAlerts {
-			fmt.Fprintf(&msg, "  - %s\n", pkg)
+			fmt.Fprintf(&msg, "  • %s\n", pkg)
 		}
+		fmt.Fprintf(&msg, "\n")
 	}
 
 	// Only error if there are required co-updates; API alerts are informational
 	if len(allMissingDeps) > 0 {
-		fmt.Fprintf(&msg, "\nTo proceed, add these required packages to your update:\n")
-		fmt.Fprintf(&msg, "  omnibump --packages \"")
-		first := true
+		fmt.Fprintf(&msg, "SUGGESTED UPDATE COMMAND\n")
+		fmt.Fprintf(&msg, "────────────────────────\n\n")
+		fmt.Fprintf(&msg, "omnibump --packages \"\n")
+
 		for name, pkg := range filtered {
-			if !first {
-				fmt.Fprintf(&msg, " ")
+			fmt.Fprintf(&msg, "  %s@%s\n", name, pkg.Version)
+		}
+
+		if len(allMissingDeps) > 0 {
+			for _, dep := range allMissingDeps {
+				fmt.Fprintf(&msg, "  %s@%s\n", dep.Package, dep.RequiredVersion)
 			}
-			fmt.Fprintf(&msg, "%s@%s", name, pkg.Version)
-			first = false
 		}
-		for _, dep := range allMissingDeps {
-			fmt.Fprintf(&msg, " %s@%s", dep.Package, dep.RequiredVersion)
-		}
-		// Include API compatibility alert packages with current versions
-		for pkg := range apiCompatibilityAlerts {
-			for _, req := range modFile.Require {
-				if req != nil && req.Mod.Path == pkg {
-					fmt.Fprintf(&msg, " %s@%s", pkg, req.Mod.Version)
-					break
+
+		if len(apiCompatibilityAlerts) > 0 {
+			for pkg := range apiCompatibilityAlerts {
+				for _, req := range modFile.Require {
+					if req != nil && req.Mod.Path == pkg {
+						fmt.Fprintf(&msg, "  %s@%s\n", pkg, req.Mod.Version)
+						break
+					}
 				}
 			}
 		}
-		fmt.Fprintf(&msg, "\"")
-		return fmt.Errorf("%w:\n%s", ErrTransitiveDepsRequired, msg.String())
+
+		fmt.Fprintf(&msg, "\"\n\n")
+		fmt.Fprintf(&msg, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+		return fmt.Errorf("%w:%s", ErrTransitiveDepsRequired, msg.String())
 	}
 
 	// If only API alerts (no required co-updates), just log as warning

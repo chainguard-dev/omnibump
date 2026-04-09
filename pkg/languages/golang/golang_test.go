@@ -1340,6 +1340,108 @@ require github.com/example/legacy v2.0.0+incompatible
 	require.Equal(t, "v3.0.0+incompatible", got)
 }
 
+func TestFilterDepsForModule(t *testing.T) {
+	tests := []struct {
+		name     string
+		deps     []languages.Dependency
+		modFile  *modfile.File
+		wantDeps []string
+	}{
+		{
+			name: "all deps present",
+			deps: []languages.Dependency{
+				{Name: "example.com/foo", Version: "v1.0.0"},
+				{Name: "example.com/bar", Version: "v2.0.0"},
+			},
+			modFile: &modfile.File{
+				Require: []*modfile.Require{
+					{Mod: module.Version{Path: "example.com/foo", Version: "v0.9.0"}},
+					{Mod: module.Version{Path: "example.com/bar", Version: "v1.0.0"}},
+				},
+			},
+			wantDeps: []string{"example.com/foo", "example.com/bar"},
+		},
+		{
+			name: "some deps absent — only present ones returned",
+			deps: []languages.Dependency{
+				{Name: "example.com/present", Version: "v1.0.0"},
+				{Name: "example.com/absent", Version: "v2.0.0"},
+			},
+			modFile: &modfile.File{
+				Require: []*modfile.Require{
+					{Mod: module.Version{Path: "example.com/present", Version: "v0.9.0"}},
+				},
+			},
+			wantDeps: []string{"example.com/present"},
+		},
+		{
+			name: "no deps present",
+			deps: []languages.Dependency{
+				{Name: "example.com/absent", Version: "v1.0.0"},
+			},
+			modFile: &modfile.File{
+				Require: []*modfile.Require{},
+			},
+			wantDeps: []string{},
+		},
+		{
+			name: "dep present via replace directive new path",
+			deps: []languages.Dependency{
+				{Name: "example.com/new", Version: "v1.0.0"},
+			},
+			modFile: &modfile.File{
+				Require: []*modfile.Require{},
+				Replace: []*modfile.Replace{
+					{
+						Old: module.Version{Path: "example.com/old"},
+						New: module.Version{Path: "example.com/new", Version: "v0.9.0"},
+					},
+				},
+			},
+			wantDeps: []string{"example.com/new"},
+		},
+		{
+			name: "replace dep matched via OldName",
+			deps: []languages.Dependency{
+				{OldName: "example.com/old", Name: "example.com/new", Version: "v1.0.0", Replace: true},
+			},
+			modFile: &modfile.File{
+				Require: []*modfile.Require{
+					{Mod: module.Version{Path: "example.com/old", Version: "v0.9.0"}},
+				},
+				Replace: []*modfile.Replace{
+					{
+						Old: module.Version{Path: "example.com/old"},
+						New: module.Version{Path: "example.com/new", Version: "v0.9.0"},
+					},
+				},
+			},
+			wantDeps: []string{"example.com/new"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterDepsForModule(tt.deps, tt.modFile)
+
+			if len(got) != len(tt.wantDeps) {
+				t.Errorf("got %d deps, want %d: %v", len(got), len(tt.wantDeps), got)
+				return
+			}
+
+			gotNames := make(map[string]bool)
+			for _, d := range got {
+				gotNames[d.Name] = true
+			}
+			for _, want := range tt.wantDeps {
+				if !gotNames[want] {
+					t.Errorf("expected dep %q in result, got: %v", want, got)
+				}
+			}
+		})
+	}
+}
+
 func TestGolang_Update_Workspace_OnlyTargetedModules(t *testing.T) {
 	tmpDir := t.TempDir()
 
