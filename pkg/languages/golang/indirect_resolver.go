@@ -554,3 +554,69 @@ func CheckTransitiveRequirements(
 
 	return missing, nil
 }
+
+// CheckAPICompatibility checks if updating a package might require co-updates to other
+// packages due to schema/API breaking changes. This is a heuristic approach: for packages
+// that depend on the updated package, we flag them as potentially needing updates.
+//
+// Example: If opentelemetry/otel/sdk is updated with schema changes, and knative.dev/pkg
+// imports from it, knative.dev/pkg might need updating even if the go.mod doesn't explicitly
+// require a newer version.
+func CheckAPICompatibility(
+	ctx context.Context,
+	packageName string,
+	targetVersion string,
+	currentModFile *modfile.File,
+) ([]MissingDependency, error) {
+	log := clog.FromContext(ctx)
+
+	log.Debug("Checking API compatibility", "package", packageName, "version", targetVersion)
+
+	var potentialIssues []MissingDependency
+
+	// Check all direct dependencies in the current project
+	for _, req := range currentModFile.Require {
+		if req == nil || req.Indirect {
+			continue
+		}
+
+		depPkg := req.Mod.Path
+		depVer := req.Mod.Version
+
+		// Skip checking the package against itself
+		if depPkg == packageName {
+			continue
+		}
+
+		// Fetch this dependency's go.mod and check if it imports the package being updated
+		depModFile, err := fetchGoModForPackage(ctx, depPkg, depVer)
+		if err != nil {
+			log.Debug("Could not fetch dependency go.mod",
+				"package", depPkg,
+				"version", depVer,
+				"error", err)
+			continue
+		}
+
+		// Check if this dependency imports the package being updated
+		for _, depReq := range depModFile.Require {
+			if depReq != nil && depReq.Mod.Path == packageName {
+				// This dependency imports the package being updated.
+				// Flag it as potentially needing an update due to API/schema changes.
+				potentialIssues = append(potentialIssues, MissingDependency{
+					Package:         depPkg,
+					RequiredVersion: depVer, // Keep current version as suggestion; user should verify
+					CurrentVersion:  depVer,
+					Reason:          fmt.Sprintf("%s imports %s which is being updated to %s (potential API/schema incompatibility — may need manual verification and version bump)", depPkg, packageName, targetVersion),
+				})
+				log.Info("Potential API compatibility issue detected",
+					"package", depPkg,
+					"imports", packageName,
+					"new_version", targetVersion)
+				break
+			}
+		}
+	}
+
+	return potentialIssues, nil
+}

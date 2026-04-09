@@ -453,6 +453,14 @@ func (ga *GolangAnalyzer) checkTransitiveRequirementsForStrategy(
 			continue
 		}
 
+		// Also check for potential API/schema incompatibilities in other packages
+		apiIssues, err := CheckAPICompatibility(ctx, dep.Name, dep.Version, modFile)
+		if err != nil {
+			log.Debugf("Could not check API compatibility for %s@%s: %v", dep.Name, dep.Version, err)
+		} else {
+			missingDeps = append(missingDeps, apiIssues...)
+		}
+
 		// Only add missing deps that are NOT already being updated
 		for _, missing := range missingDeps {
 			// Skip if this dependency is already in the update list
