@@ -490,13 +490,16 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 		for _, dep := range allMissingDeps {
 			fmt.Fprintf(&msg, " %s@%s", dep.Package, dep.RequiredVersion)
 		}
-		fmt.Fprintf(&msg, "\"")
-
-		if len(apiCompatibilityAlerts) > 0 {
-			fmt.Fprintf(&msg, "\n\nNote: The packages listed in 'API Compatibility Alerts' above import the updated")
-			fmt.Fprintf(&msg, "\ndependencies and may also need version updates. Review them and add to your")
-			fmt.Fprintf(&msg, "\nupdate if needed.")
+		// Include API compatibility alert packages with current versions
+		for pkg := range apiCompatibilityAlerts {
+			for _, req := range modFile.Require {
+				if req != nil && req.Mod.Path == pkg {
+					fmt.Fprintf(&msg, " %s@%s", pkg, req.Mod.Version)
+					break
+				}
+			}
 		}
+		fmt.Fprintf(&msg, "\"")
 		return fmt.Errorf("%w:\n%s", ErrTransitiveDepsRequired, msg.String())
 	}
 
