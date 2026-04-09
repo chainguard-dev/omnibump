@@ -477,7 +477,7 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 
 	// Only error if there are required co-updates; API alerts are informational
 	if len(allMissingDeps) > 0 {
-		fmt.Fprintf(&msg, "\nTo proceed, add these packages to your update:\n")
+		fmt.Fprintf(&msg, "\nTo proceed, add these required packages to your update:\n")
 		fmt.Fprintf(&msg, "  omnibump --packages \"")
 		first := true
 		for name, pkg := range filtered {
@@ -491,6 +491,12 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 			fmt.Fprintf(&msg, " %s@%s", dep.Package, dep.RequiredVersion)
 		}
 		fmt.Fprintf(&msg, "\"")
+
+		if len(apiCompatibilityAlerts) > 0 {
+			fmt.Fprintf(&msg, "\n\nNote: The packages listed in 'API Compatibility Alerts' above import the updated")
+			fmt.Fprintf(&msg, "\ndependencies and may also need version updates. Review them and add to your")
+			fmt.Fprintf(&msg, "\nupdate if needed.")
+		}
 		return fmt.Errorf("%w:\n%s", ErrTransitiveDepsRequired, msg.String())
 	}
 
