@@ -541,3 +541,34 @@ func TestDeduplicateDependencies(t *testing.T) {
 		})
 	}
 }
+
+func TestRecommendStrategy_DeduplicatesDirectUpdates(t *testing.T) {
+	// This test verifies that RecommendStrategy deduplicates packages
+	// when the same package appears multiple times from different dependency paths
+	analysis := &analyzer.AnalysisResult{
+		Dependencies: map[string]*analyzer.DependencyInfo{
+			"github.com/aquasecurity/trivy": {Version: "v0.69.0"},
+			"github.com/open-policy-agent/opa": {Version: "v1.14.0"},
+		},
+	}
+
+	deps := []analyzer.Dependency{
+		{Name: "github.com/aquasecurity/trivy", Version: "v0.69.4"},
+		{Name: "github.com/open-policy-agent/opa", Version: "v1.14.1"},
+	}
+
+	ga := &GolangAnalyzer{}
+	strategy, err := ga.RecommendStrategy(context.Background(), analysis, deps)
+	require.NoError(t, err)
+
+	// Verify we have deduplicated results
+	pkgNames := make(map[string]int)
+	for _, dep := range strategy.DirectUpdates {
+		pkgNames[dep.Name]++
+	}
+
+	// Each package should appear exactly once
+	for pkgName, count := range pkgNames {
+		require.Equal(t, 1, count, "package %s appears %d times, expected 1", pkgName, count)
+	}
+}

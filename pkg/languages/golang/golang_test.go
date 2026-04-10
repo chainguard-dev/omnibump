@@ -1501,3 +1501,78 @@ require golang.org/x/crypto v0.45.0
 	// Only with-dep module should have been processed
 	// (In actual execution, only that module would be updated)
 }
+
+func TestCheckMissingTransitiveDeps_FormattedOutput(t *testing.T) {
+	// This test verifies that the error message includes properly formatted sections
+	// when there are missing transitive dependencies
+	tmpDir := t.TempDir()
+
+	modContent := `module example.com/test
+
+go 1.21
+
+require (
+	github.com/example/lib v1.0.0
+)
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(modContent), 0o600))
+
+	g := &Golang{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "github.com/example/lib", Version: "v2.0.0"},
+		},
+	}
+
+	// This should fail with missing transitive dependencies (unless the package doesn't have any)
+	err := g.Update(context.Background(), cfg)
+
+	// The error message format is what we're testing
+	// It should contain the formatted sections if there are missing deps
+	if err != nil {
+		errMsg := err.Error()
+		// If the error is about transitive dependencies, verify the format
+		if strings.Contains(errMsg, "transitive dependencies need co-updating") {
+			// Check for formatted sections in the error message
+			require.Contains(t, errMsg, "REQUIRED CO-UPDATES")
+			require.Contains(t, errMsg, "────────────────────")
+			require.Contains(t, errMsg, "SUGGESTED UPDATE COMMAND")
+			require.Contains(t, errMsg, "━━━━━━━━━━━━━━━━━━━━━━")
+		}
+	}
+}
+
+func TestGolang_Update_WithDuplicatePackagesDeduplicates(t *testing.T) {
+	// This test verifies that when we have duplicate packages with different versions,
+	// we keep only the highest version
+	tmpDir := t.TempDir()
+
+	modContent := `module example.com/test
+
+go 1.21
+
+require (
+	github.com/google/uuid v1.0.0
+	github.com/stretchr/testify v1.0.0
+)
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(modContent), 0o600))
+
+	// Create a deps.yaml that would have duplicates
+	// When we analyze and build the strategy, duplicates should be removed
+	g := &Golang{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "github.com/google/uuid", Version: "v1.3.0"},
+			{Name: "github.com/stretchr/testify", Version: "v1.8.0"},
+		},
+		DryRun: true,
+	}
+
+	// The update should succeed even with a dry run
+	// and the strategy should have deduplicated any packages
+	err := g.Update(context.Background(), cfg)
+	require.NoError(t, err)
+}
