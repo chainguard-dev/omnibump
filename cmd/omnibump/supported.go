@@ -50,11 +50,15 @@ func runSupported(_ *cobra.Command, _ []string) error { // Both unused but requi
 			fmt.Printf("  Detects: %v\n", manifestFiles)
 		}
 
-		// For Java, show supported build tools
+		// For languages with build tools, show supported build tools
 		if langName == "java" {
 			fmt.Println("  Build Tools:")
 			fmt.Println("    - Maven (pom.xml)")
 			fmt.Println("    - Gradle (build.gradle, build.gradle.kts)")
+		}
+		if langName == "php" {
+			fmt.Println("  Build Tools:")
+			fmt.Println("    - Composer (composer.json, composer.lock)")
 		}
 
 		fmt.Println()
