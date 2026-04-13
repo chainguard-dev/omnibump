@@ -547,7 +547,7 @@ func TestRecommendStrategy_DeduplicatesDirectUpdates(t *testing.T) {
 	// when the same package appears multiple times from different dependency paths
 	analysis := &analyzer.AnalysisResult{
 		Dependencies: map[string]*analyzer.DependencyInfo{
-			"github.com/aquasecurity/trivy": {Version: "v0.69.0"},
+			"github.com/aquasecurity/trivy":    {Version: "v0.69.0"},
 			"github.com/open-policy-agent/opa": {Version: "v1.14.0"},
 		},
 	}

@@ -1527,7 +1527,6 @@ require (
 
 	// This should fail with missing transitive dependencies (unless the package doesn't have any)
 	err := g.Update(context.Background(), cfg)
-
 	// The error message format is what we're testing
 	// It should contain the formatted sections if there are missing deps
 	if err != nil {
