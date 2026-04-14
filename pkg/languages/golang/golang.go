@@ -434,6 +434,10 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 	// across multiple packages. This significantly reduces round trips when updating many packages.
 	cache := newGoModCache()
 
+	// Pre-fetch all dependencies in one batch to minimize HTTP calls.
+	// For 50 dependencies and 10 package updates: 50 calls total instead of up to 500.
+	preFetchDependencies(ctx, modFile, cache)
+
 	for name, pkg := range filtered {
 		missingDeps, err := CheckTransitiveRequirements(ctx, name, pkg.Version, modFile)
 		if err != nil {
