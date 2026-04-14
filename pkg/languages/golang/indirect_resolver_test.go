@@ -720,3 +720,33 @@ require (
 		_ = issues // Just verify we can call it without error
 	})
 }
+
+func TestGoModCache_BasicOperations(t *testing.T) {
+	cache := newGoModCache()
+
+	// Test that cache starts empty
+	require.Equal(t, 0, len(cache.cache))
+
+	// Test key generation
+	key := cache.key("github.com/example/pkg", "v1.0.0")
+	require.Equal(t, "github.com/example/pkg@v1.0.0", key)
+
+	// Test get on empty cache returns false
+	_, exists := cache.get("github.com/example/pkg", "v1.0.0")
+	require.False(t, exists)
+
+	// Test set stores the value
+	testValue := &modfile.File{}
+	cache.set("github.com/example/pkg", "v1.0.0", testValue)
+	require.Equal(t, 1, len(cache.cache))
+
+	// Test get retrieves the value
+	retrieved, exists := cache.get("github.com/example/pkg", "v1.0.0")
+	require.True(t, exists)
+	require.Same(t, testValue, retrieved)
+
+	// Test multiple packages can be cached
+	testValue2 := &modfile.File{}
+	cache.set("github.com/other/pkg", "v2.0.0", testValue2)
+	require.Equal(t, 2, len(cache.cache))
+}
