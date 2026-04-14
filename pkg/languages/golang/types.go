@@ -14,6 +14,9 @@ type Package struct {
 	Replace bool
 	Require bool
 	Index   int
+	// Force allows downgrading a package to a version older than the current one.
+	// By default, downgrade attempts are skipped with a warning.
+	Force bool
 }
 
 // UpdateConfig contains configuration options for the Go update process.

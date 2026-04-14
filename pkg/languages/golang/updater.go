@@ -39,9 +39,6 @@ var (
 	// ErrMainModuleBump is returned when trying to bump the main module.
 	ErrMainModuleBump = errors.New("bumping the main module is not allowed")
 
-	// ErrValidationFailed is returned when package validation fails.
-	ErrValidationFailed = errors.New("validation failed")
-
 	// ErrUnexpectedGoVersion is returned when go version output has unexpected format.
 	ErrUnexpectedGoVersion = errors.New("unexpected format of go version output")
 
@@ -174,31 +171,30 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 		}
 	}
 
-	// Bump the require or new get packages in the specified order
-	for _, k := range depsBumpOrdered {
-		pkg := pkgVersions[k]
-		if pkg == nil {
-			continue
-		}
-		// Skip the replace that have been updated above
-		if pkg.Replace {
-			continue
-		}
+	// First pass: run go get for new dependencies and non-semver versions.
+	// go get writes directly to disk, so it must complete before any in-memory
+	// AddRequire edits are applied to avoid overwriting its changes.
+	hasGoGetUpdates, err := performGoGetPass(ctx, log, cfg.Modroot, depsBumpOrdered, pkgVersions)
+	if err != nil {
+		return nil, err
+	}
 
-		log.Infof("Update package: %s", k)
-		if err := updateRequirePackage(ctx, log, pkg, modFile, cfg.Modroot); err != nil {
-			return nil, err
+	// Re-parse go.mod after go get writes so AddRequire edits are based on the
+	// updated file, not the pre-go-get snapshot.
+	if hasGoGetUpdates {
+		modFile, _, err = ParseGoModfile(modpath)
+		if err != nil {
+			return nil, fmt.Errorf("unable to parse go.mod after go get updates: %w", err)
 		}
+	}
+
+	// Second pass: apply in-memory AddRequire edits for existing semver deps.
+	hasDirectEdits, err := performAddRequirePass(log, depsBumpOrdered, pkgVersions, modFile)
+	if err != nil {
+		return nil, err
 	}
 
 	// Write the updated go.mod file back to disk (only if we used AddRequire)
-	hasDirectEdits := false
-	for _, pkg := range pkgVersions {
-		if !pkg.Replace && pkg.Require && semver.IsValid(pkg.Version) {
-			hasDirectEdits = true
-			break
-		}
-	}
 	if hasDirectEdits {
 		newContent, err := modFile.Format()
 		if err != nil {
@@ -233,10 +229,10 @@ func CheckPackageValues(ctx context.Context, pkgVersions map[string]*Package, mo
 	log := clog.FromContext(ctx)
 
 	if _, ok := pkgVersions[modFile.Module.Mod.Path]; ok {
-		return fmt.Errorf("%w: '%s'", ErrMainModuleBump, modFile.Module.Mod.Path)
+		return fmt.Errorf("%w: %q", ErrMainModuleBump, modFile.Module.Mod.Path)
 	}
 
-	errorPkgVer := make(map[string]pkgVersion)
+	warnPkgVer := make(map[string]pkgVersion)
 	// Track which packages have replace directives (replace takes precedence over require in Go)
 	replacedPackages := make(map[string]bool)
 
@@ -245,7 +241,7 @@ func CheckPackageValues(ctx context.Context, pkgVersions map[string]*Package, mo
 		if replace == nil {
 			continue
 		}
-		processReplaceDirective(log, replace, pkgVersions, replacedPackages, errorPkgVer)
+		processReplaceDirective(log, replace, pkgVersions, replacedPackages, warnPkgVer)
 	}
 
 	// Detect if the list of packages contain any require statement for the package
@@ -254,23 +250,19 @@ func CheckPackageValues(ctx context.Context, pkgVersions map[string]*Package, mo
 		if require == nil {
 			continue
 		}
-		processRequireDirective(log, require, pkgVersions, replacedPackages, errorPkgVer)
+		processRequireDirective(log, require, pkgVersions, replacedPackages, warnPkgVer)
 	}
 
-	if len(errorPkgVer) > 0 {
-		var errorMsg strings.Builder
-		errorMsg.WriteString("The following errors were found:\n")
-		for pkg, ver := range errorPkgVer {
-			fmt.Fprintf(&errorMsg, "  - package %s: requested version '%s', is already at version '%s'\n", pkg, ver.ReqVersion, ver.AvailableVersion)
-		}
-		return fmt.Errorf("%w:\n%s", ErrValidationFailed, errorMsg.String())
+	for pkg, ver := range warnPkgVer {
+		clog.WarnContextf(ctx, "Package %s: requested version %q is older than current version %q, skipping", pkg, ver.ReqVersion, ver.AvailableVersion)
+		delete(pkgVersions, pkg)
 	}
 
 	return nil
 }
 
 // processReplaceDirective processes a single replace directive for package validation.
-func processReplaceDirective(log *clog.Logger, replace *modfile.Replace, pkgVersions map[string]*Package, replacedPackages map[string]bool, errorPkgVer map[string]pkgVersion) {
+func processReplaceDirective(log *clog.Logger, replace *modfile.Replace, pkgVersions map[string]*Package, replacedPackages map[string]bool, warnPkgVer map[string]pkgVersion) {
 	pkg, ok := pkgVersions[replace.New.Path]
 	if !ok {
 		return
@@ -288,8 +280,12 @@ func processReplaceDirective(log *clog.Logger, replace *modfile.Replace, pkgVers
 		return
 	}
 
+	if pkg.Force {
+		return
+	}
+
 	if semver.Compare(replace.New.Version, pkg.Version) > 0 {
-		errorPkgVer[replace.New.Path] = pkgVersion{
+		warnPkgVer[replace.New.Path] = pkgVersion{
 			ReqVersion:       pkg.Version,
 			AvailableVersion: replace.New.Version,
 		}
@@ -297,7 +293,7 @@ func processReplaceDirective(log *clog.Logger, replace *modfile.Replace, pkgVers
 }
 
 // processRequireDirective processes a single require directive for package validation.
-func processRequireDirective(log *clog.Logger, require *modfile.Require, pkgVersions map[string]*Package, replacedPackages map[string]bool, errorPkgVer map[string]pkgVersion) {
+func processRequireDirective(log *clog.Logger, require *modfile.Require, pkgVersions map[string]*Package, replacedPackages map[string]bool, warnPkgVer map[string]pkgVersion) {
 	pkg, ok := pkgVersions[require.Mod.Path]
 	if !ok {
 		return
@@ -315,39 +311,32 @@ func processRequireDirective(log *clog.Logger, require *modfile.Require, pkgVers
 		return
 	}
 
+	if pkg.Force {
+		return
+	}
+
 	if semver.Compare(require.Mod.Version, pkg.Version) <= 0 {
 		return
 	}
 
-	// Check if we need to update or add new error
-	if existingPkg, exists := errorPkgVer[require.Mod.Path]; exists {
+	// Track the highest known current version for this package across multiple require entries
+	if existingPkg, exists := warnPkgVer[require.Mod.Path]; exists {
 		if semver.Compare(require.Mod.Version, existingPkg.AvailableVersion) > 0 {
-			errorPkgVer[require.Mod.Path] = pkgVersion{
+			warnPkgVer[require.Mod.Path] = pkgVersion{
 				ReqVersion:       pkg.Version,
 				AvailableVersion: require.Mod.Version,
 			}
 		}
 	} else {
-		errorPkgVer[require.Mod.Path] = pkgVersion{
+		warnPkgVer[require.Mod.Path] = pkgVersion{
 			ReqVersion:       pkg.Version,
 			AvailableVersion: require.Mod.Version,
 		}
 	}
 }
 
-// updateRequirePackage updates a single require package using either AddRequire or go get.
-func updateRequirePackage(ctx context.Context, log *clog.Logger, pkg *Package, modFile *modfile.File, modroot string) error {
-	useDirectEdit := pkg.Require && semver.IsValid(pkg.Version)
-
-	if useDirectEdit {
-		log.Infof("Updating existing require with AddRequire ...")
-		if err := modFile.AddRequire(pkg.Name, pkg.Version); err != nil {
-			return fmt.Errorf("failed to update require for %s@%s: %w", pkg.Name, pkg.Version, err)
-		}
-		return nil
-	}
-
-	// For new dependencies or commit hashes, use go get
+// goGetPackage runs go get for a package that is either a new dependency or uses a non-semver version.
+func goGetPackage(ctx context.Context, log *clog.Logger, pkg *Package, modroot string) error {
 	if !pkg.Require {
 		log.Infof("Running go get for new dependency ...")
 	} else {
@@ -357,6 +346,56 @@ func updateRequirePackage(ctx context.Context, log *clog.Logger, pkg *Package, m
 		return fmt.Errorf("failed to run 'go get': %w with output: %v", err, output)
 	}
 	return nil
+}
+
+// addRequirePackage updates an existing require directive in-memory via AddRequire.
+func addRequirePackage(log *clog.Logger, pkg *Package, modFile *modfile.File) error {
+	log.Infof("Updating existing require with AddRequire ...")
+	if err := modFile.AddRequire(pkg.Name, pkg.Version); err != nil {
+		return fmt.Errorf("failed to update require for %s@%s: %w", pkg.Name, pkg.Version, err)
+	}
+	return nil
+}
+
+// performGoGetPass runs go get for packages that need it (new deps or non-semver versions).
+func performGoGetPass(ctx context.Context, log *clog.Logger, modroot string, depsBumpOrdered []string, pkgVersions map[string]*Package) (bool, error) {
+	hasGoGetUpdates := false
+	for _, k := range depsBumpOrdered {
+		pkg := pkgVersions[k]
+		if pkg == nil || pkg.Replace {
+			continue
+		}
+		if pkg.Require && semver.IsValid(pkg.Version) {
+			// Handled in the AddRequire pass below.
+			continue
+		}
+		log.Infof("Update package: %s", k)
+		if err := goGetPackage(ctx, log, pkg, modroot); err != nil {
+			return false, err
+		}
+		hasGoGetUpdates = true
+	}
+	return hasGoGetUpdates, nil
+}
+
+// performAddRequirePass applies in-memory AddRequire edits for existing semver deps.
+func performAddRequirePass(log *clog.Logger, depsBumpOrdered []string, pkgVersions map[string]*Package, modFile *modfile.File) (bool, error) {
+	hasDirectEdits := false
+	for _, k := range depsBumpOrdered {
+		pkg := pkgVersions[k]
+		if pkg == nil || pkg.Replace {
+			continue
+		}
+		if !pkg.Require || !semver.IsValid(pkg.Version) {
+			continue
+		}
+		log.Infof("Update package: %s", k)
+		if err := addRequirePackage(log, pkg, modFile); err != nil {
+			return false, err
+		}
+		hasDirectEdits = true
+	}
+	return hasDirectEdits, nil
 }
 
 // verifyAndFinalize verifies package versions and handles final tasks.
@@ -375,6 +414,13 @@ func verifyAndFinalize(ctx context.Context, modpath string, pkgVersions map[stri
 			return nil, fmt.Errorf("%w: package %s with %s is less than the desired version %s", ErrPackageDowngrade, pkg.Name, verStr, pkg.Version)
 		}
 		if verStr == "" {
+			if cfg.Tidy {
+				// go mod tidy may remove a package when a dependency migrates to a
+				// newer major version path (e.g. containerd/v2 replaces containerd).
+				// The package is already covered by the updated dependency, so skip it.
+				log.Warnf("Package %s not found in go.mod after tidy; it may have been superseded by a major version upgrade from another updated dependency. Skipping.", pkg.Name)
+				continue
+			}
 			return nil, fmt.Errorf("%w: package %s. Please remove the package or add it to the list of 'replaces'", ErrPackageNotFound, pkg.Name)
 		}
 	}

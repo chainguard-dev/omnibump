@@ -20,6 +20,7 @@ import (
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/golang" // Register Go
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/java"   // Register Java (Maven, Gradle, etc.)
+	_ "github.com/chainguard-dev/omnibump/pkg/languages/php"    // Register PHP (Composer, etc.)
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/rust"   // Register Rust
 	charmlog "github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
