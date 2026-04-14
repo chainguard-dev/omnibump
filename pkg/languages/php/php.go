@@ -3,8 +3,6 @@ Copyright 2026 Chainguard, Inc.
 SPDX-License-Identifier: Apache-2.0
 */
 
-// Package php implements omnibump support for PHP projects.
-// Supports multiple build tools (Composer, etc.) through a unified interface.
 package php
 
 import (

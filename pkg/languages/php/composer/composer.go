@@ -3,7 +3,6 @@ Copyright 2026 Chainguard, Inc.
 SPDX-License-Identifier: Apache-2.0
 */
 
-// Package composer implements Composer build tool support for PHP projects.
 package composer
 
 import (
