@@ -430,6 +430,10 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 	allMissingDeps := make(map[string]MissingDependency)
 	apiCompatibilityAlerts := make(map[string]bool)
 
+	// Create a cache for go.mod files to reduce HTTP requests when checking API compatibility
+	// across multiple packages. This significantly reduces round trips when updating many packages.
+	cache := newGoModCache()
+
 	for name, pkg := range filtered {
 		missingDeps, err := CheckTransitiveRequirements(ctx, name, pkg.Version, modFile)
 		if err != nil {
@@ -439,7 +443,7 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 		collectMissingDeps(ctx, missingDeps, packagesBeingUpdated, allMissingDeps)
 
 		// Also check for API compatibility issues
-		apiIssues, err := CheckAPICompatibility(ctx, name, pkg.Version, modFile)
+		apiIssues, err := CheckAPICompatibilityWithCache(ctx, name, pkg.Version, modFile, cache)
 		if err != nil {
 			log.Debugf("Could not check API compatibility for %s@%s: %v", name, pkg.Version, err)
 		} else {
