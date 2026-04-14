@@ -279,6 +279,7 @@ func CheckIfDirectParentHasFix(
 // when searching for one that brings in the required indirect dependency. Packages like
 // github.com/elastic/beats/v7 can have thousands of pseudo-versions, and checking each
 // requires an HTTP round-trip, which would cause the analysis to hang indefinitely.
+// TODO: Consider batching or parallelizing HTTP requests to the Go proxy to improve performance.
 const maxVersionsToCheck = 50
 
 // findVersionWithIndirectDep searches through versions to find one that has the required indirect dependency.
