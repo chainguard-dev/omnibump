@@ -18,6 +18,7 @@ import (
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 	"github.com/chainguard-dev/omnibump/pkg/languages/golang"
 	"github.com/chainguard-dev/omnibump/pkg/languages/java"
+	"github.com/chainguard-dev/omnibump/pkg/languages/php"
 	"github.com/chainguard-dev/omnibump/pkg/languages/rust"
 	"github.com/ghodss/yaml"
 	"github.com/spf13/cobra"
@@ -132,6 +133,17 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		projectAnalyzer = &golang.GolangAnalyzer{}
 	case "rust":
 		projectAnalyzer = &rust.RustAnalyzer{}
+	case "php":
+		// Get the PHP language and detect build tool
+		phpLang := &php.PHP{}
+		buildTool, err := phpLang.GetBuildTool(ctx, projectPath)
+		if err != nil {
+			return fmt.Errorf("failed to detect PHP build tool: %w", err)
+		}
+		projectAnalyzer = buildTool.GetAnalyzer()
+		if projectAnalyzer == nil {
+			return fmt.Errorf("%w for build tool: %s", ErrAnalyzerNotAvailable, buildTool.Name())
+		}
 	default:
 		return fmt.Errorf("%w for language: %s", ErrAnalysisNotImplemented, detectedLang)
 	}
