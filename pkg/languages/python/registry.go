@@ -164,7 +164,7 @@ func (r *VersionResolver) get(ctx context.Context, urlStr string) ([]byte, error
 		}
 	}
 
-	resp, err := r.httpClient.Do(req)
+	resp, err := r.httpClient.Do(req) // #nosec G704 - URL from Chainguard registry or PyPI base URL
 	if err != nil {
 		return nil, err
 	}

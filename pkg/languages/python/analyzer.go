@@ -85,20 +85,17 @@ func (a *Analyzer) AnalyzeRemote(ctx context.Context, files map[string][]byte) (
 			if err != nil {
 				return nil, err
 			}
-			tmpPath := filepath.Clean(tmp.Name())
-			if _, err := tmp.Write(data); err != nil {
-				_ = tmp.Close()
-				if rmErr := os.Remove(tmpPath); rmErr != nil {
-					log.Warnf("failed to remove temp file: %v", rmErr)
-				}
-				return nil, err
-			}
-			_ = tmp.Close()
+			tmpPath := tmp.Name()
 			defer func() {
 				if err := os.Remove(tmpPath); err != nil {
 					log.Warnf("failed to remove temp file: %v", err)
 				}
 			}()
+			if _, err := tmp.Write(data); err != nil {
+				_ = tmp.Close()
+				return nil, err
+			}
+			_ = tmp.Close()
 
 			bt, _ = DetectBuildToolFromPyproject(tmpPath)
 			specs, _ = ParsePyprojectDeps(data, bt)
