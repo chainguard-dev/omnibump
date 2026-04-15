@@ -8,10 +8,9 @@ package python
 import (
 	"testing"
 
+	"github.com/chainguard-dev/omnibump/pkg/languages"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/chainguard-dev/omnibump/pkg/languages"
 )
 
 // --- parseAndValidateVenvSpecs ---
