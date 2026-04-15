@@ -13,11 +13,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 )
+
+// venvPkgNameRe validates PEP 503 normalized package names.
+// Matches names like "requests", "python-dateutil", "my_pkg123" but rejects "-invalid", "pkg-" etc.
+var venvPkgNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$`)
 
 // updateVenv upgrades packages in a staged Python venv using uv pip install or the venv's pip.
 // Validates that all versions use == pinning, rejects downgrades, and verifies the environment
@@ -153,11 +158,23 @@ type venvSpecifier struct {
 	Version string
 }
 
-// parseAndValidateVenvSpecs validates that all dependencies use == pinning and returns parsed specs.
+// parseAndValidateVenvSpecs validates that all dependencies use == pinning, have valid package names,
+// and valid versions. Rejects package names that could be interpreted as command-line options.
 func parseAndValidateVenvSpecs(deps []languages.Dependency) ([]venvSpecifier, error) {
 	specs := make([]venvSpecifier, 0, len(deps))
 
 	for _, dep := range deps {
+		// Reject package names starting with '-' to prevent option injection
+		if strings.HasPrefix(dep.Name, "-") {
+			return nil, fmt.Errorf("%w: %q (cannot start with '-')", ErrVenvInvalidPackageName, dep.Name)
+		}
+
+		// Normalize and validate package name against PEP 503 rules
+		normName := normalizePkgName(dep.Name)
+		if !venvPkgNameRe.MatchString(normName) {
+			return nil, fmt.Errorf("%w: %q (must match PEP 503 format)", ErrVenvInvalidPackageName, dep.Name)
+		}
+
 		// Validate == pinning
 		if !strings.HasPrefix(dep.Version, "==") {
 			return nil, fmt.Errorf("%w: %s@%s (use 'pkg==X.Y.Z')", ErrVenvInvalidPinning, dep.Name, dep.Version)
@@ -166,6 +183,11 @@ func parseAndValidateVenvSpecs(deps []languages.Dependency) ([]venvSpecifier, er
 		version := strings.TrimPrefix(dep.Version, "==")
 		if version == "" {
 			return nil, fmt.Errorf("%w: %s", ErrVenvEmptyVersion, dep.Name)
+		}
+
+		// Validate version format (basic check - no leading dashes or spaces)
+		if strings.HasPrefix(version, "-") || strings.Contains(version, " ") {
+			return nil, fmt.Errorf("%w: %q for package %s", ErrVenvInvalidVersionFormat, version, dep.Name)
 		}
 
 		specs = append(specs, venvSpecifier{

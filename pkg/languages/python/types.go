@@ -115,7 +115,7 @@ func safeWriteFile(path string, data []byte) error {
 	switch base {
 	case ManifestPyprojectTOML, ManifestRequirementsTxt, ManifestSetupCfg, ManifestSetupPy, ManifestPipfile:
 		// Path has been validated and cleaned, write to file
-		//nolint:gosec // Path is validated: absolute, cleaned, and filename verified
+		// #nosec G703 - Path is validated: absolute, cleaned, and filename verified against whitelist
 		return os.WriteFile(cleanPath, data, 0o600)
 	default:
 		return fmt.Errorf("%w: %s", ErrInvalidManifestFile, base)
@@ -146,6 +146,12 @@ var (
 
 	// ErrVenvEmptyVersion is returned when a version is empty.
 	ErrVenvEmptyVersion = errors.New("empty version for package")
+
+	// ErrVenvInvalidPackageName is returned when a package name is invalid (e.g., starts with '-').
+	ErrVenvInvalidPackageName = errors.New("invalid package name")
+
+	// ErrVenvInvalidVersionFormat is returned when a version format is invalid.
+	ErrVenvInvalidVersionFormat = errors.New("invalid version format")
 
 	// ErrPipInstallFailed is returned when pip install fails.
 	ErrPipInstallFailed = errors.New("pip install failed")

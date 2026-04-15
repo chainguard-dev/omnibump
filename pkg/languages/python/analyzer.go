@@ -88,7 +88,9 @@ func (a *Analyzer) AnalyzeRemote(ctx context.Context, files map[string][]byte) (
 			tmpPath := filepath.Clean(tmp.Name())
 			if _, err := tmp.Write(data); err != nil {
 				_ = tmp.Close()
-				_ = os.Remove(tmpPath)
+				if rmErr := os.Remove(tmpPath); rmErr != nil {
+					log.Warnf("failed to remove temp file: %v", rmErr)
+				}
 				return nil, err
 			}
 			_ = tmp.Close()
