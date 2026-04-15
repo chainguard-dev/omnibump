@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -148,14 +149,19 @@ func (r *VersionResolver) versionExistsInPyPI(ctx context.Context, pkg, version 
 	return exists, nil
 }
 
-// get performs a GET request, adding the Bearer token if configured.
-func (r *VersionResolver) get(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// get performs a GET request, adding the Bearer token only to Chainguard registry requests.
+func (r *VersionResolver) get(ctx context.Context, urlStr string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 	if err != nil {
 		return nil, err
 	}
-	if r.token != "" {
-		req.Header.Set("Authorization", "Bearer "+r.token)
+
+	// Only add the token to requests to the Chainguard registry, not to PyPI or other hosts
+	if r.token != "" && r.registryBaseURL != "" {
+		registryURL, err := url.Parse(r.registryBaseURL)
+		if err == nil && registryURL.Hostname() == req.URL.Hostname() {
+			req.Header.Set("Authorization", "Bearer "+r.token)
+		}
 	}
 
 	resp, err := r.httpClient.Do(req)
@@ -167,10 +173,10 @@ func (r *VersionResolver) get(ctx context.Context, url string) ([]byte, error) {
 	}()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("%w: %s", ErrHTTPNotFound, url)
+		return nil, fmt.Errorf("%w: %s", ErrHTTPNotFound, urlStr)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: status %d for %s", ErrUnexpectedHTTPStatus, resp.StatusCode, url)
+		return nil, fmt.Errorf("%w: status %d for %s", ErrUnexpectedHTTPStatus, resp.StatusCode, urlStr)
 	}
 	return io.ReadAll(resp.Body)
 }
