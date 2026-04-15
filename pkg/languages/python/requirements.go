@@ -71,6 +71,9 @@ func UpdateRequirement(path, packageName, newVersion string) error {
 	if err := validatePythonVersion(newVersion); err != nil {
 		return err
 	}
+	if err := validateManifestPath(path); err != nil {
+		return err
+	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {

@@ -8,22 +8,50 @@ SPDX-License-Identifier: Apache-2.0
 // scikit-build-core, setuptools) through a unified interface.
 package python
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"path/filepath"
+)
+
+// Manifest file type constants.
+const (
+	// ManifestPyprojectTOML is the pyproject.toml manifest type.
+	ManifestPyprojectTOML = "pyproject.toml"
+	// ManifestRequirementsTxt is the requirements.txt manifest type.
+	ManifestRequirementsTxt = "requirements.txt"
+	// ManifestSetupCfg is the setup.cfg manifest type.
+	ManifestSetupCfg = "setup.cfg"
+	// ManifestSetupPy is the setup.py manifest type.
+	ManifestSetupPy = "setup.py"
+	// ManifestPipfile is the Pipfile manifest type.
+	ManifestPipfile = "Pipfile"
+)
 
 // BuildTool identifies the Python build system in use.
 type BuildTool string
 
 const (
-	BuildToolPip            BuildTool = "pip"
-	BuildToolUV             BuildTool = "uv"
-	BuildToolHatch          BuildTool = "hatch"
-	BuildToolPoetry         BuildTool = "poetry"
-	BuildToolPDM            BuildTool = "pdm"
-	BuildToolMaturin        BuildTool = "maturin"
-	BuildToolSetuptools     BuildTool = "setuptools"
-	BuildToolScikitBuild    BuildTool = "scikit-build"
+	// BuildToolPip indicates the pip build tool.
+	BuildToolPip BuildTool = "pip"
+	// BuildToolUV indicates the uv build tool.
+	BuildToolUV BuildTool = "uv"
+	// BuildToolHatch indicates the hatch build tool.
+	BuildToolHatch BuildTool = "hatch"
+	// BuildToolPoetry indicates the poetry build tool.
+	BuildToolPoetry BuildTool = "poetry"
+	// BuildToolPDM indicates the pdm build tool.
+	BuildToolPDM BuildTool = "pdm"
+	// BuildToolMaturin indicates the maturin build tool.
+	BuildToolMaturin BuildTool = "maturin"
+	// BuildToolSetuptools indicates the setuptools build tool.
+	BuildToolSetuptools BuildTool = "setuptools"
+	// BuildToolScikitBuild indicates the scikit-build tool.
+	BuildToolScikitBuild BuildTool = "scikit-build"
+	// BuildToolScikitBuildCore indicates the scikit-build-core tool.
 	BuildToolScikitBuildCore BuildTool = "scikit-build-core"
-	BuildToolUnknown        BuildTool = "unknown"
+	// BuildToolUnknown indicates an unknown build tool.
+	BuildToolUnknown BuildTool = "unknown"
 )
 
 // ManifestInfo describes a detected Python manifest file.
@@ -48,6 +76,24 @@ type VersionSpec struct {
 	RawLine string
 }
 
+// validateManifestPath checks that a path is safe for reading/writing.
+// Paths must be absolute and exist. Call this before ReadFile/WriteFile operations.
+func validateManifestPath(path string) error {
+	// Path must be absolute
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("%w: %s", ErrInvalidVersion, path)
+	}
+	// Path must have one of the known manifest filenames
+	base := filepath.Base(path)
+	switch base {
+	case ManifestPyprojectTOML, ManifestRequirementsTxt, ManifestSetupCfg, ManifestSetupPy, ManifestPipfile:
+		// Valid manifest filename
+	default:
+		return fmt.Errorf("%w: %s", ErrUnsupportedManifestType, base)
+	}
+	return nil
+}
+
 var (
 	// ErrManifestNotFound is returned when no Python manifest is found.
 	ErrManifestNotFound = errors.New("no Python manifest file found")
@@ -60,4 +106,43 @@ var (
 
 	// ErrVersionResolverUnavailable is returned when no registry can resolve a version.
 	ErrVersionResolverUnavailable = errors.New("version resolver unavailable")
+
+	// ErrUnsupportedManifestType is returned for unsupported manifest types.
+	ErrUnsupportedManifestType = errors.New("unsupported manifest type")
+
+	// ErrVenvDowngrade is returned when a version downgrade is attempted.
+	ErrVenvDowngrade = errors.New("downgrade rejected")
+
+	// ErrVenvInvalidPinning is returned when venv mode requires == pinning.
+	ErrVenvInvalidPinning = errors.New("venv mode requires == pinning")
+
+	// ErrVenvEmptyVersion is returned when a version is empty.
+	ErrVenvEmptyVersion = errors.New("empty version for package")
+
+	// ErrPipInstallFailed is returned when pip install fails.
+	ErrPipInstallFailed = errors.New("pip install failed")
+
+	// ErrPipCheckFailed is returned when pip check fails.
+	ErrPipCheckFailed = errors.New("pip check failed")
+
+	// ErrSetupPyReadOnly is returned when attempting to modify setup.py.
+	ErrSetupPyReadOnly = errors.New("setup.py is read-only: omnibump cannot safely update setup.py; migrate to setup.cfg or pyproject.toml")
+
+	// ErrVersionNotFound is returned when no versions are found in registry.
+	ErrVersionNotFound = errors.New("no versions found in registry")
+
+	// ErrInvalidVersionResponse is returned when version response is invalid.
+	ErrInvalidVersionResponse = errors.New("invalid version in response")
+
+	// ErrHTTPNotFound is returned for 404 HTTP responses.
+	ErrHTTPNotFound = errors.New("not found")
+
+	// ErrUnexpectedHTTPStatus is returned for unexpected HTTP status codes.
+	ErrUnexpectedHTTPStatus = errors.New("unexpected HTTP status")
+
+	// ErrParseVersionFailed is returned when version parsing fails.
+	ErrParseVersionFailed = errors.New("failed to parse version number")
+
+	// ErrNoVersionNumber is returned when a string has no leading digits.
+	ErrNoVersionNumber = errors.New("not a number")
 )

@@ -120,7 +120,7 @@ func TestIsVersionLower_DowngradeDetection(t *testing.T) {
 	// If target < current, it's a downgrade
 	tests := []struct {
 		current, target string
-		isDowngrade    bool
+		isDowngrade     bool
 	}{
 		{"46.0.6", "44.0.0", true},  // downgrade
 		{"46.0.6", "46.0.6", false}, // same version
@@ -142,22 +142,19 @@ func TestIsVersionLower_DowngradeDetection(t *testing.T) {
 // --- selectVenvInstaller ---
 
 func TestSelectVenvInstaller_ExplicitUV(t *testing.T) {
-	installer, err := selectVenvInstaller("/tmp/venv", "uv")
-	require.NoError(t, err)
+	installer := selectVenvInstaller("/tmp/venv", "uv")
 	assert.Equal(t, "uv", installer.name)
 }
 
 func TestSelectVenvInstaller_ExplicitPip(t *testing.T) {
-	installer, err := selectVenvInstaller("/tmp/venv", "pip")
-	require.NoError(t, err)
+	installer := selectVenvInstaller("/tmp/venv", "pip")
 	assert.Equal(t, "pip", installer.name)
 }
 
 func TestSelectVenvInstaller_AutoDetect(t *testing.T) {
 	// Auto-detect with empty hint
 	// Will return uv if in PATH, else pip
-	installer, err := selectVenvInstaller("/tmp/venv", "")
-	require.NoError(t, err)
+	installer := selectVenvInstaller("/tmp/venv", "")
 	// Should be one of these
 	assert.True(t, installer.name == "uv" || installer.name == "pip")
 }
@@ -167,11 +164,11 @@ func TestSelectVenvInstaller_AutoDetect(t *testing.T) {
 func TestParseAndValidateVenvSpecs_AirflowPattern(t *testing.T) {
 	// Real airflow-3 CVE remediation pattern
 	deps := []languages.Dependency{
-		{Name: "cryptography", Version: "==46.0.6"},   // GHSA-r6ph-v2qm-q3c2
-		{Name: "pyjwt", Version: "==2.12.0"},          // CVE-2026-32597
-		{Name: "pyopenssl", Version: "==26.0.0"},      // CVE-2026-27459
-		{Name: "pygments", Version: "==2.20.0"},       // GHSA-5239-wwwm-4pmq
-		{Name: "requests", Version: "==2.33.0"},       // GHSA-gc5v-m9x4-r6x2
+		{Name: "cryptography", Version: "==46.0.6"}, // GHSA-r6ph-v2qm-q3c2
+		{Name: "pyjwt", Version: "==2.12.0"},        // CVE-2026-32597
+		{Name: "pyopenssl", Version: "==26.0.0"},    // CVE-2026-27459
+		{Name: "pygments", Version: "==2.20.0"},     // GHSA-5239-wwwm-4pmq
+		{Name: "requests", Version: "==2.33.0"},     // GHSA-gc5v-m9x4-r6x2
 	}
 
 	specs, err := parseAndValidateVenvSpecs(deps)
@@ -220,12 +217,12 @@ func TestParseVersionNumber(t *testing.T) {
 		{"10", 10, false},
 		{"123", 123, false},
 		{"46", 46, false},
-		{"46rc1", 46, false},      // pre-release suffix ignored
-		{"2a1", 2, false},         // alpha suffix ignored
-		{"0beta", 0, false},       // beta suffix ignored
-		{"", 0, true},             // empty string is error
-		{"a1", 0, true},           // no leading digits is error
-		{"rc1", 0, true},          // no leading digits is error
+		{"46rc1", 46, false}, // pre-release suffix ignored
+		{"2a1", 2, false},    // alpha suffix ignored
+		{"0beta", 0, false},  // beta suffix ignored
+		{"", 0, true},        // empty string is error
+		{"a1", 0, true},      // no leading digits is error
+		{"rc1", 0, true},     // no leading digits is error
 	}
 
 	for _, tt := range tests {

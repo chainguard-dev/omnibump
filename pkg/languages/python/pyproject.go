@@ -86,7 +86,7 @@ func parsePoetryDeps(deps map[string]interface{}) []VersionSpec {
 	return specs
 }
 
-// pep508Re matches a PEP 508 dependency string: name [extras] [specifier] [; marker]
+// pep508Re matches a PEP 508 dependency string: name [extras] [specifier] [; marker].
 var pep508Re = regexp.MustCompile(`(?i)^([A-Z0-9]([A-Z0-9._-]*[A-Z0-9])?)\s*(?:\[[^\]]*\])?\s*([><=!~^][^;]*)?`)
 
 // parsePEP508 parses a single PEP 508 specifier string.
@@ -133,6 +133,9 @@ func UpdatePyprojectDep(path, packageName, newVersion string) error {
 	if err := validatePythonVersion(newVersion); err != nil {
 		return err
 	}
+	if err := validateManifestPath(path); err != nil {
+		return err
+	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -161,7 +164,7 @@ func UpdatePyprojectDep(path, packageName, newVersion string) error {
 }
 
 // updatePEP621Dep updates a dep in [project].dependencies list.
-// Lines look like: "requests>=2.28.0",
+// Lines look like: "requests>=2.28.0".
 func updatePEP621Dep(data []byte, path, pkg, newVersion string) (bool, error) {
 	lines := strings.Split(string(data), "\n")
 	norm := normalizePkgName(pkg)
@@ -188,7 +191,7 @@ func updatePEP621Dep(data []byte, path, pkg, newVersion string) (bool, error) {
 }
 
 // updatePoetryDep updates a dep in [tool.poetry.dependencies].
-// Lines look like: requests = "^2.28.0"
+// Lines look like: requests = "^2.28.0".
 func updatePoetryDep(data []byte, path, pkg, newVersion string) (bool, error) {
 	lines := strings.Split(string(data), "\n")
 	norm := normalizePkgName(pkg)

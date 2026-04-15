@@ -85,7 +85,7 @@ func (r *VersionResolver) latestFromRegistry(ctx context.Context, pkg string) (s
 	}
 	versions := extractVersionsFromSimpleIndex(body)
 	if len(versions) == 0 {
-		return "", fmt.Errorf("no versions found for %s in registry", pkg)
+		return "", fmt.Errorf("%w: %s", ErrVersionNotFound, pkg)
 	}
 	return latestVersion(versions), nil
 }
@@ -127,7 +127,7 @@ func (r *VersionResolver) latestFromPyPI(ctx context.Context, pkg string) (strin
 		return "", fmt.Errorf("parsing PyPI response for %s: %w", pkg, err)
 	}
 	if result.Info.Version == "" {
-		return "", fmt.Errorf("no version in PyPI response for %s", pkg)
+		return "", fmt.Errorf("%w: %s", ErrInvalidVersionResponse, pkg)
 	}
 	return result.Info.Version, nil
 }
@@ -162,19 +162,21 @@ func (r *VersionResolver) get(ctx context.Context, url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("not found: %s", url)
+		return nil, fmt.Errorf("%w: %s", ErrHTTPNotFound, url)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status %d for %s", resp.StatusCode, url)
+		return nil, fmt.Errorf("%w: status %d for %s", ErrUnexpectedHTTPStatus, resp.StatusCode, url)
 	}
 	return io.ReadAll(resp.Body)
 }
 
 // wheelFilenameRe extracts the version from a PEP 425 wheel filename or sdist tarball.
-// Examples: requests-2.28.0-py3-none-any.whl, requests-2.28.0.tar.gz
+// Examples: requests-2.28.0-py3-none-any.whl, requests-2.28.0.tar.gz.
 var wheelFilenameRe = regexp.MustCompile(`-([0-9][^-/!]+?)(?:-py|\.tar\.gz|\.zip|\.whl)`)
 
 // extractVersionsFromSimpleIndex parses wheel/sdist filenames from a PEP 503 Simple Index HTML page.

@@ -20,9 +20,9 @@ import (
 
 func TestDetectManifest_Pyproject(t *testing.T) {
 	for _, tt := range []struct {
-		dir       string
-		wantTool  python.BuildTool
-		wantType  string
+		dir      string
+		wantTool python.BuildTool
+		wantType string
 	}{
 		{"testdata/hatch-pyproject", python.BuildToolHatch, "pyproject.toml"},
 		{"testdata/poetry-pyproject", python.BuildToolPoetry, "pyproject.toml"},

@@ -43,46 +43,49 @@ func DetectManifest(dir string) (*ManifestInfo, error) {
 // detectManifestWithPriority returns the highest-priority manifest file found in dir.
 // The returned ManifestInfo includes the build tool inferred from the file.
 func detectManifestWithPriority(dir string, priority []string) (*ManifestInfo, error) {
-	for _, name := range manifestPriority {
+	for _, name := range priority {
 		path := filepath.Join(dir, name)
 		if _, err := os.Stat(path); err != nil {
 			continue
 		}
 
 		info := &ManifestInfo{Path: path, Type: name}
-
-		if name == "pyproject.toml" {
-			bt, err := DetectBuildToolFromPyproject(path)
-			if err != nil {
-				bt = BuildToolUnknown
-			}
-			// Prefer uv if a uv.lock exists alongside pyproject.toml.
-			if bt == BuildToolUnknown || bt == BuildToolHatch || bt == BuildToolSetuptools {
-				if HasUVLock(dir) {
-					bt = BuildToolUV
-				}
-			}
-			if HasPDMLock(dir) && bt == BuildToolUnknown {
-				bt = BuildToolPDM
-			}
-			info.BuildTool = bt
-		} else {
-			info.BuildTool = toolForManifest(name)
-		}
-
+		info.BuildTool = detectBuildTool(name, dir, path)
 		return info, nil
 	}
 	return nil, ErrManifestNotFound
 }
 
+// detectBuildTool determines the build tool for a manifest file.
+func detectBuildTool(name, dir, path string) BuildTool {
+	if name != ManifestPyprojectTOML {
+		return toolForManifest(name)
+	}
+
+	bt, err := DetectBuildToolFromPyproject(path)
+	if err != nil {
+		bt = BuildToolUnknown
+	}
+	// Prefer uv if a uv.lock exists alongside pyproject.toml.
+	if bt == BuildToolUnknown || bt == BuildToolHatch || bt == BuildToolSetuptools {
+		if HasUVLock(dir) {
+			bt = BuildToolUV
+		}
+	}
+	if HasPDMLock(dir) && bt == BuildToolUnknown {
+		bt = BuildToolPDM
+	}
+	return bt
+}
+
 // toolForManifest returns the build tool associated with a non-pyproject manifest.
 func toolForManifest(name string) BuildTool {
 	switch name {
-	case "requirements.txt":
+	case ManifestRequirementsTxt:
 		return BuildToolPip
-	case "setup.cfg", "setup.py":
+	case ManifestSetupCfg, ManifestSetupPy:
 		return BuildToolSetuptools
-	case "Pipfile":
+	case ManifestPipfile:
 		return BuildToolPip
 	default:
 		return BuildToolUnknown

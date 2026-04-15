@@ -11,14 +11,15 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
 )
 
-// PythonAnalyzer implements analyzer.Analyzer for Python projects.
-type PythonAnalyzer struct{}
+// Analyzer implements analyzer.Analyzer for Python projects.
+type Analyzer struct{}
 
 // Analyze parses all manifest files in projectPath and returns a dependency map.
-func (a *PythonAnalyzer) Analyze(ctx context.Context, projectPath string) (*analyzer.AnalysisResult, error) {
+func (a *Analyzer) Analyze(ctx context.Context, projectPath string) (*analyzer.AnalysisResult, error) {
 	_ = ctx
 
 	absPath, err := filepath.Abs(projectPath)
@@ -61,7 +62,8 @@ func (a *PythonAnalyzer) Analyze(ctx context.Context, projectPath string) (*anal
 
 // AnalyzeRemote analyzes manifest files provided as raw bytes.
 // files is a map of filename to content (e.g. "pyproject.toml" -> bytes).
-func (a *PythonAnalyzer) AnalyzeRemote(_ context.Context, files map[string][]byte) (*analyzer.RemoteAnalysisResult, error) {
+func (a *Analyzer) AnalyzeRemote(ctx context.Context, files map[string][]byte) (*analyzer.RemoteAnalysisResult, error) {
+	log := clog.FromContext(ctx)
 	result := &analyzer.RemoteAnalysisResult{Language: "python"}
 
 	for _, name := range manifestPriority {
@@ -74,7 +76,7 @@ func (a *PythonAnalyzer) AnalyzeRemote(_ context.Context, files map[string][]byt
 		var specs []VersionSpec
 
 		switch name {
-		case "pyproject.toml":
+		case ManifestPyprojectTOML:
 			// Write to a temp file to reuse DetectBuildToolFromPyproject
 			tmp, err := os.CreateTemp("", "pyproject-*.toml")
 			if err != nil {
@@ -82,25 +84,29 @@ func (a *PythonAnalyzer) AnalyzeRemote(_ context.Context, files map[string][]byt
 			}
 			tmpPath := tmp.Name()
 			if _, err := tmp.Write(data); err != nil {
-				tmp.Close()
-				os.Remove(tmpPath)
+				_ = tmp.Close()
+				_ = os.Remove(tmpPath)
 				return nil, err
 			}
-			tmp.Close()
-			defer os.Remove(tmpPath)
+			_ = tmp.Close()
+			defer func() {
+				if err := os.Remove(tmpPath); err != nil {
+					log.Warnf("failed to remove temp file: %v", err)
+				}
+			}()
 
 			bt, _ = DetectBuildToolFromPyproject(tmpPath)
 			specs, _ = ParsePyprojectDeps(data, bt)
-		case "requirements.txt":
+		case ManifestRequirementsTxt:
 			bt = BuildToolPip
 			specs = ParseRequirements(data)
-		case "setup.cfg":
+		case ManifestSetupCfg:
 			bt = BuildToolSetuptools
 			specs = ParseSetupCfg(data)
-		case "setup.py":
+		case ManifestSetupPy:
 			bt = BuildToolSetuptools
 			specs = ParseSetupPy(data)
-		case "Pipfile":
+		case ManifestPipfile:
 			bt = BuildToolPip
 			specs, _ = ParsePipfile(data)
 		}
@@ -139,7 +145,7 @@ func (a *PythonAnalyzer) AnalyzeRemote(_ context.Context, files map[string][]byt
 
 // RecommendStrategy always recommends direct updates for Python deps.
 // Python doesn't have a "property" abstraction like Maven.
-func (a *PythonAnalyzer) RecommendStrategy(_ context.Context, _ *analyzer.AnalysisResult, deps []analyzer.Dependency) (*analyzer.Strategy, error) {
+func (a *Analyzer) RecommendStrategy(_ context.Context, _ *analyzer.AnalysisResult, deps []analyzer.Dependency) (*analyzer.Strategy, error) {
 	strategy := &analyzer.Strategy{
 		DirectUpdates:        make([]analyzer.Dependency, 0, len(deps)),
 		PropertyUpdates:      make(map[string]string),
@@ -158,21 +164,21 @@ func readSpecsFromManifest(manifest *ManifestInfo) ([]VersionSpec, error) {
 	}
 
 	switch manifest.Type {
-	case "pyproject.toml":
+	case ManifestPyprojectTOML:
 		return ParsePyprojectDeps(data, manifest.BuildTool)
-	case "requirements.txt":
+	case ManifestRequirementsTxt:
 		return ParseRequirements(data), nil
-	case "setup.cfg":
+	case ManifestSetupCfg:
 		return ParseSetupCfg(data), nil
-	case "setup.py":
+	case ManifestSetupPy:
 		return ParseSetupPy(data), nil
-	case "Pipfile":
+	case ManifestPipfile:
 		specs, err := ParsePipfile(data)
 		if err != nil {
 			return nil, err
 		}
 		return specs, nil
 	default:
-		return nil, fmt.Errorf("unsupported manifest type: %s", manifest.Type)
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedManifestType, manifest.Type)
 	}
 }

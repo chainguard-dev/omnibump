@@ -34,19 +34,9 @@ func ParseSetupCfg(data []byte) []VersionSpec {
 		}
 
 		// Also handle inline: install_requires = pkg>=1.0
-		if strings.Contains(strings.ToLower(raw), "install_requires") &&
-			strings.Contains(raw, "=") {
-			parts := strings.SplitN(raw, "=", 2)
-			if len(parts) == 2 && strings.TrimSpace(strings.ToLower(parts[0])) == "install_requires" {
-				val := strings.TrimSpace(parts[1])
-				if val != "" {
-					if spec := parsePEP508(val); spec != nil {
-						specs = append(specs, *spec)
-					}
-				}
-				inInstallRequires = true
-				continue
-			}
+		if parseInlineInstallRequires(raw, &specs) {
+			inInstallRequires = true
+			continue
 		}
 
 		if inInstallRequires {
@@ -94,6 +84,9 @@ func UpdateSetupCfg(path, packageName, newVersion string) error {
 	if err := validatePythonVersion(newVersion); err != nil {
 		return err
 	}
+	if err := validateManifestPath(path); err != nil {
+		return err
+	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -135,4 +128,23 @@ func UpdateSetupCfg(path, packageName, newVersion string) error {
 		return fmt.Errorf("%w: %s", ErrPackageNotFound, packageName)
 	}
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600)
+}
+
+// parseInlineInstallRequires handles inline install_requires = pkg>=1.0 lines.
+// Returns true if the line was parsed as an inline install_requires.
+func parseInlineInstallRequires(raw string, specs *[]VersionSpec) bool {
+	if !strings.Contains(strings.ToLower(raw), "install_requires") || !strings.Contains(raw, "=") {
+		return false
+	}
+	parts := strings.SplitN(raw, "=", 2)
+	if len(parts) != 2 || strings.TrimSpace(strings.ToLower(parts[0])) != "install_requires" {
+		return false
+	}
+	val := strings.TrimSpace(parts[1])
+	if val != "" {
+		if spec := parsePEP508(val); spec != nil {
+			*specs = append(*specs, *spec)
+		}
+	}
+	return true
 }

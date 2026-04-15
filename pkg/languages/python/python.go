@@ -7,6 +7,7 @@ package python
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/chainguard-dev/clog"
@@ -29,7 +30,7 @@ func (p *Python) Name() string {
 // Detect checks whether a Python manifest file exists in dir.
 func (p *Python) Detect(_ context.Context, dir string) (bool, error) {
 	_, err := DetectManifest(dir)
-	if err == ErrManifestNotFound {
+	if errors.Is(err, ErrManifestNotFound) {
 		return false, nil
 	}
 	if err != nil {
@@ -155,7 +156,7 @@ func (p *Python) Validate(ctx context.Context, cfg *languages.UpdateConfig) erro
 		}
 		if got != dep.Version {
 			log.Warnf("validation: %s expected %s but found %s", dep.Name, dep.Version, got)
-			return fmt.Errorf("validation failed for %s: expected %s, got %s", dep.Name, dep.Version, got)
+			return fmt.Errorf("validation failed: %s expected %s, got %s: %w", dep.Name, dep.Version, got, ErrInvalidVersion)
 		}
 		log.Debugf("validation ok: %s == %s", dep.Name, dep.Version)
 	}
@@ -174,9 +175,9 @@ func updateDepInManifest(manifest *ManifestInfo, pkg, version string) error {
 		return UpdateSetupCfg(manifest.Path, pkg, version)
 	case "Pipfile":
 		return UpdatePipfile(manifest.Path, pkg, version)
-	case "setup.py":
-		return fmt.Errorf("setup.py is read-only: omnibump cannot safely update setup.py; migrate to setup.cfg or pyproject.toml")
+	case ManifestSetupPy:
+		return ErrSetupPyReadOnly
 	default:
-		return fmt.Errorf("unsupported manifest type: %s", manifest.Type)
+		return fmt.Errorf("%w: %s", ErrUnsupportedManifestType, manifest.Type)
 	}
 }

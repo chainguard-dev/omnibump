@@ -44,10 +44,7 @@ func updateVenv(ctx context.Context, cfg *languages.UpdateConfig, venvPath strin
 		toolHint = t.(string)
 	}
 
-	installer, err := selectVenvInstaller(absVenv, toolHint)
-	if err != nil {
-		return err
-	}
+	installer := selectVenvInstaller(absVenv, toolHint)
 
 	log.Infof("Venv installer: %s", installer.name)
 
@@ -72,7 +69,7 @@ func updateVenv(ctx context.Context, cfg *languages.UpdateConfig, venvPath strin
 		if current != "" {
 			// Compare versions: reject if spec is lower than current
 			if isVersionLower(spec.Version, current) {
-				return fmt.Errorf("downgrade rejected: %s would be downgraded from %s to %s", spec.Name, current, spec.Version)
+				return fmt.Errorf("%w: %s from %s to %s", ErrVenvDowngrade, spec.Name, current, spec.Version)
 			}
 
 			if current == spec.Version {
@@ -126,10 +123,7 @@ func validateVenv(ctx context.Context, cfg *languages.UpdateConfig, venvPath str
 		toolHint = t.(string)
 	}
 
-	installer, err := selectVenvInstaller(absVenv, toolHint)
-	if err != nil {
-		return err
-	}
+	installer := selectVenvInstaller(absVenv, toolHint)
 
 	// Validate each dependency
 	for _, dep := range cfg.Dependencies {
@@ -139,12 +133,12 @@ func validateVenv(ctx context.Context, cfg *languages.UpdateConfig, venvPath str
 		}
 
 		if current == "" {
-			return fmt.Errorf("validation: package %s not found in venv", dep.Name)
+			return fmt.Errorf("validation: package %s not found in venv: %w", dep.Name, ErrPackageNotFound)
 		}
 
 		if current != dep.Version {
 			log.Warnf("validation: %s expected %s but found %s", dep.Name, dep.Version, current)
-			return fmt.Errorf("validation failed for %s: expected %s, got %s", dep.Name, dep.Version, current)
+			return fmt.Errorf("validation failed: %s expected %s, got %s: %w", dep.Name, dep.Version, current, ErrInvalidVersion)
 		}
 
 		log.Debugf("validation ok: %s == %s", dep.Name, current)
@@ -166,12 +160,12 @@ func parseAndValidateVenvSpecs(deps []languages.Dependency) ([]venvSpecifier, er
 	for _, dep := range deps {
 		// Validate == pinning
 		if !strings.HasPrefix(dep.Version, "==") {
-			return nil, fmt.Errorf("venv mode requires == pinning, got %s@%s (use 'pkg==X.Y.Z')", dep.Name, dep.Version)
+			return nil, fmt.Errorf("%w: %s@%s (use 'pkg==X.Y.Z')", ErrVenvInvalidPinning, dep.Name, dep.Version)
 		}
 
 		version := strings.TrimPrefix(dep.Version, "==")
 		if version == "" {
-			return nil, fmt.Errorf("empty version for %s", dep.Name)
+			return nil, fmt.Errorf("%w: %s", ErrVenvEmptyVersion, dep.Name)
 		}
 
 		specs = append(specs, venvSpecifier{
@@ -191,14 +185,14 @@ type venvInstaller struct {
 }
 
 // selectVenvInstaller returns the appropriate installer (uv or pip) for the venv.
-func selectVenvInstaller(venv, toolHint string) (*venvInstaller, error) {
+func selectVenvInstaller(_ string, toolHint string) *venvInstaller {
 	// If tool is explicitly specified as uv, use uv
 	if toolHint == "uv" {
 		return &venvInstaller{
 			name:    "uv",
 			install: installWithUV,
 			check:   checkWithUV,
-		}, nil
+		}
 	}
 
 	// If tool is explicitly specified as pip, use venv's pip
@@ -207,7 +201,7 @@ func selectVenvInstaller(venv, toolHint string) (*venvInstaller, error) {
 			name:    "pip",
 			install: installWithPip,
 			check:   checkWithPip,
-		}, nil
+		}
 	}
 
 	// Auto-detect: if uv is in PATH, use it; otherwise use venv's pip
@@ -217,19 +211,20 @@ func selectVenvInstaller(venv, toolHint string) (*venvInstaller, error) {
 			name:    "uv",
 			install: installWithUV,
 			check:   checkWithUV,
-		}, nil
+		}
 	}
 
 	return &venvInstaller{
 		name:    "pip",
 		install: installWithPip,
 		check:   checkWithPip,
-	}, nil
+	}
 }
 
 // installWithUV installs packages using uv pip install.
 func installWithUV(ctx context.Context, venv string, specs []venvSpecifier) error {
-	args := []string{"pip", "install", "--upgrade", "--only-binary", ":all:", "--no-deps"}
+	args := make([]string, 0, 6+len(specs))
+	args = append(args, "pip", "install", "--upgrade", "--only-binary", ":all:", "--no-deps")
 	for _, spec := range specs {
 		args = append(args, fmt.Sprintf("%s==%s", spec.Name, spec.Version))
 	}
@@ -241,7 +236,7 @@ func installWithUV(ctx context.Context, venv string, specs []venvSpecifier) erro
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("uv pip install failed: %s", stderr.String())
+		return fmt.Errorf("%w: %s", ErrPipInstallFailed, stderr.String())
 	}
 
 	return nil
@@ -250,8 +245,13 @@ func installWithUV(ctx context.Context, venv string, specs []venvSpecifier) erro
 // installWithPip installs packages using the venv's pip.
 func installWithPip(ctx context.Context, venv string, specs []venvSpecifier) error {
 	pipBin := filepath.Join(venv, "bin", "pip")
+	// Validate pip exists before executing
+	if _, err := os.Stat(pipBin); err != nil {
+		return fmt.Errorf("pip not found in venv: %w", err)
+	}
 
-	args := []string{"install", "--upgrade", "--no-deps"}
+	args := make([]string, 0, 3+len(specs))
+	args = append(args, "install", "--upgrade", "--no-deps")
 	for _, spec := range specs {
 		args = append(args, fmt.Sprintf("%s==%s", spec.Name, spec.Version))
 	}
@@ -263,7 +263,7 @@ func installWithPip(ctx context.Context, venv string, specs []venvSpecifier) err
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("pip install failed: %s", stderr.String())
+		return fmt.Errorf("%w: %s", ErrPipInstallFailed, stderr.String())
 	}
 
 	return nil
@@ -278,7 +278,7 @@ func checkWithUV(ctx context.Context, venv string) error {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("uv pip check failed: %s", stderr.String())
+		return fmt.Errorf("%w: %s", ErrPipCheckFailed, stderr.String())
 	}
 
 	return nil
@@ -287,6 +287,10 @@ func checkWithUV(ctx context.Context, venv string) error {
 // checkWithPip verifies environment consistency using the venv's pip check.
 func checkWithPip(ctx context.Context, venv string) error {
 	pipBin := filepath.Join(venv, "bin", "pip")
+	// Validate pip exists before executing
+	if _, err := os.Stat(pipBin); err != nil {
+		return fmt.Errorf("pip not found in venv: %w", err)
+	}
 
 	cmd := exec.CommandContext(ctx, pipBin, "check")
 	cmd.Env = append(os.Environ(), fmt.Sprintf("VIRTUAL_ENV=%s", venv))
@@ -295,7 +299,7 @@ func checkWithPip(ctx context.Context, venv string) error {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("pip check failed: %s", stderr.String())
+		return fmt.Errorf("%w: %s", ErrPipCheckFailed, stderr.String())
 	}
 
 	return nil
@@ -311,6 +315,10 @@ func getInstalledVersion(ctx context.Context, venv string, installer *venvInstal
 		cmd.Env = append(os.Environ(), fmt.Sprintf("VIRTUAL_ENV=%s", venv))
 	} else {
 		pipBin := filepath.Join(venv, "bin", "pip")
+		// Validate pip exists before executing
+		if _, err := os.Stat(pipBin); err != nil {
+			return "", fmt.Errorf("pip not found in venv: %w", err)
+		}
 		cmd = exec.CommandContext(ctx, pipBin, "list", "--format", "json")
 		cmd.Env = append(os.Environ(), fmt.Sprintf("VIRTUAL_ENV=%s", venv))
 	}
@@ -320,7 +328,7 @@ func getInstalledVersion(ctx context.Context, venv string, installer *venvInstal
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("failed to list installed packages: %s", stderr.String())
+		return "", fmt.Errorf("failed to list installed packages: %w: %s", err, stderr.String())
 	}
 
 	// Parse JSON output
@@ -396,7 +404,7 @@ func parseVersionNumber(s string) (int, error) {
 	for i := 0; i < len(s); i++ {
 		if s[i] < '0' || s[i] > '9' {
 			if i == 0 {
-				return 0, fmt.Errorf("not a number")
+				return 0, ErrNoVersionNumber
 			}
 			var num int
 			_, _ = fmt.Sscanf(s[:i], "%d", &num)
@@ -405,5 +413,8 @@ func parseVersionNumber(s string) (int, error) {
 	}
 	var num int
 	_, err := fmt.Sscanf(s, "%d", &num)
-	return num, err
+	if err != nil {
+		return num, fmt.Errorf("%w: %s", ErrParseVersionFailed, s)
+	}
+	return num, nil
 }
