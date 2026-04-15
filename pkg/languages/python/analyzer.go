@@ -18,6 +18,9 @@ import (
 // Analyzer implements analyzer.Analyzer for Python projects.
 type Analyzer struct{}
 
+// Verify Analyzer implements the analyzer.Analyzer interface at compile time.
+var _ analyzer.Analyzer = (*Analyzer)(nil)
+
 // Analyze parses all manifest files in projectPath and returns a dependency map.
 func (a *Analyzer) Analyze(ctx context.Context, projectPath string) (*analyzer.AnalysisResult, error) {
 	_ = ctx

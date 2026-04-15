@@ -22,6 +22,9 @@ func init() {
 // It auto-detects the build tool and delegates updates to the appropriate handler.
 type Python struct{}
 
+// Verify Python implements the languages.Language interface at compile time.
+var _ languages.Language = (*Python)(nil)
+
 // Name returns the language identifier.
 func (p *Python) Name() string {
 	return "python"
