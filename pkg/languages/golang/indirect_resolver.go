@@ -279,7 +279,6 @@ func CheckIfDirectParentHasFix(
 // when searching for one that brings in the required indirect dependency. Packages like
 // github.com/elastic/beats/v7 can have thousands of pseudo-versions, and checking each
 // requires an HTTP round-trip, which would cause the analysis to hang indefinitely.
-// TODO: Consider batching or parallelizing HTTP requests to the Go proxy to improve performance.
 const maxVersionsToCheck = 50
 
 // findVersionWithIndirectDep searches through versions to find one that has the required indirect dependency.
@@ -366,47 +365,44 @@ const goProxyBase = "https://proxy.golang.org"
 // proxyClient is used for all Go module proxy requests with a reasonable timeout.
 var proxyClient = &http.Client{Timeout: 30 * time.Second}
 
-// goModCache stores fetched go.mod files to avoid redundant HTTP requests when analyzing multiple packages.
-// Reduces HTTP round trips significantly when checking API compatibility across many dependencies.
-type goModCache struct {
-	cache map[string]*modfile.File
+// goModCache maps (package@version) -> modfile.File to avoid redundant HTTP requests when analyzing multiple packages.
+type goModCache map[string]*modfile.File
+
+func newGoModCache() goModCache {
+	return make(goModCache)
 }
 
-func newGoModCache() *goModCache {
-	return &goModCache{cache: make(map[string]*modfile.File)}
-}
-
-func (c *goModCache) key(pkg, ver string) string {
+func (c goModCache) key(pkg, ver string) string {
 	return pkg + "@" + ver
 }
 
-func (c *goModCache) get(pkg, ver string) (*modfile.File, bool) {
-	mf, ok := c.cache[c.key(pkg, ver)]
+func (c goModCache) get(pkg, ver string) (*modfile.File, bool) {
+	mf, ok := c[c.key(pkg, ver)]
 	return mf, ok
 }
 
-func (c *goModCache) set(pkg, ver string, mf *modfile.File) {
-	c.cache[c.key(pkg, ver)] = mf
+func (c goModCache) set(pkg, ver string, mf *modfile.File) {
+	c[c.key(pkg, ver)] = mf
 }
 
-// preFetchDependencies fetches all dependency go.mod files in a single batch.
+// preFetchDependencies fetches all dependency go.mod files to populate the cache.
 // This REDUCES the total number of HTTP calls by identifying all needed packages upfront
 // and fetching them once, rather than fetching them separately for each package being updated.
 // For 50 dependencies and 10 package updates: 50 calls instead of up to 500.
-func preFetchDependencies(ctx context.Context, modFile *modfile.File, cache *goModCache) {
+func preFetchDependencies(ctx context.Context, modFile *modfile.File, cache goModCache) {
 	log := clog.FromContext(ctx)
 
-	// Collect all unique (package, version) pairs from current module
-	type pkgVersion struct {
-		pkg string
-		ver string
-	}
-	toFetch := make(map[string]pkgVersion)
+	// Collect all unique (package, version) pairs from current module requirements
+	toFetch := make([]struct{ pkg, ver string }, 0)
+	seen := make(map[string]struct{})
 
 	for _, req := range modFile.Require {
 		if req != nil && !req.Indirect {
 			key := req.Mod.Path + "@" + req.Mod.Version
-			toFetch[key] = pkgVersion{pkg: req.Mod.Path, ver: req.Mod.Version}
+			if _, alreadySeen := seen[key]; !alreadySeen && !cache.has(req.Mod.Path, req.Mod.Version) {
+				seen[key] = struct{}{}
+				toFetch = append(toFetch, struct{ pkg, ver string }{req.Mod.Path, req.Mod.Version})
+			}
 		}
 	}
 
@@ -416,39 +412,21 @@ func preFetchDependencies(ctx context.Context, modFile *modfile.File, cache *goM
 
 	log.Debugf("Pre-fetching %d dependency go.mod files in batch", len(toFetch))
 
-	// Fetch all in parallel using goroutines
-	// Limit concurrency to avoid overwhelming the proxy or hitting resource limits
-	maxConcurrent := 10
-	semaphore := make(chan struct{}, maxConcurrent)
-	done := make(chan struct{})
-
 	for _, pv := range toFetch {
-		if _, ok := cache.get(pv.pkg, pv.ver); ok {
-			continue // Already cached
+		mf, err := fetchGoModForPackage(ctx, pv.pkg, pv.ver)
+		if err != nil {
+			log.Debug("Could not pre-fetch go.mod", "package", pv.pkg, "version", pv.ver, "error", err)
+			continue
 		}
-
-		// Acquire semaphore slot
-		semaphore <- struct{}{}
-
-		go func(pkg, ver string) {
-			defer func() { <-semaphore }() // Release slot
-
-			mf, err := fetchGoModForPackage(ctx, pkg, ver)
-			if err != nil {
-				log.Debug("Could not pre-fetch go.mod", "package", pkg, "version", ver, "error", err)
-				return
-			}
-			cache.set(pkg, ver, mf)
-		}(pv.pkg, pv.ver)
+		cache.set(pv.pkg, pv.ver, mf)
 	}
-
-	// Wait for all goroutines to finish
-	for i := 0; i < maxConcurrent; i++ {
-		semaphore <- struct{}{}
-	}
-	close(done)
 
 	log.Debug("Completed pre-fetching dependency go.mod files")
+}
+
+func (c goModCache) has(pkg, ver string) bool {
+	_, ok := c.get(pkg, ver)
+	return ok
 }
 
 // fetchFromProxy performs an HTTP GET request to the Go module proxy and returns the response body.
@@ -648,7 +626,7 @@ func CheckAPICompatibilityWithCache(
 	packageName string,
 	targetVersion string,
 	currentModFile *modfile.File,
-	cache *goModCache,
+	cache goModCache,
 ) ([]MissingDependency, error) {
 	log := clog.FromContext(ctx)
 
