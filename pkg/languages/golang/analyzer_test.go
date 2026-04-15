@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/chainguard-dev/omnibump/pkg/analyzer"
 	"github.com/stretchr/testify/require"
 )
 
@@ -459,4 +460,115 @@ require (
 	require.True(t, ok)
 	require.Len(t, uniqueModules, 1)
 	require.Contains(t, uniqueModules, "./moduleB")
+}
+
+func TestDeduplicateDependencies(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []analyzer.Dependency
+		wantLen  int
+		wantDeps map[string]string // name -> expected version
+	}{
+		{
+			name:    "no duplicates",
+			input:   []analyzer.Dependency{{Name: "github.com/foo/bar", Version: "v1.0.0"}},
+			wantLen: 1,
+			wantDeps: map[string]string{
+				"github.com/foo/bar": "v1.0.0",
+			},
+		},
+		{
+			name: "same package same version",
+			input: []analyzer.Dependency{
+				{Name: "github.com/aquasecurity/trivy", Version: "v0.69.4"},
+				{Name: "github.com/aquasecurity/trivy", Version: "v0.69.4"},
+				{Name: "github.com/aquasecurity/trivy", Version: "v0.69.4"},
+			},
+			wantLen: 1,
+			wantDeps: map[string]string{
+				"github.com/aquasecurity/trivy": "v0.69.4",
+			},
+		},
+		{
+			name: "same package different versions keeps highest",
+			input: []analyzer.Dependency{
+				{Name: "github.com/foo/bar", Version: "v1.0.0"},
+				{Name: "github.com/foo/bar", Version: "v1.2.0"},
+				{Name: "github.com/foo/bar", Version: "v1.1.0"},
+			},
+			wantLen: 1,
+			wantDeps: map[string]string{
+				"github.com/foo/bar": "v1.2.0",
+			},
+		},
+		{
+			name: "multiple packages with duplicates",
+			input: []analyzer.Dependency{
+				{Name: "github.com/aquasecurity/trivy", Version: "v0.69.4"},
+				{Name: "github.com/open-policy-agent/opa", Version: "v1.14.1"},
+				{Name: "github.com/aquasecurity/trivy", Version: "v0.69.4"},
+				{Name: "github.com/open-policy-agent/opa", Version: "v1.14.1"},
+				{Name: "github.com/aquasecurity/trivy", Version: "v0.69.4"},
+			},
+			wantLen: 2,
+			wantDeps: map[string]string{
+				"github.com/aquasecurity/trivy":    "v0.69.4",
+				"github.com/open-policy-agent/opa": "v1.14.1",
+			},
+		},
+		{
+			name: "pseudo-version keeps first occurrence",
+			input: []analyzer.Dependency{
+				{Name: "github.com/elastic/beats/v7", Version: "v7.0.0-alpha2.0.20250207230554-da630c6fab5a"},
+				{Name: "github.com/elastic/beats/v7", Version: "v7.0.0-alpha2.0.20250207230554-da630c6fab5a"},
+			},
+			wantLen: 1,
+			wantDeps: map[string]string{
+				"github.com/elastic/beats/v7": "v7.0.0-alpha2.0.20250207230554-da630c6fab5a",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := deduplicateDependencies(tc.input)
+			require.Len(t, got, tc.wantLen)
+			for _, dep := range got {
+				wantVer, ok := tc.wantDeps[dep.Name]
+				require.True(t, ok, "unexpected package %s in result", dep.Name)
+				require.Equal(t, wantVer, dep.Version, "wrong version for %s", dep.Name)
+			}
+		})
+	}
+}
+
+func TestRecommendStrategy_DeduplicatesDirectUpdates(t *testing.T) {
+	// This test verifies that RecommendStrategy deduplicates packages
+	// when the same package appears multiple times from different dependency paths
+	analysis := &analyzer.AnalysisResult{
+		Dependencies: map[string]*analyzer.DependencyInfo{
+			"github.com/aquasecurity/trivy":    {Version: "v0.69.0"},
+			"github.com/open-policy-agent/opa": {Version: "v1.14.0"},
+		},
+	}
+
+	deps := []analyzer.Dependency{
+		{Name: "github.com/aquasecurity/trivy", Version: "v0.69.4"},
+		{Name: "github.com/open-policy-agent/opa", Version: "v1.14.1"},
+	}
+
+	ga := &GolangAnalyzer{}
+	strategy, err := ga.RecommendStrategy(context.Background(), analysis, deps)
+	require.NoError(t, err)
+
+	// Verify we have deduplicated results
+	pkgNames := make(map[string]int)
+	for _, dep := range strategy.DirectUpdates {
+		pkgNames[dep.Name]++
+	}
+
+	// Each package should appear exactly once
+	for pkgName, count := range pkgNames {
+		require.Equal(t, 1, count, "package %s appears %d times, expected 1", pkgName, count)
+	}
 }

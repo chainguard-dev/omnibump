@@ -96,6 +96,82 @@ mvn clean verify
 ./gradlew clean build
 ```
 
+### Issue: Invalid Version Error (Go +incompatible)
+
+```
+ERROR: go.mod:18:2: require github.com/docker/docker: version "v28.0.0" invalid: should be v0 or v1, not v28
+```
+
+**Cause:** Package requires `+incompatible` suffix but it's missing from go.mod
+
+**Solution:** Omnibump now handles this automatically:
+```bash
+# Specify version without +incompatible
+omnibump --packages "github.com/docker/docker@v28.0.0"
+
+# Omnibump automatically resolves to v28.0.0+incompatible
+```
+
+**Why this happens:**
+- Go packages with major version >= 2 need `/vN` in path OR `+incompatible` suffix
+- `github.com/docker/docker` doesn't have `/v28` in path
+- So it needs `+incompatible`: `v28.0.0+incompatible`
+- Omnibump queries the Go proxy to get the canonical version
+
+### Issue: Type Mismatch After Dependency Update (Go)
+
+```
+ERROR: cannot convert cred (variable of struct type "github.com/docker/docker/api/types/registry".AuthConfig) to type types.AuthConfig
+```
+
+**Cause:** Updated a package that requires newer versions of other dependencies
+
+**Solution:** Use omnibump's transitive dependency detection:
+```bash
+# Omnibump will detect all required co-updates
+omnibump --packages "oras.land/oras-go@v1.2.7"
+
+# Error output shows exactly what else needs updating:
+# Error: the following dependencies need to be co-updated:
+#   - github.com/docker/docker: current v28.0.0, required >= v28.5.1
+#   - github.com/docker/cli: current v25.0.1, required >= v28.5.1
+#
+# To proceed, add these packages to your update:
+#   omnibump --packages "oras.land/oras-go@v1.2.7 github.com/docker/docker@v28.5.1 ..."
+
+# Run the suggested command - all packages updated together
+```
+
+**Why this happens:**
+- Package A v2.0 uses new API from Package B
+- Your project has old Package B with old API
+- Types/functions don't match between versions
+- Need to update both together
+
+**Prevention:**
+- Always run the command omnibump suggests
+- It automatically detects all required co-updates
+- Validates the entire update set together
+
+### Issue: Missing go.sum Entries with Vendor
+
+```
+ERROR: failed to run 'go vendor': missing go.sum entry for module providing package xyz
+```
+
+**Cause:** go.mod was updated but go.sum wasn't refreshed before vendoring
+
+**Solution:** Omnibump now handles this automatically:
+- When vendor directory exists, omnibump runs `go mod tidy` before `go vendor`
+- This ensures go.sum is up-to-date
+
+**If you still see this:**
+```bash
+# Run manually
+go mod tidy
+go mod vendor
+```
+
 ### Issue: Merge Conflicts in Lock Files
 
 **Solution:** Let the build tool regenerate the lock file:

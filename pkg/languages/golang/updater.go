@@ -432,6 +432,17 @@ func verifyAndFinalize(ctx context.Context, modpath string, pkgVersions map[stri
 	}
 
 	if _, err := os.Stat(filepath.Join(cfg.Modroot, "vendor")); err == nil {
+		// Before running go vendor, ensure go.sum is up-to-date
+		// When AddRequire is used, go.sum is not updated, so we need to run tidy
+		log.Infof("Vendor directory detected, running go mod tidy to update go.sum")
+		var goVersion string
+		if goVersion, err = getGoVersionFromEnvironment(); err != nil {
+			return nil, fmt.Errorf("failed to get the Go version from the local system: %w", err)
+		}
+		if output, err := GoModTidy(ctx, cfg.Modroot, goVersion, cfg.TidyCompat); err != nil {
+			return nil, fmt.Errorf("failed to run 'go mod tidy' before vendoring: %w with output: %v", err, output)
+		}
+
 		output, err := GoVendor(ctx, cfg.Modroot, cfg.ForceWork)
 		if err != nil {
 			return nil, fmt.Errorf("failed to run 'go vendor': %w with output: %v", err, output)

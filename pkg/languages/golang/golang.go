@@ -30,6 +30,9 @@ var (
 
 	// ErrUnexpectedGoListOutput is returned when go list output has unexpected format.
 	ErrUnexpectedGoListOutput = errors.New("unexpected go list output")
+
+	// ErrTransitiveDepsRequired is returned when updating a package requires co-updating other dependencies.
+	ErrTransitiveDepsRequired = errors.New("transitive dependencies need co-updating")
 )
 
 // Golang implements the Language interface for Go projects.
@@ -145,9 +148,10 @@ func (g *Golang) updateSingleModule(ctx context.Context, cfg *languages.UpdateCo
 }
 
 // updateWorkspace updates all modules in a Go workspace that contain the target dependencies.
+// Only dependencies already present in each module's go.mod are passed to that module's update;
+// packages absent from a sub-module are skipped rather than added, because workspace sub-modules
+// manage their own dependency sets independently.
 func (g *Golang) updateWorkspace(ctx context.Context, cfg *languages.UpdateConfig, workPath string) error {
-	log := clog.FromContext(ctx)
-
 	// Parse go.work file
 	workFile, err := parseGoWork(workPath)
 	if err != nil {
@@ -156,73 +160,80 @@ func (g *Golang) updateWorkspace(ctx context.Context, cfg *languages.UpdateConfi
 
 	// Get all module paths from workspace
 	modulePaths := getWorkspaceModulePaths(workFile)
-	log.Infof("Found %d modules in workspace", len(modulePaths))
+	clog.InfoContextf(ctx, "Found %d modules in workspace", len(modulePaths))
 
-	// First, determine which modules contain the dependencies we want to update
-	modulesToUpdate := make([]string, 0)
-	dependencyNames := make(map[string]bool)
-	for _, dep := range cfg.Dependencies {
-		dependencyNames[dep.Name] = true
-	}
-
+	updatedCount := 0
 	for _, modPath := range modulePaths {
 		fullModPath := filepath.Join(cfg.RootDir, modPath)
 		goModPath := filepath.Join(fullModPath, "go.mod")
 
-		// Parse go.mod to see if it contains any of our target dependencies
 		modFile, _, err := ParseGoModfile(goModPath)
 		if err != nil {
-			log.Warnf("Failed to parse %s: %v", goModPath, err)
+			clog.WarnContextf(ctx, "Failed to parse %s: %v", goModPath, err)
 			continue
 		}
 
-		// Check if this module contains any of the dependencies
-		hasTargetDep := false
-		for _, req := range modFile.Require {
-			if req != nil && dependencyNames[req.Mod.Path] {
-				hasTargetDep = true
-				break
-			}
+		// Only pass deps that are already present in this module's go.mod.
+		moduleDeps := filterDepsForModule(cfg.Dependencies, modFile)
+		if len(moduleDeps) == 0 {
+			clog.DebugContextf(ctx, "Module %s has none of the target dependencies, skipping", modPath)
+			continue
 		}
 
-		if hasTargetDep {
-			modulesToUpdate = append(modulesToUpdate, modPath)
-		}
-	}
+		clog.InfoContextf(ctx, "Updating module: %s", modPath)
 
-	if len(modulesToUpdate) == 0 {
-		log.Infof("None of the workspace modules contain the target dependencies")
-		return nil
-	}
-
-	log.Infof("Will update %d modules that contain target dependencies", len(modulesToUpdate))
-
-	// Update each module
-	updatedCount := 0
-	for _, modPath := range modulesToUpdate {
-		fullModPath := filepath.Join(cfg.RootDir, modPath)
-		log.Infof("Updating module: %s", modPath)
-
-		// Create a copy of cfg with the module-specific directory
 		moduleCfg := &languages.UpdateConfig{
 			RootDir:      fullModPath,
-			Dependencies: cfg.Dependencies,
+			Dependencies: moduleDeps,
 			DryRun:       cfg.DryRun,
 			Tidy:         cfg.Tidy,
 			ShowDiff:     cfg.ShowDiff,
 			Options:      cfg.Options,
 		}
 
-		// Update this module
 		if err := g.updateSingleModule(ctx, moduleCfg, fullModPath); err != nil {
-			log.Errorf("Failed to update module %s: %v", modPath, err)
+			clog.ErrorContextf(ctx, "Failed to update module %s: %v", modPath, err)
 			return fmt.Errorf("failed to update module %s: %w", modPath, err)
 		}
 		updatedCount++
 	}
 
-	log.Infof("Successfully updated %d modules in workspace", updatedCount)
+	if updatedCount == 0 {
+		clog.InfoContextf(ctx, "None of the workspace modules contain the target dependencies")
+		return nil
+	}
+
+	clog.InfoContextf(ctx, "Successfully updated %d modules in workspace", updatedCount)
 	return nil
+}
+
+// filterDepsForModule returns only the dependencies already present in the given
+// module's go.mod as require or replace directives. This prevents omnibump from
+// adding packages to workspace sub-modules that don't already have them, which
+// would be undone by go mod tidy and cause a verification failure.
+func filterDepsForModule(deps []languages.Dependency, modFile *modfile.File) []languages.Dependency {
+	present := make(map[string]struct{}, len(modFile.Require)+len(modFile.Replace)*2)
+	for _, req := range modFile.Require {
+		if req != nil {
+			present[req.Mod.Path] = struct{}{}
+		}
+	}
+	for _, repl := range modFile.Replace {
+		if repl != nil {
+			present[repl.Old.Path] = struct{}{}
+			present[repl.New.Path] = struct{}{}
+		}
+	}
+
+	filtered := make([]languages.Dependency, 0, len(deps))
+	for _, dep := range deps {
+		_, namePresent := present[dep.Name]
+		_, oldNamePresent := present[dep.OldName]
+		if namePresent || (dep.OldName != "" && oldNamePresent) {
+			filtered = append(filtered, dep)
+		}
+	}
+	return filtered
 }
 
 // Validate checks if the updates were applied successfully.
@@ -312,21 +323,47 @@ func hasReplaceDirective(modFile *modfile.File, packageName string) bool {
 	return false
 }
 
+// resolvePackageVersion returns the canonical version for a package. Version queries
+// like @latest are resolved via go list. Concrete semver versions are also resolved
+// to pick up the +incompatible suffix when needed, falling back to the provided version
+// if the proxy is unavailable.
+func resolvePackageVersion(ctx context.Context, name, version, modroot string) (string, error) {
+	log := clog.FromContext(ctx)
+
+	if isVersionQuery(version) {
+		resolved, err := resolveVersionQuery(ctx, name, version, modroot)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve %s@%s: %w", name, version, err)
+		}
+		log.Infof("Resolved %s@%s to %s", name, version, resolved)
+		return resolved, nil
+	}
+
+	if len(version) >= 2 && version[0] == 'v' && version[1] >= '0' && version[1] <= '9' {
+		resolved, err := resolveVersionQuery(ctx, name, version, modroot)
+		if err != nil {
+			// Fall back to the provided version; appendIncompatibleIfNeeded handles the suffix.
+			log.Debugf("Could not resolve canonical form of %s@%s, using as-is: %v", name, version, err)
+			return version, nil
+		}
+		if resolved != version {
+			log.Infof("Resolved %s@%s to canonical form %s", name, version, resolved)
+		}
+		return resolved, nil
+	}
+
+	return version, nil
+}
+
 // resolveAndFilterPackages resolves version queries like @latest and filters out packages that don't need updating.
 func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package, modFile *modfile.File, modroot string) (map[string]*Package, error) {
 	log := clog.FromContext(ctx)
 	filtered := make(map[string]*Package)
 
 	for name, pkg := range packages {
-		// Resolve version if it's a query (@latest, @upgrade, etc.)
-		resolvedVersion := pkg.Version
-		if isVersionQuery(pkg.Version) {
-			resolved, err := resolveVersionQuery(ctx, name, pkg.Version, modroot)
-			if err != nil {
-				return nil, fmt.Errorf("failed to resolve %s@%s: %w", name, pkg.Version, err)
-			}
-			resolvedVersion = resolved
-			log.Infof("Resolved %s@%s to %s", name, pkg.Version, resolvedVersion)
+		resolvedVersion, err := resolvePackageVersion(ctx, name, pkg.Version, modroot)
+		if err != nil {
+			return nil, err
 		}
 
 		// For modules that don't use major version path suffixes (e.g., /v2, /v3), Go
@@ -371,7 +408,146 @@ func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package,
 		log.Infof("Will update %s from %s to %s", name, currentVersion, resolvedVersion)
 	}
 
+	if err := checkMissingTransitiveDeps(ctx, filtered, modFile); err != nil {
+		return nil, err
+	}
+
 	return filtered, nil
+}
+
+// checkMissingTransitiveDeps checks all packages being updated for transitive dependency
+// requirements not satisfied by the current go.mod, and returns an error with co-update
+// recommendations if any are found.
+func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Package, modFile *modfile.File) error {
+	log := clog.FromContext(ctx)
+
+	// Build set of packages being updated
+	packagesBeingUpdated := make(map[string]string)
+	for name, pkg := range filtered {
+		packagesBeingUpdated[name] = pkg.Version
+	}
+
+	allMissingDeps := make(map[string]MissingDependency)
+	apiCompatibilityAlerts := make(map[string]bool)
+
+	// Create a cache for go.mod files to reduce HTTP requests when checking API compatibility
+	// across multiple packages. This significantly reduces round trips when updating many packages.
+	cache := newGoModCache()
+
+	// Pre-fetch all dependencies in one batch to minimize HTTP calls.
+	// For 50 dependencies and 10 package updates: 50 calls total instead of up to 500.
+	preFetchDependencies(ctx, modFile, cache)
+
+	for name, pkg := range filtered {
+		missingDeps, err := CheckTransitiveRequirements(ctx, name, pkg.Version, modFile)
+		if err != nil {
+			log.Warnf("Could not check transitive requirements for %s@%s: %v", name, pkg.Version, err)
+			continue
+		}
+		collectMissingDeps(ctx, missingDeps, packagesBeingUpdated, allMissingDeps)
+
+		// Also check for API compatibility issues
+		apiIssues, err := CheckAPICompatibilityWithCache(ctx, name, pkg.Version, modFile, cache)
+		if err != nil {
+			log.Debugf("Could not check API compatibility for %s@%s: %v", name, pkg.Version, err)
+		} else {
+			for _, issue := range apiIssues {
+				apiCompatibilityAlerts[issue.Package] = true
+				log.Infof("API compatibility alert for %s", issue.Package)
+			}
+		}
+	}
+
+	if len(allMissingDeps) == 0 && len(apiCompatibilityAlerts) == 0 {
+		return nil
+	}
+
+	var msg strings.Builder
+
+	fmt.Fprintf(&msg, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
+
+	// Show required co-updates
+	if len(allMissingDeps) > 0 {
+		fmt.Fprintf(&msg, "REQUIRED CO-UPDATES\n")
+		fmt.Fprintf(&msg, "───────────────────\n")
+		fmt.Fprintf(&msg, "These packages must be updated due to explicit version requirements:\n\n")
+		for _, dep := range allMissingDeps {
+			fmt.Fprintf(&msg, "  • %s\n", dep.Package)
+			fmt.Fprintf(&msg, "    current: %s → required: >= %s\n\n", dep.CurrentVersion, dep.RequiredVersion)
+		}
+	}
+
+	// Show API compatibility alerts
+	if len(apiCompatibilityAlerts) > 0 {
+		fmt.Fprintf(&msg, "API COMPATIBILITY ALERTS\n")
+		fmt.Fprintf(&msg, "────────────────────────\n")
+		fmt.Fprintf(&msg, "These packages import updated dependencies and may require version bumps:\n\n")
+		for pkg := range apiCompatibilityAlerts {
+			fmt.Fprintf(&msg, "  • %s\n", pkg)
+		}
+		fmt.Fprintf(&msg, "\n")
+	}
+
+	// Only error if there are required co-updates; API alerts are informational
+	if len(allMissingDeps) > 0 {
+		fmt.Fprintf(&msg, "SUGGESTED UPDATE COMMAND\n")
+		fmt.Fprintf(&msg, "────────────────────────\n\n")
+		fmt.Fprintf(&msg, "omnibump --packages \"\n")
+
+		for name, pkg := range filtered {
+			fmt.Fprintf(&msg, "  %s@%s\n", name, pkg.Version)
+		}
+
+		if len(allMissingDeps) > 0 {
+			for _, dep := range allMissingDeps {
+				fmt.Fprintf(&msg, "  %s@%s\n", dep.Package, dep.RequiredVersion)
+			}
+		}
+
+		if len(apiCompatibilityAlerts) > 0 {
+			for pkg := range apiCompatibilityAlerts {
+				for _, req := range modFile.Require {
+					if req != nil && req.Mod.Path == pkg {
+						fmt.Fprintf(&msg, "  %s@%s\n", pkg, req.Mod.Version)
+						break
+					}
+				}
+			}
+		}
+
+		fmt.Fprintf(&msg, "\"\n\n")
+		fmt.Fprintf(&msg, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+		return fmt.Errorf("%w:%s", ErrTransitiveDepsRequired, msg.String())
+	}
+
+	// If only API alerts (no required co-updates), just log as warning
+	log.Warnf("API compatibility alerts:\n%s", msg.String())
+	return nil
+}
+
+// collectMissingDeps adds missing transitive dependencies to allMissingDeps,
+// skipping any that are already satisfied by the current update set.
+func collectMissingDeps(ctx context.Context, missingDeps []MissingDependency, packagesBeingUpdated map[string]string, allMissingDeps map[string]MissingDependency) {
+	log := clog.FromContext(ctx)
+	for _, dep := range missingDeps {
+		if targetVer, beingUpdated := packagesBeingUpdated[dep.Package]; beingUpdated {
+			if semver.IsValid(targetVer) && semver.IsValid(dep.RequiredVersion) {
+				if semver.Compare(targetVer, dep.RequiredVersion) >= 0 {
+					log.Debugf("Dependency %s requirement satisfied by update to %s", dep.Package, targetVer)
+					continue
+				}
+			}
+		}
+		if existing, exists := allMissingDeps[dep.Package]; exists {
+			if semver.IsValid(dep.RequiredVersion) && semver.IsValid(existing.RequiredVersion) {
+				if semver.Compare(dep.RequiredVersion, existing.RequiredVersion) > 0 {
+					allMissingDeps[dep.Package] = dep
+				}
+			}
+		} else {
+			allMissingDeps[dep.Package] = dep
+		}
+	}
 }
 
 // appendIncompatibleIfNeeded adds the +incompatible suffix when a module path does not
@@ -416,8 +592,9 @@ func resolveVersionQuery(ctx context.Context, modulePath, query, modroot string)
 	//nolint:gosec // G204: Using exec.Command with validated module path and version query
 	cmd := exec.CommandContext(ctx, "go", "list", "-m", fmt.Sprintf("%s@%s", modulePath, query))
 	cmd.Dir = modroot
-	// Override vendor mode to allow querying
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod")
+	// Disable workspace mode and override vendor mode to allow querying
+	// GOWORK=off is required when go.work file exists
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {

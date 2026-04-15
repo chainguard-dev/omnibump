@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/chainguard-dev/clog"
 	"golang.org/x/mod/modfile"
@@ -181,9 +183,10 @@ func ResolveIndirectDependency(
 func FindDirectParents(ctx context.Context, modRoot, indirectPkg string) ([]DirectParent, error) {
 	log := clog.FromContext(ctx)
 
-	// Run go mod graph
+	// Run go mod graph with workspace mode off to avoid scanning all workspace modules.
 	cmd := exec.CommandContext(ctx, "go", "mod", "graph")
 	cmd.Dir = modRoot
+	cmd.Env = append(os.Environ(), "GOWORK=off")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("go mod graph failed: %w", err)
@@ -272,7 +275,14 @@ func CheckIfDirectParentHasFix(
 	return findVersionWithIndirectDep(ctx, versions, currentVersion, directDep, indirectPkg, targetVersion)
 }
 
+// maxVersionsToCheck limits how many newer versions of a parent package are scanned
+// when searching for one that brings in the required indirect dependency. Packages like
+// github.com/elastic/beats/v7 can have thousands of pseudo-versions, and checking each
+// requires an HTTP round-trip, which would cause the analysis to hang indefinitely.
+const maxVersionsToCheck = 50
+
 // findVersionWithIndirectDep searches through versions to find one that has the required indirect dependency.
+// It checks at most maxVersionsToCheck versions newer than the current version.
 func findVersionWithIndirectDep(
 	ctx context.Context,
 	versions []string,
@@ -283,12 +293,22 @@ func findVersionWithIndirectDep(
 ) (*ParentFixInfo, error) {
 	log := clog.FromContext(ctx)
 
-	// Check each version newer than current
+	checked := 0
+	// Check each version newer than current, capped at maxVersionsToCheck.
+	// Versions are sorted newest-first so we find the minimal required bump quickly.
 	for _, ver := range versions {
 		// Skip older or equal versions
 		if semver.Compare(ver, currentVersion) <= 0 {
 			continue
 		}
+
+		if checked >= maxVersionsToCheck {
+			log.Debug("Reached version check limit, stopping search",
+				"package", directDep,
+				"limit", maxVersionsToCheck)
+			break
+		}
+		checked++
 
 		// Fetch this version's go.mod
 		modFile, err := fetchGoModForPackage(ctx, directDep, ver)
@@ -339,16 +359,85 @@ func checkModFileForIndirectDep(
 	return nil
 }
 
+// goProxyBase is the base URL for the Go module proxy.
+const goProxyBase = "https://proxy.golang.org"
+
+// proxyClient is used for all Go module proxy requests with a reasonable timeout.
+var proxyClient = &http.Client{Timeout: 30 * time.Second}
+
+// goModCache maps (package@version) -> modfile.File to avoid redundant HTTP requests when analyzing multiple packages.
+type goModCache map[string]*modfile.File
+
+func newGoModCache() goModCache {
+	return make(goModCache)
+}
+
+func (c goModCache) key(pkg, ver string) string {
+	return pkg + "@" + ver
+}
+
+func (c goModCache) get(pkg, ver string) (*modfile.File, bool) {
+	mf, ok := c[c.key(pkg, ver)]
+	return mf, ok
+}
+
+func (c goModCache) set(pkg, ver string, mf *modfile.File) {
+	c[c.key(pkg, ver)] = mf
+}
+
+// preFetchDependencies fetches all dependency go.mod files to populate the cache.
+// This REDUCES the total number of HTTP calls by identifying all needed packages upfront
+// and fetching them once, rather than fetching them separately for each package being updated.
+// For 50 dependencies and 10 package updates: 50 calls instead of up to 500.
+func preFetchDependencies(ctx context.Context, modFile *modfile.File, cache goModCache) {
+	log := clog.FromContext(ctx)
+
+	// Collect all unique (package, version) pairs from current module requirements
+	toFetch := make([]struct{ pkg, ver string }, 0)
+	seen := make(map[string]struct{})
+
+	for _, req := range modFile.Require {
+		if req != nil && !req.Indirect {
+			key := req.Mod.Path + "@" + req.Mod.Version
+			if _, alreadySeen := seen[key]; !alreadySeen && !cache.has(req.Mod.Path, req.Mod.Version) {
+				seen[key] = struct{}{}
+				toFetch = append(toFetch, struct{ pkg, ver string }{req.Mod.Path, req.Mod.Version})
+			}
+		}
+	}
+
+	if len(toFetch) == 0 {
+		return
+	}
+
+	log.Debugf("Pre-fetching %d dependency go.mod files in batch", len(toFetch))
+
+	for _, pv := range toFetch {
+		mf, err := fetchGoModForPackage(ctx, pv.pkg, pv.ver)
+		if err != nil {
+			log.Debug("Could not pre-fetch go.mod", "package", pv.pkg, "version", pv.ver, "error", err)
+			continue
+		}
+		cache.set(pv.pkg, pv.ver, mf)
+	}
+
+	log.Debug("Completed pre-fetching dependency go.mod files")
+}
+
+func (c goModCache) has(pkg, ver string) bool {
+	_, ok := c.get(pkg, ver)
+	return ok
+}
+
 // fetchFromProxy performs an HTTP GET request to the Go module proxy and returns the response body.
-//
-//nolint:gosec // G107: URL is constructed from validated module paths via module.EscapePath
-func fetchFromProxy(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+// path must begin with "/" and is appended to goProxyBase.
+func fetchFromProxy(ctx context.Context, path string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", goProxyBase+path, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := proxyClient.Do(req) //nolint:gosec // G704: URL is always goProxyBase + an escaped module path/version
 	if err != nil {
 		return nil, err
 	}
@@ -360,7 +449,7 @@ func fetchFromProxy(ctx context.Context, url string) ([]byte, error) {
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: status %d for %s", ErrProxyRequestFailed, resp.StatusCode, url)
+		return nil, fmt.Errorf("%w: status %d for %s", ErrProxyRequestFailed, resp.StatusCode, goProxyBase+path)
 	}
 
 	return io.ReadAll(resp.Body)
@@ -372,9 +461,7 @@ func fetchAvailableVersions(ctx context.Context, modulePath string) ([]string, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to escape module path: %w", err)
 	}
-	url := fmt.Sprintf("https://proxy.golang.org/%s/@v/list", escapedPath)
-
-	body, err := fetchFromProxy(ctx, url)
+	body, err := fetchFromProxy(ctx, fmt.Sprintf("/%s/@v/list", escapedPath))
 	if err != nil {
 		return nil, err
 	}
@@ -408,9 +495,7 @@ func fetchGoModForPackage(ctx context.Context, pkgPath, version string) (*modfil
 	if err != nil {
 		return nil, fmt.Errorf("failed to escape version: %w", err)
 	}
-	url := fmt.Sprintf("https://proxy.golang.org/%s/@v/%s.mod", escapedPath, escapedVersion)
-
-	body, err := fetchFromProxy(ctx, url)
+	body, err := fetchFromProxy(ctx, fmt.Sprintf("/%s/@v/%s.mod", escapedPath, escapedVersion))
 	if err != nil {
 		return nil, err
 	}
@@ -452,4 +537,223 @@ func extractModuleVersion(moduleWithVersion string) string {
 		return ""
 	}
 	return moduleWithVersion[idx+1:]
+}
+
+// MissingDependency represents a dependency that needs to be updated.
+type MissingDependency struct {
+	Package         string
+	RequiredVersion string
+	CurrentVersion  string
+	Reason          string
+}
+
+// CheckTransitiveRequirements checks if updating a package to a target version
+// would require updating other dependencies in the project.
+// Returns a list of dependencies that would need co-updating.
+func CheckTransitiveRequirements(
+	ctx context.Context,
+	packageName string,
+	targetVersion string,
+	currentModFile *modfile.File,
+) ([]MissingDependency, error) {
+	log := clog.FromContext(ctx)
+
+	log.Debug("Checking transitive requirements", "package", packageName, "version", targetVersion)
+
+	// Fetch the target version's go.mod from the proxy
+	targetModFile, err := fetchGoModForPackage(ctx, packageName, targetVersion)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch go.mod for %s@%s: %w", packageName, targetVersion, err)
+	}
+
+	// Build map of current versions in the project
+	currentVersions := make(map[string]string)
+	for _, req := range currentModFile.Require {
+		if req != nil {
+			currentVersions[req.Mod.Path] = req.Mod.Version
+		}
+	}
+
+	// Check each requirement of the target version.
+	// Only consider direct requirements (non-indirect) from the target's go.mod —
+	// indirect ones are resolved automatically by MVS when go get or go mod tidy runs.
+	var missing []MissingDependency
+	for _, req := range targetModFile.Require {
+		if req == nil || req.Indirect {
+			continue
+		}
+
+		reqPkg := req.Mod.Path
+		reqVer := req.Mod.Version
+
+		currentVer, exists := currentVersions[reqPkg]
+
+		// If package doesn't exist in current project, skip (go get will add it)
+		if !exists {
+			continue
+		}
+
+		// Compare versions
+		if semver.IsValid(currentVer) && semver.IsValid(reqVer) {
+			if semver.Compare(currentVer, reqVer) < 0 {
+				// Current version is older than required
+				missing = append(missing, MissingDependency{
+					Package:         reqPkg,
+					RequiredVersion: reqVer,
+					CurrentVersion:  currentVer,
+					Reason:          fmt.Sprintf("%s@%s requires %s@%s but project has %s", packageName, targetVersion, reqPkg, reqVer, currentVer),
+				})
+				log.Warn("Dependency requires newer version",
+					"updating", packageName,
+					"requires", reqPkg,
+					"required_version", reqVer,
+					"current_version", currentVer)
+			}
+		}
+	}
+
+	if len(missing) > 0 {
+		log.Info("Found missing co-updates", "count", len(missing))
+	}
+
+	return missing, nil
+}
+
+// CheckAPICompatibilityWithCache checks API compatibility using a shared cache to reduce HTTP requests.
+// The cache improves performance when analyzing multiple packages by avoiding redundant go.mod fetches.
+func CheckAPICompatibilityWithCache(
+	ctx context.Context,
+	packageName string,
+	targetVersion string,
+	currentModFile *modfile.File,
+	cache goModCache,
+) ([]MissingDependency, error) {
+	log := clog.FromContext(ctx)
+
+	log.Debug("Checking API compatibility", "package", packageName, "version", targetVersion)
+
+	var potentialIssues []MissingDependency
+
+	// Check all direct dependencies in the current project
+	for _, req := range currentModFile.Require {
+		if req == nil || req.Indirect {
+			continue
+		}
+
+		depPkg := req.Mod.Path
+		depVer := req.Mod.Version
+
+		// Skip checking the package against itself
+		if depPkg == packageName {
+			continue
+		}
+
+		// Fetch this dependency's go.mod (from cache if available)
+		var depModFile *modfile.File
+		if cached, ok := cache.get(depPkg, depVer); ok {
+			depModFile = cached
+		} else {
+			var err error
+			depModFile, err = fetchGoModForPackage(ctx, depPkg, depVer)
+			if err != nil {
+				log.Debug("Could not fetch dependency go.mod",
+					"package", depPkg,
+					"version", depVer,
+					"error", err)
+				continue
+			}
+			// Cache the result for subsequent package checks
+			cache.set(depPkg, depVer, depModFile)
+		}
+
+		// Check if this dependency imports the package being updated
+		for _, depReq := range depModFile.Require {
+			if depReq != nil && depReq.Mod.Path == packageName {
+				// This dependency imports the package being updated.
+				// Flag it as potentially needing an update due to API/schema changes.
+				potentialIssues = append(potentialIssues, MissingDependency{
+					Package:         depPkg,
+					RequiredVersion: depVer, // Keep current version as suggestion; user should verify
+					CurrentVersion:  depVer,
+					Reason:          fmt.Sprintf("%s imports %s which is being updated to %s (potential API/schema incompatibility — may need manual verification and version bump)", depPkg, packageName, targetVersion),
+				})
+				log.Info("Potential API compatibility issue detected",
+					"package", depPkg,
+					"imports", packageName,
+					"new_version", targetVersion)
+				break
+			}
+		}
+	}
+
+	return potentialIssues, nil
+}
+
+// CheckAPICompatibility checks if updating a package might require co-updates to other
+// packages due to schema/API breaking changes. This is a heuristic approach: for packages
+// that depend on the updated package, we flag them as potentially needing updates.
+//
+// Example: If opentelemetry/otel/sdk is updated with schema changes, and knative.dev/pkg
+// imports from it, knative.dev/pkg might need updating even if the go.mod doesn't explicitly
+// require a newer version.
+//
+// Deprecated: Use CheckAPICompatibilityWithCache to leverage caching for better performance
+// when analyzing multiple packages.
+func CheckAPICompatibility(
+	ctx context.Context,
+	packageName string,
+	targetVersion string,
+	currentModFile *modfile.File,
+) ([]MissingDependency, error) {
+	log := clog.FromContext(ctx)
+
+	log.Debug("Checking API compatibility", "package", packageName, "version", targetVersion)
+
+	var potentialIssues []MissingDependency
+
+	// Check all direct dependencies in the current project
+	for _, req := range currentModFile.Require {
+		if req == nil || req.Indirect {
+			continue
+		}
+
+		depPkg := req.Mod.Path
+		depVer := req.Mod.Version
+
+		// Skip checking the package against itself
+		if depPkg == packageName {
+			continue
+		}
+
+		// Fetch this dependency's go.mod and check if it imports the package being updated
+		depModFile, err := fetchGoModForPackage(ctx, depPkg, depVer)
+		if err != nil {
+			log.Debug("Could not fetch dependency go.mod",
+				"package", depPkg,
+				"version", depVer,
+				"error", err)
+			continue
+		}
+
+		// Check if this dependency imports the package being updated
+		for _, depReq := range depModFile.Require {
+			if depReq != nil && depReq.Mod.Path == packageName {
+				// This dependency imports the package being updated.
+				// Flag it as potentially needing an update due to API/schema changes.
+				potentialIssues = append(potentialIssues, MissingDependency{
+					Package:         depPkg,
+					RequiredVersion: depVer, // Keep current version as suggestion; user should verify
+					CurrentVersion:  depVer,
+					Reason:          fmt.Sprintf("%s imports %s which is being updated to %s (potential API/schema incompatibility — may need manual verification and version bump)", depPkg, packageName, targetVersion),
+				})
+				log.Info("Potential API compatibility issue detected",
+					"package", depPkg,
+					"imports", packageName,
+					"new_version", targetVersion)
+				break
+			}
+		}
+	}
+
+	return potentialIssues, nil
 }

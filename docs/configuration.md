@@ -88,6 +88,28 @@ packages:
 - `@v1` - Latest v1.x.x version
 - `@v1.2` - Latest v1.2.x version
 
+**Version normalization (automatic):**
+
+omnibump automatically resolves versions to canonical forms:
+
+```yaml
+# You specify without +incompatible
+packages:
+  - name: github.com/docker/docker
+    version: v28.0.0
+
+# Omnibump automatically resolves to: v28.0.0+incompatible
+```
+
+**Note:** You can also specify the `+incompatible` suffix explicitly if preferred:
+```yaml
+packages:
+  - name: github.com/docker/docker
+    version: v28.0.0+incompatible
+```
+
+Both formats work - omnibump queries the Go module proxy to get the canonical version.
+
 ### Rust
 
 ```yaml

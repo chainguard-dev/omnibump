@@ -15,6 +15,7 @@ import (
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/semver"
 )
 
 const (
@@ -387,10 +388,9 @@ func (ga *GolangAnalyzer) RecommendStrategy(ctx context.Context, analysis *analy
 
 			// Check if it's an indirect dependency and try to resolve
 			if depInfo.Transitive {
-				handled := ga.handleIndirectDependency(ctx, analysis, dep, strategy)
-				if handled {
-					continue // Indirect dependency was resolved to parent bumps
-				}
+				ga.handleIndirectDependency(ctx, analysis, dep, strategy)
+				// Note: handleIndirectDependency adds parent bump alternatives to strategy.
+				// We still add the original package since the user explicitly requested it.
 			}
 		}
 
@@ -399,8 +399,122 @@ func (ga *GolangAnalyzer) RecommendStrategy(ctx context.Context, analysis *analy
 		log.Infof("Will update %s to %s", dep.Name, dep.Version)
 	}
 
+	// Check transitive requirements for all packages being updated
+	ga.checkTransitiveRequirementsForStrategy(ctx, analysis, strategy)
+
+	// Deduplicate DirectUpdates — the same package can be added from multiple paths
+	// (direct update, parent bump for an indirect dep, transitive co-update).
+	// Keep the highest required version for each package.
+	strategy.DirectUpdates = deduplicateDependencies(strategy.DirectUpdates)
+
 	log.Infof("Strategy: %d direct updates", len(strategy.DirectUpdates))
 	return strategy, nil
+}
+
+// checkTransitiveRequirementsForStrategy checks if the updates in the strategy
+// require additional co-updates and adds them to DirectUpdates.
+func (ga *GolangAnalyzer) checkTransitiveRequirementsForStrategy(
+	ctx context.Context,
+	analysis *analyzer.AnalysisResult,
+	strategy *analyzer.Strategy,
+) {
+	log := clog.FromContext(ctx)
+
+	// Get module root from analysis
+	modRoot := "."
+	if rootPath, ok := analysis.Metadata["moduleRoot"].(string); ok {
+		modRoot = rootPath
+	}
+
+	// Parse go.mod (if moduleRoot is set and file exists)
+	modFilePath := filepath.Join(modRoot, "go.mod")
+	modFile, _, err := ParseGoModfile(modFilePath)
+	if err != nil {
+		// If we can't parse go.mod, skip transitive checking
+		// This can happen in tests or when analyzing remotely
+		log.Debugf("Could not parse go.mod for transitive checking: %v", err)
+		return
+	}
+
+	// Build map of packages being updated
+	packagesBeingUpdated := make(map[string]string)
+	for _, dep := range strategy.DirectUpdates {
+		packagesBeingUpdated[dep.Name] = dep.Version
+	}
+
+	// Check each package for missing transitive requirements
+	allMissingDeps := make(map[string]MissingDependency)
+
+	for _, dep := range strategy.DirectUpdates {
+		missingDeps, err := CheckTransitiveRequirements(ctx, dep.Name, dep.Version, modFile)
+		if err != nil {
+			log.Warnf("Could not check transitive requirements for %s@%s: %v", dep.Name, dep.Version, err)
+			continue
+		}
+
+		// Also check for potential API/schema incompatibilities in other packages
+		apiIssues, err := CheckAPICompatibility(ctx, dep.Name, dep.Version, modFile)
+		if err != nil {
+			log.Debugf("Could not check API compatibility for %s@%s: %v", dep.Name, dep.Version, err)
+		} else if len(apiIssues) > 0 {
+			// Collect API compatibility issues for grouped warning
+			for _, issue := range apiIssues {
+				strategy.Warnings = append(strategy.Warnings,
+					fmt.Sprintf("API Compatibility Alert - %s imports %s which is being updated to %s (may require manual version bump)",
+						issue.Package, dep.Name, dep.Version))
+				log.Infof("API compatibility alert for %s", issue.Package)
+			}
+		}
+
+		// Only add missing deps that are NOT already being updated
+		for _, missing := range missingDeps {
+			// Skip if this dependency is already in the update list
+			if targetVer, beingUpdated := packagesBeingUpdated[missing.Package]; beingUpdated {
+				// Check if the version being updated is sufficient
+				if semver.IsValid(targetVer) && semver.IsValid(missing.RequiredVersion) {
+					if semver.Compare(targetVer, missing.RequiredVersion) >= 0 {
+						log.Debugf("Dependency %s requirement satisfied by update to %s", missing.Package, targetVer)
+						continue
+					}
+				}
+			}
+
+			// Add to missing deps (deduplicate, keep highest required version)
+			if existing, exists := allMissingDeps[missing.Package]; exists {
+				if semver.IsValid(missing.RequiredVersion) && semver.IsValid(existing.RequiredVersion) {
+					if semver.Compare(missing.RequiredVersion, existing.RequiredVersion) > 0 {
+						allMissingDeps[missing.Package] = missing
+					}
+				}
+			} else {
+				allMissingDeps[missing.Package] = missing
+			}
+		}
+	}
+
+	// Add missing dependencies to DirectUpdates, skipping no-ops (where version isn't changing)
+	if len(allMissingDeps) > 0 {
+		log.Infof("Found %d additional dependencies that need co-updating", len(allMissingDeps))
+		for _, missing := range allMissingDeps {
+			// Skip no-op updates (where required version equals current version)
+			if missing.CurrentVersion == missing.RequiredVersion {
+				log.Debugf("Skipping no-op update for %s (already at %s)", missing.Package, missing.CurrentVersion)
+				continue
+			}
+
+			strategy.DirectUpdates = append(strategy.DirectUpdates, analyzer.Dependency{
+				Name:    missing.Package,
+				Version: missing.RequiredVersion,
+				Metadata: map[string]any{
+					"required_by": "transitive dependency check",
+					"reason":      missing.Reason,
+				},
+			})
+			strategy.Warnings = append(strategy.Warnings,
+				fmt.Sprintf("Also updating %s to %s (required by other updates)", missing.Package, missing.RequiredVersion))
+			log.Infof("Adding co-update: %s@%s", missing.Package, missing.RequiredVersion)
+		}
+	}
 }
 
 // handleIndirectDependency resolves an indirect dependency to parent bumps.
@@ -490,6 +604,34 @@ func (ga *GolangAnalyzer) addParentBumpsToStrategy(
 				originalDep.Name,
 				len(resolution.PossibleBumps)))
 	}
+}
+
+// deduplicateDependencies removes duplicate entries from a dependency list.
+// When the same package appears more than once, the entry with the highest
+// semver version is kept. Non-semver versions are kept as-is (last write wins).
+func deduplicateDependencies(deps []analyzer.Dependency) []analyzer.Dependency {
+	seen := make(map[string]int) // package name -> index in result
+	result := make([]analyzer.Dependency, 0, len(deps))
+
+	for _, dep := range deps {
+		idx, exists := seen[dep.Name]
+		if !exists {
+			seen[dep.Name] = len(result)
+			result = append(result, dep)
+			continue
+		}
+
+		// Package already seen — keep whichever has the higher version.
+		existing := result[idx]
+		if semver.IsValid(dep.Version) && semver.IsValid(existing.Version) {
+			if semver.Compare(dep.Version, existing.Version) > 0 {
+				result[idx] = dep
+			}
+		}
+		// For non-semver versions (pseudo-versions, etc.) keep the first occurrence.
+	}
+
+	return result
 }
 
 // countDirect counts direct dependencies.

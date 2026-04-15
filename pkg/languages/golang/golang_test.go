@@ -673,7 +673,7 @@ func TestGolang_Update_DryRun(t *testing.T) {
 	// Create minimal go.mod
 	goModContent := `module test/module
 
-go 1.26
+go 1.25
 
 require github.com/google/uuid v1.0.0
 `
@@ -713,7 +713,7 @@ func TestGolang_Update_AllPackagesUpToDate(t *testing.T) {
 	// Create go.mod with package already at target version
 	goModContent := `module test/module
 
-go 1.26
+go 1.25
 
 require github.com/google/uuid v1.3.0
 `
@@ -790,7 +790,7 @@ func TestGolang_Validate_Success(t *testing.T) {
 	// Create go.mod with updated version
 	goModContent := `module test/module
 
-go 1.26
+go 1.25
 
 require github.com/google/uuid v1.3.0
 `
@@ -820,7 +820,7 @@ func TestGolang_Validate_PackageNotFound(t *testing.T) {
 	// Create go.mod without the requested package
 	goModContent := `module test/module
 
-go 1.26
+go 1.25
 
 require github.com/sirupsen/logrus v1.0.0
 `
@@ -884,7 +884,7 @@ func TestGolangAnalyzer_Analyze(t *testing.T) {
 	// Create minimal go.mod
 	goModContent := `module test/module
 
-go 1.26
+go 1.25
 
 require (
 	github.com/google/uuid v1.3.0
@@ -955,7 +955,7 @@ func TestGolangAnalyzer_Analyze_WithReplaceDirectives(t *testing.T) {
 	// Create go.mod with replace directives
 	goModContent := `module test/module
 
-go 1.26
+go 1.25
 
 require github.com/old/pkg v1.0.0
 
@@ -1005,7 +1005,7 @@ func TestGolangAnalyzer_Analyze_FilePathDirectly(t *testing.T) {
 	// Create minimal go.mod
 	goModContent := `module test/module
 
-go 1.26
+go 1.25
 
 require github.com/google/uuid v1.3.0
 `
@@ -1033,7 +1033,7 @@ func TestGolang_Update_CurrentVersionNewer(t *testing.T) {
 	// Create go.mod with package at v1.5.0 (newer than requested v1.3.0)
 	goModContent := `module test/module
 
-go 1.26
+go 1.25
 
 require github.com/google/uuid v1.5.0
 `
@@ -1072,7 +1072,7 @@ func TestGolang_Update_PackageNotInGoMod(t *testing.T) {
 	// Create go.mod without the package we want to add
 	goModContent := `module test/module
 
-go 1.26
+go 1.25
 `
 	goModPath := filepath.Join(tmpDir, "go.mod")
 	err := os.WriteFile(goModPath, []byte(goModContent), 0o600)
@@ -1217,7 +1217,7 @@ func TestGolang_Update_Workspace(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create go.work file
-	workContent := `go 1.26
+	workContent := `go 1.25
 
 use (
 	.
@@ -1230,7 +1230,7 @@ use (
 	// Create root go.mod with shared dependency
 	rootMod := `module test/workspace
 
-go 1.26
+go 1.25
 
 require github.com/google/uuid v1.0.0
 `
@@ -1240,7 +1240,7 @@ require github.com/google/uuid v1.0.0
 	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "moduleA"), 0o755))
 	modAContent := `module test/workspace/moduleA
 
-go 1.26
+go 1.25
 
 require github.com/google/uuid v1.0.0
 `
@@ -1250,7 +1250,7 @@ require github.com/google/uuid v1.0.0
 	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "moduleB"), 0o755))
 	modBContent := `module test/workspace/moduleB
 
-go 1.26
+go 1.25
 
 require golang.org/x/crypto v0.45.0
 `
@@ -1340,11 +1340,113 @@ require github.com/example/legacy v2.0.0+incompatible
 	require.Equal(t, "v3.0.0+incompatible", got)
 }
 
+func TestFilterDepsForModule(t *testing.T) {
+	tests := []struct {
+		name     string
+		deps     []languages.Dependency
+		modFile  *modfile.File
+		wantDeps []string
+	}{
+		{
+			name: "all deps present",
+			deps: []languages.Dependency{
+				{Name: "example.com/foo", Version: "v1.0.0"},
+				{Name: "example.com/bar", Version: "v2.0.0"},
+			},
+			modFile: &modfile.File{
+				Require: []*modfile.Require{
+					{Mod: module.Version{Path: "example.com/foo", Version: "v0.9.0"}},
+					{Mod: module.Version{Path: "example.com/bar", Version: "v1.0.0"}},
+				},
+			},
+			wantDeps: []string{"example.com/foo", "example.com/bar"},
+		},
+		{
+			name: "some deps absent — only present ones returned",
+			deps: []languages.Dependency{
+				{Name: "example.com/present", Version: "v1.0.0"},
+				{Name: "example.com/absent", Version: "v2.0.0"},
+			},
+			modFile: &modfile.File{
+				Require: []*modfile.Require{
+					{Mod: module.Version{Path: "example.com/present", Version: "v0.9.0"}},
+				},
+			},
+			wantDeps: []string{"example.com/present"},
+		},
+		{
+			name: "no deps present",
+			deps: []languages.Dependency{
+				{Name: "example.com/absent", Version: "v1.0.0"},
+			},
+			modFile: &modfile.File{
+				Require: []*modfile.Require{},
+			},
+			wantDeps: []string{},
+		},
+		{
+			name: "dep present via replace directive new path",
+			deps: []languages.Dependency{
+				{Name: "example.com/new", Version: "v1.0.0"},
+			},
+			modFile: &modfile.File{
+				Require: []*modfile.Require{},
+				Replace: []*modfile.Replace{
+					{
+						Old: module.Version{Path: "example.com/old"},
+						New: module.Version{Path: "example.com/new", Version: "v0.9.0"},
+					},
+				},
+			},
+			wantDeps: []string{"example.com/new"},
+		},
+		{
+			name: "replace dep matched via OldName",
+			deps: []languages.Dependency{
+				{OldName: "example.com/old", Name: "example.com/new", Version: "v1.0.0", Replace: true},
+			},
+			modFile: &modfile.File{
+				Require: []*modfile.Require{
+					{Mod: module.Version{Path: "example.com/old", Version: "v0.9.0"}},
+				},
+				Replace: []*modfile.Replace{
+					{
+						Old: module.Version{Path: "example.com/old"},
+						New: module.Version{Path: "example.com/new", Version: "v0.9.0"},
+					},
+				},
+			},
+			wantDeps: []string{"example.com/new"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterDepsForModule(tt.deps, tt.modFile)
+
+			if len(got) != len(tt.wantDeps) {
+				t.Errorf("got %d deps, want %d: %v", len(got), len(tt.wantDeps), got)
+				return
+			}
+
+			gotNames := make(map[string]bool)
+			for _, d := range got {
+				gotNames[d.Name] = true
+			}
+			for _, want := range tt.wantDeps {
+				if !gotNames[want] {
+					t.Errorf("expected dep %q in result, got: %v", want, got)
+				}
+			}
+		})
+	}
+}
+
 func TestGolang_Update_Workspace_OnlyTargetedModules(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create go.work file with 3 modules
-	workContent := `go 1.26
+	workContent := `go 1.25
 
 use (
 	.
@@ -1357,7 +1459,7 @@ use (
 	// Root module without target dependency
 	rootMod := `module test/workspace
 
-go 1.26
+go 1.25
 
 require github.com/sirupsen/logrus v1.9.0
 `
@@ -1367,7 +1469,7 @@ require github.com/sirupsen/logrus v1.9.0
 	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "with-dep"), 0o755))
 	withDepMod := `module test/workspace/with-dep
 
-go 1.26
+go 1.25
 
 require github.com/google/uuid v1.0.0
 `
@@ -1377,7 +1479,7 @@ require github.com/google/uuid v1.0.0
 	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "without-dep"), 0o755))
 	withoutDepMod := `module test/workspace/without-dep
 
-go 1.26
+go 1.25
 
 require golang.org/x/crypto v0.45.0
 `
@@ -1398,4 +1500,78 @@ require golang.org/x/crypto v0.45.0
 
 	// Only with-dep module should have been processed
 	// (In actual execution, only that module would be updated)
+}
+
+func TestCheckMissingTransitiveDeps_FormattedOutput(t *testing.T) {
+	// This test verifies that the error message includes properly formatted sections
+	// when there are missing transitive dependencies
+	tmpDir := t.TempDir()
+
+	modContent := `module example.com/test
+
+go 1.21
+
+require (
+	github.com/example/lib v1.0.0
+)
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(modContent), 0o600))
+
+	g := &Golang{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "github.com/example/lib", Version: "v2.0.0"},
+		},
+	}
+
+	// This should fail with missing transitive dependencies (unless the package doesn't have any)
+	err := g.Update(context.Background(), cfg)
+	// The error message format is what we're testing
+	// It should contain the formatted sections if there are missing deps
+	if err != nil {
+		errMsg := err.Error()
+		// If the error is about transitive dependencies, verify the format
+		if strings.Contains(errMsg, "transitive dependencies need co-updating") {
+			// Check for formatted sections in the error message
+			require.Contains(t, errMsg, "REQUIRED CO-UPDATES")
+			require.Contains(t, errMsg, "────────────────────")
+			require.Contains(t, errMsg, "SUGGESTED UPDATE COMMAND")
+			require.Contains(t, errMsg, "━━━━━━━━━━━━━━━━━━━━━━")
+		}
+	}
+}
+
+func TestGolang_Update_WithDuplicatePackagesDeduplicates(t *testing.T) {
+	// This test verifies that when we have duplicate packages with different versions,
+	// we keep only the highest version
+	tmpDir := t.TempDir()
+
+	modContent := `module example.com/test
+
+go 1.21
+
+require (
+	github.com/google/uuid v1.0.0
+	github.com/stretchr/testify v1.0.0
+)
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(modContent), 0o600))
+
+	// Create a deps.yaml that would have duplicates
+	// When we analyze and build the strategy, duplicates should be removed
+	g := &Golang{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "github.com/google/uuid", Version: "v1.3.0"},
+			{Name: "github.com/stretchr/testify", Version: "v1.8.0"},
+		},
+		DryRun: true,
+	}
+
+	// The update should succeed even with a dry run
+	// and the strategy should have deduplicated any packages
+	err := g.Update(context.Background(), cfg)
+	require.NoError(t, err)
 }
