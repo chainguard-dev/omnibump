@@ -85,7 +85,7 @@ func (a *Analyzer) AnalyzeRemote(ctx context.Context, files map[string][]byte) (
 			if err != nil {
 				return nil, err
 			}
-			tmpPath := tmp.Name()
+			tmpPath := filepath.Clean(tmp.Name())
 			if _, err := tmp.Write(data); err != nil {
 				_ = tmp.Close()
 				_ = os.Remove(tmpPath)

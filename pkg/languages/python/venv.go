@@ -187,18 +187,18 @@ type venvInstaller struct {
 // selectVenvInstaller returns the appropriate installer (uv or pip) for the venv.
 func selectVenvInstaller(_ string, toolHint string) *venvInstaller {
 	// If tool is explicitly specified as uv, use uv
-	if toolHint == "uv" {
+	if toolHint == UVCommand {
 		return &venvInstaller{
-			name:    "uv",
+			name:    UVCommand,
 			install: installWithUV,
 			check:   checkWithUV,
 		}
 	}
 
 	// If tool is explicitly specified as pip, use venv's pip
-	if toolHint == "pip" {
+	if toolHint == PipCommand {
 		return &venvInstaller{
-			name:    "pip",
+			name:    PipCommand,
 			install: installWithPip,
 			check:   checkWithPip,
 		}
