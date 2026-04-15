@@ -115,7 +115,7 @@ func safeWriteFile(path string, data []byte) error {
 	switch base {
 	case ManifestPyprojectTOML, ManifestRequirementsTxt, ManifestSetupCfg, ManifestSetupPy, ManifestPipfile:
 		// Path has been validated and cleaned, write to file
-		//nolint:gosec // Path validated: absolute, cleaned, and filename matches allowed manifest types
+		//nolint:gosec // Path is validated: absolute, cleaned, and filename verified
 		return os.WriteFile(cleanPath, data, 0o600)
 	default:
 		return fmt.Errorf("%w: %s", ErrInvalidManifestFile, base)
