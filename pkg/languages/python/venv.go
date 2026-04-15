@@ -229,7 +229,7 @@ func installWithUV(ctx context.Context, venv string, specs []venvSpecifier) erro
 		args = append(args, fmt.Sprintf("%s==%s", spec.Name, spec.Version))
 	}
 
-	cmd := exec.CommandContext(ctx, "uv", args...)
+	cmd := exec.CommandContext(ctx, UVCommand, args...) //nolint:gosec // args are constructed from validated package specs
 	cmd.Env = append(os.Environ(), fmt.Sprintf("VIRTUAL_ENV=%s", venv))
 
 	var stderr bytes.Buffer
@@ -256,7 +256,7 @@ func installWithPip(ctx context.Context, venv string, specs []venvSpecifier) err
 		args = append(args, fmt.Sprintf("%s==%s", spec.Name, spec.Version))
 	}
 
-	cmd := exec.CommandContext(ctx, pipBin, args...)
+	cmd := exec.CommandContext(ctx, pipBin, args...) //nolint:gosec // pipBin existence verified via os.Stat above
 	cmd.Env = append(os.Environ(), fmt.Sprintf("VIRTUAL_ENV=%s", venv))
 
 	var stderr bytes.Buffer
@@ -271,7 +271,7 @@ func installWithPip(ctx context.Context, venv string, specs []venvSpecifier) err
 
 // checkWithUV verifies environment consistency using uv pip check.
 func checkWithUV(ctx context.Context, venv string) error {
-	cmd := exec.CommandContext(ctx, "uv", "pip", "check")
+	cmd := exec.CommandContext(ctx, UVCommand, "pip", "check")
 	cmd.Env = append(os.Environ(), fmt.Sprintf("VIRTUAL_ENV=%s", venv))
 
 	var stderr bytes.Buffer
@@ -292,7 +292,7 @@ func checkWithPip(ctx context.Context, venv string) error {
 		return fmt.Errorf("pip not found in venv: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, pipBin, "check")
+	cmd := exec.CommandContext(ctx, pipBin, "check") //nolint:gosec // pipBin existence verified via os.Stat above
 	cmd.Env = append(os.Environ(), fmt.Sprintf("VIRTUAL_ENV=%s", venv))
 
 	var stderr bytes.Buffer
@@ -311,7 +311,7 @@ func getInstalledVersion(ctx context.Context, venv string, installer *venvInstal
 	// Use pip list --format json to get installed packages
 	var cmd *exec.Cmd
 	if installer.name == "uv" {
-		cmd = exec.CommandContext(ctx, "uv", "pip", "list", "--format", "json")
+		cmd = exec.CommandContext(ctx, UVCommand, "pip", "list", "--format", "json")
 		cmd.Env = append(os.Environ(), fmt.Sprintf("VIRTUAL_ENV=%s", venv))
 	} else {
 		pipBin := filepath.Join(venv, "bin", "pip")
@@ -319,7 +319,7 @@ func getInstalledVersion(ctx context.Context, venv string, installer *venvInstal
 		if _, err := os.Stat(pipBin); err != nil {
 			return "", fmt.Errorf("pip not found in venv: %w", err)
 		}
-		cmd = exec.CommandContext(ctx, pipBin, "list", "--format", "json")
+		cmd = exec.CommandContext(ctx, pipBin, "list", "--format", "json") //nolint:gosec // pipBin existence verified via os.Stat above
 		cmd.Env = append(os.Environ(), fmt.Sprintf("VIRTUAL_ENV=%s", venv))
 	}
 

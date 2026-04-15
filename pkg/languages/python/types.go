@@ -11,11 +11,17 @@ package python
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 )
 
 // Manifest file type constants.
 const (
+	// UVCommand is the uv package manager command.
+	UVCommand = "uv"
+	// PipCommand is the pip package manager command.
+	PipCommand = "pip"
+
 	// ManifestPyprojectTOML is the pyproject.toml manifest type.
 	ManifestPyprojectTOML = "pyproject.toml"
 	// ManifestRequirementsTxt is the requirements.txt manifest type.
@@ -94,6 +100,28 @@ func validateManifestPath(path string) error {
 	return nil
 }
 
+// safeWriteFile writes to a manifest file after path validation.
+func safeWriteFile(path string, data []byte) error {
+	if err := validateManifestPath(path); err != nil {
+		return err
+	}
+	// Verify path is still valid after Clean
+	cleanPath := filepath.Clean(path)
+	if !filepath.IsAbs(cleanPath) {
+		return fmt.Errorf("%w: %s", ErrInvalidPathAfterClean, cleanPath)
+	}
+	// Verify the base filename is still a manifest file
+	base := filepath.Base(cleanPath)
+	switch base {
+	case ManifestPyprojectTOML, ManifestRequirementsTxt, ManifestSetupCfg, ManifestSetupPy, ManifestPipfile:
+		// Path has been validated and cleaned, write to file
+		//nolint:gosec // Path is validated and cleaned above
+		return os.WriteFile(cleanPath, data, 0o600)
+	default:
+		return fmt.Errorf("%w: %s", ErrInvalidManifestFile, base)
+	}
+}
+
 var (
 	// ErrManifestNotFound is returned when no Python manifest is found.
 	ErrManifestNotFound = errors.New("no Python manifest file found")
@@ -145,4 +173,10 @@ var (
 
 	// ErrNoVersionNumber is returned when a string has no leading digits.
 	ErrNoVersionNumber = errors.New("not a number")
+
+	// ErrInvalidPathAfterClean is returned when a path is still invalid after filepath.Clean.
+	ErrInvalidPathAfterClean = errors.New("invalid path after clean")
+
+	// ErrInvalidManifestFile is returned when the file is not a known manifest type.
+	ErrInvalidManifestFile = errors.New("invalid manifest file")
 )

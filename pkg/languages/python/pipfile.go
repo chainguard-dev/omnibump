@@ -8,6 +8,7 @@ package python
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -68,7 +69,7 @@ func UpdatePipfile(path, packageName, newVersion string) error {
 		return err
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", path, err)
 	}
@@ -97,5 +98,5 @@ func UpdatePipfile(path, packageName, newVersion string) error {
 	if !found {
 		return fmt.Errorf("%w: %s", ErrPackageNotFound, packageName)
 	}
-	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600)
+	return safeWriteFile(path, []byte(strings.Join(lines, "\n")))
 }

@@ -8,6 +8,7 @@ package python
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -137,7 +138,7 @@ func UpdatePyprojectDep(path, packageName, newVersion string) error {
 		return err
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", path, err)
 	}
@@ -187,7 +188,7 @@ func updatePEP621Dep(data []byte, path, pkg, newVersion string) (bool, error) {
 	if !found {
 		return false, nil
 	}
-	return true, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600)
+	return true, safeWriteFile(path, []byte(strings.Join(lines, "\n")))
 }
 
 // updatePoetryDep updates a dep in [tool.poetry.dependencies].
@@ -222,7 +223,7 @@ func updatePoetryDep(data []byte, path, pkg, newVersion string) (bool, error) {
 	if !found {
 		return false, nil
 	}
-	return true, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600)
+	return true, safeWriteFile(path, []byte(strings.Join(lines, "\n")))
 }
 
 // rebuildPEP508 reconstructs a PEP 508 specifier with a new version.

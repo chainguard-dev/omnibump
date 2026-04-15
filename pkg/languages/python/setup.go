@@ -8,6 +8,7 @@ package python
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -88,7 +89,7 @@ func UpdateSetupCfg(path, packageName, newVersion string) error {
 		return err
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", path, err)
 	}
@@ -127,7 +128,7 @@ func UpdateSetupCfg(path, packageName, newVersion string) error {
 	if !found {
 		return fmt.Errorf("%w: %s", ErrPackageNotFound, packageName)
 	}
-	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600)
+	return safeWriteFile(path, []byte(strings.Join(lines, "\n")))
 }
 
 // parseInlineInstallRequires handles inline install_requires = pkg>=1.0 lines.
