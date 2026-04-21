@@ -77,7 +77,7 @@ func (g *Golang) Update(ctx context.Context, cfg *languages.UpdateConfig) error 
 	log := clog.FromContext(ctx)
 
 	log.Infof("Updating Go project at: %s", cfg.RootDir)
-	log.Infof("Dependencies to update: %d", len(cfg.Dependencies))
+	log.Debugf("Dependencies to update: %d", len(cfg.Dependencies))
 
 	// Check for go.work file
 	workPath := filepath.Join(cfg.RootDir, "go.work")
@@ -394,7 +394,7 @@ func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package,
 		if semver.IsValid(currentVersion) && semver.IsValid(resolvedVersion) {
 			cmp := semver.Compare(currentVersion, resolvedVersion)
 			if cmp == 0 {
-				log.Infof("Package %s is already at %s, skipping", name, currentVersion)
+				log.Debugf("Package %s is already at %s, skipping", name, currentVersion)
 				continue
 			} else if cmp > 0 {
 				log.Warnf("Package %s is at %s which is newer than requested %s, skipping", name, currentVersion, resolvedVersion)
@@ -466,56 +466,58 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 
 	fmt.Fprintf(&msg, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 
-	// Show required co-updates
+	// Show required co-updates as an aligned table.
 	if len(allMissingDeps) > 0 {
-		fmt.Fprintf(&msg, "REQUIRED CO-UPDATES\n")
-		fmt.Fprintf(&msg, "───────────────────\n")
-		fmt.Fprintf(&msg, "These packages must be updated due to explicit version requirements:\n\n")
+		maxLen := 0
 		for _, dep := range allMissingDeps {
-			fmt.Fprintf(&msg, "  • %s\n", dep.Package)
-			fmt.Fprintf(&msg, "    current: %s → required: >= %s\n\n", dep.CurrentVersion, dep.RequiredVersion)
+			if len(dep.Package) > maxLen {
+				maxLen = len(dep.Package)
+			}
 		}
+		keys := make([]string, 0, len(allMissingDeps))
+		for k := range allMissingDeps {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		fmt.Fprintf(&msg, "REQUIRED CO-UPDATES\n")
+		for _, k := range keys {
+			dep := allMissingDeps[k]
+			fmt.Fprintf(&msg, "  %-*s  %s → >=%s\n", maxLen, dep.Package, dep.CurrentVersion, dep.RequiredVersion)
+		}
+		fmt.Fprintf(&msg, "\n")
 	}
 
-	// Show API compatibility alerts
+	// Show API compatibility alerts as an aligned table.
 	if len(apiCompatibilityAlerts) > 0 {
-		fmt.Fprintf(&msg, "API COMPATIBILITY ALERTS\n")
-		fmt.Fprintf(&msg, "────────────────────────\n")
-		fmt.Fprintf(&msg, "These packages import updated dependencies and may require version bumps:\n\n")
+		maxLen := 0
 		for pkg := range apiCompatibilityAlerts {
-			fmt.Fprintf(&msg, "  • %s\n", pkg)
+			if len(pkg) > maxLen {
+				maxLen = len(pkg)
+			}
+		}
+		keys := make([]string, 0, len(apiCompatibilityAlerts))
+		for k := range apiCompatibilityAlerts {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		fmt.Fprintf(&msg, "API COMPATIBILITY ALERTS\n")
+		for _, pkg := range keys {
+			currentVer := ""
+			for _, req := range modFile.Require {
+				if req != nil && req.Mod.Path == pkg {
+					currentVer = req.Mod.Version
+					break
+				}
+			}
+			fmt.Fprintf(&msg, "  %-*s  %s\n", maxLen, pkg, currentVer)
 		}
 		fmt.Fprintf(&msg, "\n")
 	}
 
 	// Only error if there are required co-updates; API alerts are informational
 	if len(allMissingDeps) > 0 {
-		fmt.Fprintf(&msg, "SUGGESTED UPDATE COMMAND\n")
-		fmt.Fprintf(&msg, "────────────────────────\n\n")
-		fmt.Fprintf(&msg, "omnibump --packages \"\n")
-
-		for name, pkg := range filtered {
-			fmt.Fprintf(&msg, "  %s@%s\n", name, pkg.Version)
-		}
-
-		if len(allMissingDeps) > 0 {
-			for _, dep := range allMissingDeps {
-				fmt.Fprintf(&msg, "  %s@%s\n", dep.Package, dep.RequiredVersion)
-			}
-		}
-
-		if len(apiCompatibilityAlerts) > 0 {
-			for pkg := range apiCompatibilityAlerts {
-				for _, req := range modFile.Require {
-					if req != nil && req.Mod.Path == pkg {
-						fmt.Fprintf(&msg, "  %s@%s\n", pkg, req.Mod.Version)
-						break
-					}
-				}
-			}
-		}
-
-		fmt.Fprintf(&msg, "\"\n\n")
+		fmt.Fprintf(&msg, "SUGGESTED UPDATE COMMAND\n\n")
+		fmt.Fprintf(&msg, "%s", buildSuggestedCommand(filtered, allMissingDeps, apiCompatibilityAlerts, modFile))
 		fmt.Fprintf(&msg, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 		return fmt.Errorf("%w:%s", ErrTransitiveDepsRequired, msg.String())
 	}
@@ -523,6 +525,54 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 	// If only API alerts (no required co-updates), just log as warning
 	log.Warnf("API compatibility alerts:\n%s", msg.String())
 	return nil
+}
+
+// buildSuggestedCommand builds the omnibump --packages "..." command string.
+// It merges filtered packages and missing transitive deps, keeping the highest
+// version per module path so each package appears exactly once.
+func buildSuggestedCommand(filtered map[string]*Package, allMissingDeps map[string]MissingDependency, apiAlerts map[string]bool, modFile *modfile.File) string {
+	merged := make(map[string]string, len(filtered)+len(allMissingDeps))
+	for name, pkg := range filtered {
+		merged[name] = pkg.Version
+	}
+	for _, dep := range allMissingDeps {
+		if cur, ok := merged[dep.Package]; ok {
+			// If the current entry is non-semver (e.g. a commit hash) and the
+			// transitive requirement is real semver, prefer the semver version.
+			if !semver.IsValid(cur) && semver.IsValid(dep.RequiredVersion) {
+				merged[dep.Package] = dep.RequiredVersion
+			} else if semver.IsValid(dep.RequiredVersion) && semver.IsValid(cur) &&
+				semver.Compare(dep.RequiredVersion, cur) > 0 {
+				merged[dep.Package] = dep.RequiredVersion
+			}
+		} else {
+			merged[dep.Package] = dep.RequiredVersion
+		}
+	}
+	for pkg := range apiAlerts {
+		if _, exists := merged[pkg]; !exists {
+			for _, req := range modFile.Require {
+				if req != nil && req.Mod.Path == pkg && req.Mod.Version != "" {
+					merged[pkg] = req.Mod.Version
+					break
+				}
+			}
+		}
+	}
+
+	keys := make([]string, 0, len(merged))
+	for k := range merged {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "omnibump --packages \"\n")
+	for _, name := range keys {
+		fmt.Fprintf(&sb, "  %s@%s\n", name, merged[name])
+	}
+	fmt.Fprintf(&sb, "\"\n\n")
+	return sb.String()
 }
 
 // collectMissingDeps adds missing transitive dependencies to allMissingDeps,

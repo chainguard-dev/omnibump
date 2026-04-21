@@ -150,8 +150,7 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 			continue
 		}
 		if pkg.Replace {
-			log.Infof("Update package: %s", k)
-			log.Infof("Running go mod edit replace ...")
+			log.Infof("Updating %s to %s (replace)", k, pkg.Version)
 			if output, err := GoModEditReplaceModule(ctx, pkg.OldName, pkg.Name, pkg.Version, cfg.Modroot); err != nil {
 				return nil, fmt.Errorf("failed to run 'go mod edit -replace': %w for package %s/%s@%s with output: %v", err, pkg.OldName, pkg.Name, pkg.Version, output)
 			}
@@ -203,7 +202,7 @@ func DoUpdate(ctx context.Context, pkgVersions map[string]*Package, cfg *UpdateC
 		if err := os.WriteFile(modpath, newContent, 0o600); err != nil {
 			return nil, fmt.Errorf("failed to write go.mod: %w", err)
 		}
-		log.Infof("Updated go.mod file with new versions")
+		log.Debugf("Updated go.mod file with new versions")
 	}
 
 	// Run go mod tidy
@@ -336,12 +335,7 @@ func processRequireDirective(log *clog.Logger, require *modfile.Require, pkgVers
 }
 
 // goGetPackage runs go get for a package that is either a new dependency or uses a non-semver version.
-func goGetPackage(ctx context.Context, log *clog.Logger, pkg *Package, modroot string) error {
-	if !pkg.Require {
-		log.Infof("Running go get for new dependency ...")
-	} else {
-		log.Infof("Running go get for commit hash or non-semver version ...")
-	}
+func goGetPackage(ctx context.Context, pkg *Package, modroot string) error {
 	if output, err := GoGetModule(ctx, pkg.Name, pkg.Version, modroot); err != nil {
 		return fmt.Errorf("failed to run 'go get': %w with output: %v", err, output)
 	}
@@ -349,8 +343,7 @@ func goGetPackage(ctx context.Context, log *clog.Logger, pkg *Package, modroot s
 }
 
 // addRequirePackage updates an existing require directive in-memory via AddRequire.
-func addRequirePackage(log *clog.Logger, pkg *Package, modFile *modfile.File) error {
-	log.Infof("Updating existing require with AddRequire ...")
+func addRequirePackage(pkg *Package, modFile *modfile.File) error {
 	if err := modFile.AddRequire(pkg.Name, pkg.Version); err != nil {
 		return fmt.Errorf("failed to update require for %s@%s: %w", pkg.Name, pkg.Version, err)
 	}
@@ -369,8 +362,8 @@ func performGoGetPass(ctx context.Context, log *clog.Logger, modroot string, dep
 			// Handled in the AddRequire pass below.
 			continue
 		}
-		log.Infof("Update package: %s", k)
-		if err := goGetPackage(ctx, log, pkg, modroot); err != nil {
+		log.Infof("Updating %s to %s", k, pkg.Version)
+		if err := goGetPackage(ctx, pkg, modroot); err != nil {
 			return false, err
 		}
 		hasGoGetUpdates = true
@@ -389,8 +382,8 @@ func performAddRequirePass(log *clog.Logger, depsBumpOrdered []string, pkgVersio
 		if !pkg.Require || !semver.IsValid(pkg.Version) {
 			continue
 		}
-		log.Infof("Update package: %s", k)
-		if err := addRequirePackage(log, pkg, modFile); err != nil {
+		log.Infof("Updating %s to %s", k, pkg.Version)
+		if err := addRequirePackage(pkg, modFile); err != nil {
 			return false, err
 		}
 		hasDirectEdits = true
