@@ -1575,3 +1575,143 @@ require (
 	err := g.Update(context.Background(), cfg)
 	require.NoError(t, err)
 }
+
+func minimalModFile(t *testing.T) *modfile.File {
+	t.Helper()
+	f, err := modfile.Parse("go.mod", []byte("module example.com/test\n\ngo 1.21\n"), nil)
+	require.NoError(t, err)
+	return f
+}
+
+func TestBuildSuggestedCommand_DedupsToHigherVersion(t *testing.T) {
+	// When the same package appears in filtered (lower) and allMissingDeps (higher),
+	// only the higher version should appear in the output.
+	filtered := map[string]*Package{
+		"google.golang.org/grpc": {Name: "google.golang.org/grpc", Version: "v1.72.2"},
+	}
+	allMissingDeps := map[string]MissingDependency{
+		"google.golang.org/grpc": {Package: "google.golang.org/grpc", RequiredVersion: "v1.79.3"},
+	}
+
+	out := buildSuggestedCommand(filtered, allMissingDeps, nil, minimalModFile(t))
+
+	require.Contains(t, out, "google.golang.org/grpc@v1.79.3")
+	require.NotContains(t, out, "v1.72.2")
+}
+
+func TestBuildSuggestedCommand_KeepsHigherFilteredVersion(t *testing.T) {
+	// When filtered has a higher version than allMissingDeps, keep the filtered version.
+	filtered := map[string]*Package{
+		"google.golang.org/grpc": {Name: "google.golang.org/grpc", Version: "v1.79.3"},
+	}
+	allMissingDeps := map[string]MissingDependency{
+		"google.golang.org/grpc": {Package: "google.golang.org/grpc", RequiredVersion: "v1.72.2"},
+	}
+
+	out := buildSuggestedCommand(filtered, allMissingDeps, nil, minimalModFile(t))
+
+	require.Contains(t, out, "google.golang.org/grpc@v1.79.3")
+	require.NotContains(t, out, "v1.72.2")
+	// Package should appear exactly once.
+	require.Equal(t, 1, strings.Count(out, "google.golang.org/grpc@"))
+}
+
+func TestBuildSuggestedCommand_MajorVersionVariantsKeptSeparately(t *testing.T) {
+	// v1 and v2 major-version module paths are distinct and must both appear.
+	filtered := map[string]*Package{
+		"google.golang.org/grpc":    {Name: "google.golang.org/grpc", Version: "v1.72.2"},
+		"google.golang.org/grpc/v2": {Name: "google.golang.org/grpc/v2", Version: "v2.0.0"},
+	}
+
+	out := buildSuggestedCommand(filtered, nil, nil, minimalModFile(t))
+
+	require.Contains(t, out, "google.golang.org/grpc@v1.72.2")
+	require.Contains(t, out, "google.golang.org/grpc/v2@v2.0.0")
+}
+
+// TestBuildSuggestedCommand_ExternalAttacherGRPCDeduplicated is a regression test
+// for the real-world bug seen in kubernetes-csi-external-attacher 4.11.0 (stereo PR #62592).
+//
+// The build requested grpc@v1.72.2 (the CVE fix minimum), but a transitive requirement
+// from another updated dependency (e.g. otel/sdk@v1.43.0) demanded grpc@v1.79.3.
+// Because v1.72.2 < v1.79.3, collectMissingDeps correctly added grpc@v1.79.3 to
+// allMissingDeps. The old command builder then printed both versions, producing a
+// broken omnibump invocation.
+func TestBuildSuggestedCommand_ExternalAttacherGRPCDeduplicated(t *testing.T) {
+	modBytes, err := os.ReadFile("testdata/kubernetes-csi-external-attacher/go.mod")
+	require.NoError(t, err)
+	modFile, err := modfile.Parse("go.mod", modBytes, nil)
+	require.NoError(t, err)
+
+	// Packages from the build that were being updated (mirrors the failing build log).
+	filtered := map[string]*Package{
+		"google.golang.org/grpc":                      {Name: "google.golang.org/grpc", Version: "v1.72.2"},
+		"go.opentelemetry.io/otel/sdk":                {Name: "go.opentelemetry.io/otel/sdk", Version: "v1.43.0"},
+		"github.com/kubernetes-csi/csi-test/v5":       {Name: "github.com/kubernetes-csi/csi-test/v5", Version: "v5.4.0"},
+		"github.com/kubernetes-csi/csi-lib-utils":     {Name: "github.com/kubernetes-csi/csi-lib-utils", Version: "v0.23.2"},
+		"github.com/container-storage-interface/spec": {Name: "github.com/container-storage-interface/spec", Version: "v1.12.0"},
+		"k8s.io/component-base":                       {Name: "k8s.io/component-base", Version: "v0.35.0"},
+		"k8s.io/apiserver":                            {Name: "k8s.io/apiserver", Version: "v0.35.0"},
+	}
+
+	// Transitive co-update requirements discovered by checkMissingTransitiveDeps.
+	// grpc@v1.79.3 was required by an updated transitive dependency, while
+	// filtered already had grpc@v1.72.2 — this was the source of the duplicate.
+	allMissingDeps := map[string]MissingDependency{
+		"google.golang.org/grpc": {
+			Package:         "google.golang.org/grpc",
+			CurrentVersion:  "v1.72.2",
+			RequiredVersion: "v1.79.3",
+		},
+		"google.golang.org/protobuf": {
+			Package:         "google.golang.org/protobuf",
+			CurrentVersion:  "v1.36.8",
+			RequiredVersion: "v1.36.10",
+		},
+		"golang.org/x/net": {
+			Package:         "golang.org/x/net",
+			CurrentVersion:  "v0.47.0",
+			RequiredVersion: "v0.48.0",
+		},
+	}
+
+	out := buildSuggestedCommand(filtered, allMissingDeps, nil, modFile)
+
+	// grpc must appear exactly once, at the higher required version.
+	require.Contains(t, out, "google.golang.org/grpc@v1.79.3")
+	require.NotContains(t, out, "google.golang.org/grpc@v1.72.2")
+	require.Equal(t, 1, strings.Count(out, "google.golang.org/grpc@"))
+
+	// Other packages present as expected.
+	require.Contains(t, out, "go.opentelemetry.io/otel/sdk@v1.43.0")
+	require.Contains(t, out, "google.golang.org/protobuf@v1.36.10")
+	require.Contains(t, out, "golang.org/x/net@v0.48.0")
+}
+
+func TestBuildSuggestedCommand_NonSemverFilteredReplacedBySemverRequirement(t *testing.T) {
+	// If filtered has a commit hash for a package and allMissingDeps has a real
+	// semver requirement for the same package, the semver version should win.
+	filtered := map[string]*Package{
+		"github.com/foo/bar": {Name: "github.com/foo/bar", Version: "v0.0.0-20240101abcdef00"},
+	}
+	allMissingDeps := map[string]MissingDependency{
+		"github.com/foo/bar": {Package: "github.com/foo/bar", RequiredVersion: "v1.2.0"},
+	}
+
+	out := buildSuggestedCommand(filtered, allMissingDeps, nil, minimalModFile(t))
+
+	require.Contains(t, out, "github.com/foo/bar@v1.2.0")
+	require.NotContains(t, out, "abcdef00")
+}
+
+func TestBuildSuggestedCommand_APIAlertPackageNotInGoMod(t *testing.T) {
+	// A package in apiAlerts that isn't present in go.mod should be silently
+	// skipped rather than emitting a "pkg@" line with an empty version.
+	apiAlerts := map[string]struct{}{
+		"github.com/missing/pkg": {},
+	}
+
+	out := buildSuggestedCommand(nil, nil, apiAlerts, minimalModFile(t))
+
+	require.NotContains(t, out, "github.com/missing/pkg")
+}

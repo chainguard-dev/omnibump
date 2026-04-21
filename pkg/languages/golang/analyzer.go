@@ -396,7 +396,7 @@ func (ga *GolangAnalyzer) RecommendStrategy(ctx context.Context, analysis *analy
 
 		// Default: add to direct updates
 		strategy.DirectUpdates = append(strategy.DirectUpdates, dep)
-		log.Infof("Will update %s to %s", dep.Name, dep.Version)
+		log.Debugf("Will update %s to %s", dep.Name, dep.Version)
 	}
 
 	// Check transitive requirements for all packages being updated
