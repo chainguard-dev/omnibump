@@ -1645,13 +1645,13 @@ func TestBuildSuggestedCommand_ExternalAttacherGRPCDeduplicated(t *testing.T) {
 
 	// Packages from the build that were being updated (mirrors the failing build log).
 	filtered := map[string]*Package{
-		"google.golang.org/grpc":                     {Name: "google.golang.org/grpc", Version: "v1.72.2"},
-		"go.opentelemetry.io/otel/sdk":               {Name: "go.opentelemetry.io/otel/sdk", Version: "v1.43.0"},
-		"github.com/kubernetes-csi/csi-test/v5":      {Name: "github.com/kubernetes-csi/csi-test/v5", Version: "v5.4.0"},
-		"github.com/kubernetes-csi/csi-lib-utils":    {Name: "github.com/kubernetes-csi/csi-lib-utils", Version: "v0.23.2"},
+		"google.golang.org/grpc":                      {Name: "google.golang.org/grpc", Version: "v1.72.2"},
+		"go.opentelemetry.io/otel/sdk":                {Name: "go.opentelemetry.io/otel/sdk", Version: "v1.43.0"},
+		"github.com/kubernetes-csi/csi-test/v5":       {Name: "github.com/kubernetes-csi/csi-test/v5", Version: "v5.4.0"},
+		"github.com/kubernetes-csi/csi-lib-utils":     {Name: "github.com/kubernetes-csi/csi-lib-utils", Version: "v0.23.2"},
 		"github.com/container-storage-interface/spec": {Name: "github.com/container-storage-interface/spec", Version: "v1.12.0"},
-		"k8s.io/component-base":                      {Name: "k8s.io/component-base", Version: "v0.35.0"},
-		"k8s.io/apiserver":                           {Name: "k8s.io/apiserver", Version: "v0.35.0"},
+		"k8s.io/component-base":                       {Name: "k8s.io/component-base", Version: "v0.35.0"},
+		"k8s.io/apiserver":                            {Name: "k8s.io/apiserver", Version: "v0.35.0"},
 	}
 
 	// Transitive co-update requirements discovered by checkMissingTransitiveDeps.
@@ -1707,8 +1707,8 @@ func TestBuildSuggestedCommand_NonSemverFilteredReplacedBySemverRequirement(t *t
 func TestBuildSuggestedCommand_APIAlertPackageNotInGoMod(t *testing.T) {
 	// A package in apiAlerts that isn't present in go.mod should be silently
 	// skipped rather than emitting a "pkg@" line with an empty version.
-	apiAlerts := map[string]bool{
-		"github.com/missing/pkg": true,
+	apiAlerts := map[string]struct{}{
+		"github.com/missing/pkg": {},
 	}
 
 	out := buildSuggestedCommand(nil, nil, apiAlerts, minimalModFile(t))

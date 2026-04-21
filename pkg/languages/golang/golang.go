@@ -428,7 +428,7 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 	}
 
 	allMissingDeps := make(map[string]MissingDependency)
-	apiCompatibilityAlerts := make(map[string]bool)
+	apiCompatibilityAlerts := make(map[string]struct{})
 
 	// Create a cache for go.mod files to reduce HTTP requests when checking API compatibility
 	// across multiple packages. This significantly reduces round trips when updating many packages.
@@ -452,7 +452,7 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 			log.Debugf("Could not check API compatibility for %s@%s: %v", name, pkg.Version, err)
 		} else {
 			for _, issue := range apiIssues {
-				apiCompatibilityAlerts[issue.Package] = true
+				apiCompatibilityAlerts[issue.Package] = struct{}{}
 				log.Infof("API compatibility alert for %s", issue.Package)
 			}
 		}
@@ -530,7 +530,7 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 // buildSuggestedCommand builds the omnibump --packages "..." command string.
 // It merges filtered packages and missing transitive deps, keeping the highest
 // version per module path so each package appears exactly once.
-func buildSuggestedCommand(filtered map[string]*Package, allMissingDeps map[string]MissingDependency, apiAlerts map[string]bool, modFile *modfile.File) string {
+func buildSuggestedCommand(filtered map[string]*Package, allMissingDeps map[string]MissingDependency, apiAlerts map[string]struct{}, modFile *modfile.File) string {
 	merged := make(map[string]string, len(filtered)+len(allMissingDeps))
 	for name, pkg := range filtered {
 		merged[name] = pkg.Version
