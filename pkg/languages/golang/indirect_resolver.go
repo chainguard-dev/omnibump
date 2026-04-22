@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -360,7 +361,10 @@ func checkModFileForIndirectDep(
 }
 
 // goProxyBase is the base URL for the Go module proxy.
-const goProxyBase = "https://proxy.golang.org"
+const (
+	goProxyBase = "https://proxy.golang.org"
+	proxyHost   = "proxy.golang.org"
+)
 
 // proxyClient is used for all Go module proxy requests with a reasonable timeout.
 var proxyClient = &http.Client{Timeout: 30 * time.Second}
@@ -432,12 +436,23 @@ func (c goModCache) has(pkg, ver string) bool {
 // fetchFromProxy performs an HTTP GET request to the Go module proxy and returns the response body.
 // path must begin with "/" and is appended to goProxyBase.
 func fetchFromProxy(ctx context.Context, path string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", goProxyBase+path, nil)
+	// Parse the path to validate it before use; only .Path is taken so the
+	// host component of the final request always comes from the proxyHost constant.
+	parsedPath, err := url.Parse(path)
+	if err != nil {
+		return nil, fmt.Errorf("invalid proxy path: %w", err)
+	}
+	u := &url.URL{
+		Scheme: "https",
+		Host:   proxyHost,
+		Path:   parsedPath.Path,
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := proxyClient.Do(req) //nolint:gosec // G704: URL is always goProxyBase + an escaped module path/version
+	resp, err := proxyClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
