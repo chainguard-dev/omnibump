@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -435,12 +436,14 @@ func (c goModCache) has(pkg, ver string) bool {
 // fetchFromProxy performs an HTTP GET request to the Go module proxy and returns the response body.
 // path must begin with "/" and is appended to goProxyBase.
 func fetchFromProxy(ctx context.Context, path string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", goProxyBase+path, nil)
+	u := &url.URL{
+		Scheme: "https",
+		Host:   proxyHost,
+		Path:   path,
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 	if err != nil {
 		return nil, err
-	}
-	if req.URL.Host != proxyHost {
-		return nil, fmt.Errorf("%w: %q", ErrUnexpectedProxyHost, req.URL.Host)
 	}
 
 	resp, err := proxyClient.Do(req)
