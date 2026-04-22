@@ -437,7 +437,7 @@ func fetchFromProxy(ctx context.Context, path string) ([]byte, error) {
 		return nil, err
 	}
 
-	resp, err := proxyClient.Do(req) //nolint:gosec // G704: URL is always goProxyBase + an escaped module path/version
+	resp, err := proxyClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

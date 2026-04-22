@@ -228,7 +228,7 @@ func ParsePom(pomPath string) (*gopom.Project, error) {
 func parsePatchesFromFile(ctx context.Context, patchFile string) ([]Patch, error) {
 	var patchList PatchList
 	// filepath.Clean sanitizes the path to prevent traversal attacks
-	file, err := os.Open(filepath.Clean(patchFile)) //nolint:gosec // G703: filepath.Clean() sanitizes user input
+	file, err := os.Open(filepath.Clean(patchFile))
 	if err != nil {
 		return nil, fmt.Errorf("failed reading file: %w", err)
 	}
@@ -295,7 +295,7 @@ func parsePatches(ctx context.Context, patchFile, patchFlag string) ([]Patch, er
 func parsePropertiesFromFile(ctx context.Context, propertyFile string) (map[string]string, error) {
 	var propertyList PropertyList
 	// filepath.Clean sanitizes the path to prevent traversal attacks
-	file, err := os.Open(filepath.Clean(propertyFile)) //nolint:gosec // G703: filepath.Clean() sanitizes user input
+	file, err := os.Open(filepath.Clean(propertyFile))
 	if err != nil {
 		return nil, fmt.Errorf("failed reading file: %w", err)
 	}

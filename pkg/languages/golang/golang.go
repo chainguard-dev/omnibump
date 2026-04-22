@@ -30,7 +30,6 @@ var (
 
 	// ErrUnexpectedGoListOutput is returned when go list output has unexpected format.
 	ErrUnexpectedGoListOutput = errors.New("unexpected go list output")
-
 )
 
 // Golang implements the Language interface for Go projects.
@@ -406,17 +405,15 @@ func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package,
 		log.Infof("Will update %s from %s to %s", name, currentVersion, resolvedVersion)
 	}
 
-	if err := checkMissingTransitiveDeps(ctx, filtered, modFile); err != nil {
-		return nil, err
-	}
+	checkMissingTransitiveDeps(ctx, filtered, modFile)
 
 	return filtered, nil
 }
 
 // checkMissingTransitiveDeps checks all packages being updated for transitive dependency
-// requirements not satisfied by the current go.mod, and returns an error with co-update
+// requirements not satisfied by the current go.mod, and logs a warning with co-update
 // recommendations if any are found.
-func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Package, modFile *modfile.File) error {
+func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Package, modFile *modfile.File) {
 	log := clog.FromContext(ctx)
 
 	// Build set of packages being updated
@@ -457,7 +454,7 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 	}
 
 	if len(allMissingDeps) == 0 && len(apiCompatibilityAlerts) == 0 {
-		return nil
+		return
 	}
 
 	var msg strings.Builder
@@ -518,7 +515,6 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 		fmt.Fprintf(&msg, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	}
 	log.Warnf("%s", msg.String())
-	return nil
 }
 
 // buildSuggestedCommand builds the omnibump --packages "..." command string.
