@@ -31,8 +31,6 @@ var (
 	// ErrUnexpectedGoListOutput is returned when go list output has unexpected format.
 	ErrUnexpectedGoListOutput = errors.New("unexpected go list output")
 
-	// ErrTransitiveDepsRequired is returned when updating a package requires co-updating other dependencies.
-	ErrTransitiveDepsRequired = errors.New("transitive dependencies need co-updating")
 )
 
 // Golang implements the Language interface for Go projects.
@@ -514,16 +512,12 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 		fmt.Fprintf(&msg, "\n")
 	}
 
-	// Only error if there are required co-updates; API alerts are informational
 	if len(allMissingDeps) > 0 {
 		fmt.Fprintf(&msg, "SUGGESTED UPDATE COMMAND\n\n")
 		fmt.Fprintf(&msg, "%s", buildSuggestedCommand(filtered, allMissingDeps, apiCompatibilityAlerts, modFile))
 		fmt.Fprintf(&msg, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-		return fmt.Errorf("%w:%s", ErrTransitiveDepsRequired, msg.String())
 	}
-
-	// If only API alerts (no required co-updates), just log as warning
-	log.Warnf("API compatibility alerts:\n%s", msg.String())
+	log.Warnf("%s", msg.String())
 	return nil
 }
 

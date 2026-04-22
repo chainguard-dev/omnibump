@@ -1525,21 +1525,9 @@ require (
 		},
 	}
 
-	// This should fail with missing transitive dependencies (unless the package doesn't have any)
+	// Transitive co-update issues are now warnings, not errors.
 	err := g.Update(context.Background(), cfg)
-	// The error message format is what we're testing
-	// It should contain the formatted sections if there are missing deps
-	if err != nil {
-		errMsg := err.Error()
-		// If the error is about transitive dependencies, verify the format
-		if strings.Contains(errMsg, "transitive dependencies need co-updating") {
-			// Check for formatted sections in the error message
-			require.Contains(t, errMsg, "REQUIRED CO-UPDATES")
-			require.Contains(t, errMsg, "────────────────────")
-			require.Contains(t, errMsg, "SUGGESTED UPDATE COMMAND")
-			require.Contains(t, errMsg, "━━━━━━━━━━━━━━━━━━━━━━")
-		}
-	}
+	require.NoError(t, err)
 }
 
 func TestGolang_Update_WithDuplicatePackagesDeduplicates(t *testing.T) {
