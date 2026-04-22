@@ -50,6 +50,9 @@ var (
 
 	// ErrNilHTTPResponse is returned when HTTP client returns nil response.
 	ErrNilHTTPResponse = errors.New("http request returned nil response")
+
+	// ErrUnexpectedProxyHost is returned when the constructed proxy URL resolves to an unexpected host.
+	ErrUnexpectedProxyHost = errors.New("unexpected proxy host")
 )
 
 // pkgVersion holds version information for validation.

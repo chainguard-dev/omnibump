@@ -360,7 +360,10 @@ func checkModFileForIndirectDep(
 }
 
 // goProxyBase is the base URL for the Go module proxy.
-const goProxyBase = "https://proxy.golang.org"
+const (
+	goProxyBase = "https://proxy.golang.org"
+	proxyHost   = "proxy.golang.org"
+)
 
 // proxyClient is used for all Go module proxy requests with a reasonable timeout.
 var proxyClient = &http.Client{Timeout: 30 * time.Second}
@@ -435,6 +438,9 @@ func fetchFromProxy(ctx context.Context, path string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", goProxyBase+path, nil)
 	if err != nil {
 		return nil, err
+	}
+	if req.URL.Host != proxyHost {
+		return nil, fmt.Errorf("%w: %q", ErrUnexpectedProxyHost, req.URL.Host)
 	}
 
 	resp, err := proxyClient.Do(req)
