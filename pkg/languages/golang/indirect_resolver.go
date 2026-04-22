@@ -436,10 +436,16 @@ func (c goModCache) has(pkg, ver string) bool {
 // fetchFromProxy performs an HTTP GET request to the Go module proxy and returns the response body.
 // path must begin with "/" and is appended to goProxyBase.
 func fetchFromProxy(ctx context.Context, path string) ([]byte, error) {
+	// Parse the path to validate it before use; only .Path is taken so the
+	// host component of the final request always comes from the proxyHost constant.
+	parsedPath, err := url.Parse(path)
+	if err != nil {
+		return nil, fmt.Errorf("invalid proxy path: %w", err)
+	}
 	u := &url.URL{
 		Scheme: "https",
 		Host:   proxyHost,
-		Path:   path,
+		Path:   parsedPath.Path,
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 	if err != nil {

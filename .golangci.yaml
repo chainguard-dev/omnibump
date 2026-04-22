@@ -15,6 +15,13 @@ linters:
           - dupl
           - gosec
           - goconst
+      # G704 taint analysis false positive: fetchFromProxy constructs the URL
+      # with a hardcoded scheme and host (proxyHost constant); only the path
+      # component is dynamic (module-escaped package path and version).
+      - path: 'pkg/languages/golang/indirect_resolver\.go'
+        linters:
+          - gosec
+        text: 'G704'
   enable:
     # Error handling
     - errcheck # Check for unchecked errors
