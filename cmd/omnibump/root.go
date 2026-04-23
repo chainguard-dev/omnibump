@@ -21,6 +21,7 @@ import (
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/golang" // Register Go
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/java"   // Register Java (Maven, Gradle, etc.)
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/php"    // Register PHP (Composer, etc.)
+	_ "github.com/chainguard-dev/omnibump/pkg/languages/python" // Register Python
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/rust"   // Register Rust
 	charmlog "github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
@@ -40,6 +41,8 @@ type rootFlags struct {
 	dryRun         bool
 	logLevel       string
 	logPolicy      []string
+	tool           string
+	venv           string
 }
 
 var flags rootFlags
@@ -75,13 +78,15 @@ func New() *cobra.Command {
 
 	// Add root command flags
 	f := cmd.Flags()
-	f.StringVarP(&flags.language, "language", "l", "auto", "language to use (auto, java, go, rust, or deprecated: maven)")
+	f.StringVarP(&flags.language, "language", "l", "auto", "language to use (auto, java, go, python, rust, or deprecated: maven)")
 	f.StringVar(&flags.depsFile, "deps", "", "dependencies file (deps.yaml, or legacy names)")
 	f.StringVar(&flags.propertiesFile, "properties", "", "properties file (properties.yaml)")
 	f.StringVar(&flags.packages, "packages", "", "inline package list (space-separated)")
 	f.StringVar(&flags.replaces, "replaces", "", "inline replace list (space-separated, format: oldpkg=newpkg@version)")
 	f.StringVar(&flags.properties, "props", "", "inline properties list (space-separated)")
 	f.StringVar(&flags.rootDir, "dir", ".", "project root directory")
+	f.StringVar(&flags.tool, "tool", "", "build tool override (Python: uv, pip, poetry, hatch, pdm, setuptools)")
+	f.StringVar(&flags.venv, "venv", "", "path to staged Python venv for in-place bumping (Python only)")
 	f.BoolVar(&flags.tidy, "tidy", false, "run tidy command after update")
 	f.BoolVar(&flags.showDiff, "show-diff", false, "show diff of changes")
 	f.BoolVar(&flags.dryRun, "dry-run", false, "simulate update without making changes")
@@ -329,6 +334,12 @@ func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but requir
 	updateCfg.Tidy = flags.tidy
 	updateCfg.ShowDiff = flags.showDiff
 	updateCfg.DryRun = flags.dryRun
+	if flags.tool != "" {
+		updateCfg.Options["tool"] = flags.tool
+	}
+	if flags.venv != "" {
+		updateCfg.Options["venv"] = flags.venv
+	}
 
 	// Perform update
 	if err := lang.Update(ctx, updateCfg); err != nil {
