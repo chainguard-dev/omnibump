@@ -1,6 +1,6 @@
 module github.com/chainguard-dev/omnibump
 
-go 1.25.7
+go 1.26.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
@@ -14,7 +14,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/mod v0.34.0
-	k8s.io/apimachinery v0.35.3
+	k8s.io/apimachinery v0.36.0
 	sigs.k8s.io/release-utils v0.12.4
 )
 
@@ -42,7 +42,7 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/exp v0.0.0-20231006140011-7918f672742d // indirect
 	golang.org/x/sys v0.38.0 // indirect
-	golang.org/x/text v0.31.0 // indirect
+	golang.org/x/text v0.33.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20180628173108-788fd7840127 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
