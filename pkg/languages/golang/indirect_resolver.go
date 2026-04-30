@@ -17,10 +17,14 @@ import (
 	"strings"
 	"time"
 
+	"go/types"
+
 	"github.com/chainguard-dev/clog"
+	"golang.org/x/exp/apidiff"
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
+	"golang.org/x/tools/go/packages"
 )
 
 // IndirectResolution contains information about resolving an indirect dependency CVE.
@@ -739,6 +743,74 @@ func findMinCompatibleVersion(ctx context.Context, depPkg, depVer, importedPkg, 
 		}
 	}
 	return ""
+}
+
+// CheckAPIBreakingChanges compares the exported API of packageName between oldVersion and
+// newVersion using apidiff. Returns the list of incompatible (breaking) changes, or nil if
+// the APIs are compatible or the comparison cannot be completed.
+//
+// Use this to distinguish genuine API incompatibilities (e.g. a changed function signature)
+// from false-positive compat alerts where the dependency simply added new symbols.
+func CheckAPIBreakingChanges(ctx context.Context, packageName, oldVersion, newVersion string) ([]string, error) {
+	oldTypes, err := loadPackageTypes(ctx, packageName, oldVersion)
+	if err != nil {
+		return nil, fmt.Errorf("loading %s@%s: %w", packageName, oldVersion, err)
+	}
+	newTypes, err := loadPackageTypes(ctx, packageName, newVersion)
+	if err != nil {
+		return nil, fmt.Errorf("loading %s@%s: %w", packageName, newVersion, err)
+	}
+
+	report := apidiff.Changes(oldTypes, newTypes)
+
+	var breaking []string
+	for _, change := range report.Changes {
+		if !change.Compatible {
+			breaking = append(breaking, change.Message)
+		}
+	}
+	return breaking, nil
+}
+
+// loadPackageTypes creates a temporary module, resolves packageName@version, and returns
+// the type-checked *types.Package for use with apidiff.
+func loadPackageTypes(ctx context.Context, packageName, version string) (*types.Package, error) {
+	tmpDir, err := os.MkdirTemp("", "omnibump-apidiff-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	goModContent := fmt.Sprintf("module apidiff_temp\n\ngo 1.21\n\nrequire %s %s\n", packageName, version)
+	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goModContent), 0o600); err != nil {
+		return nil, err
+	}
+	// A valid .go file is required for packages.Load to initialise the module.
+	if err := os.WriteFile(filepath.Join(tmpDir, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		return nil, err
+	}
+
+	cfg := &packages.Config{
+		Mode:    packages.NeedTypes | packages.NeedSyntax | packages.NeedImports | packages.NeedDeps,
+		Dir:     tmpDir,
+		Context: ctx,
+		Env:     append(os.Environ(), "GOFLAGS=-mod=mod", "GONOSUMCHECK=*"),
+	}
+
+	pkgs, err := packages.Load(cfg, packageName)
+	if err != nil {
+		return nil, err
+	}
+	if len(pkgs) == 0 {
+		return nil, fmt.Errorf("package %s not found", packageName)
+	}
+	if pkgs[0].Types == nil {
+		if len(pkgs[0].Errors) > 0 {
+			return nil, fmt.Errorf("%s", pkgs[0].Errors[0])
+		}
+		return nil, fmt.Errorf("no type information for %s", packageName)
+	}
+	return pkgs[0].Types, nil
 }
 
 // CheckAPICompatibilityWithCache checks API compatibility using a shared cache to reduce HTTP requests.

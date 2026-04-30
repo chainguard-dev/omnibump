@@ -9,6 +9,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -818,6 +819,40 @@ require (
 		}
 	}
 	assert.True(t, found, "otelgrpc should be flagged: it imports otel which is being co-updated")
+}
+
+func TestCheckAPIBreakingChanges(t *testing.T) {
+	ctx := t.Context()
+
+	t.Run("detects breaking change in go-ntlmssp ProcessChallenge signature", func(t *testing.T) {
+		// go-ldap/ldap/v3@v3.4.1 uses ntlmssp@v0.0.0-20200615164410-66371956d46c.
+		// ntlmssp@v0.1.1 added a fourth argument to ProcessChallenge, breaking that caller.
+		breaking, err := CheckAPIBreakingChanges(ctx,
+			"github.com/Azure/go-ntlmssp",
+			"v0.0.0-20200615164410-66371956d46c",
+			"v0.1.1")
+		require.NoError(t, err)
+		require.NotEmpty(t, breaking, "expected breaking changes between ntlmssp versions")
+
+		found := false
+		for _, msg := range breaking {
+			if strings.Contains(strings.ToLower(msg), "processchallenge") {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found, "expected ProcessChallenge to appear in breaking changes, got: %v", breaking)
+	})
+
+	t.Run("no breaking changes for a compatible bump", func(t *testing.T) {
+		// google/uuid v1.5.0 → v1.6.0 only adds new exports; existing API is unchanged.
+		breaking, err := CheckAPIBreakingChanges(ctx,
+			"github.com/google/uuid",
+			"v1.5.0",
+			"v1.6.0")
+		require.NoError(t, err)
+		assert.Empty(t, breaking, "expected no breaking changes between uuid v1.5.0 and v1.6.0")
+	})
 }
 
 func TestModuleFamilyPrefix(t *testing.T) {
