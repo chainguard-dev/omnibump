@@ -581,10 +581,14 @@ func CheckTransitiveRequirements(
 		return nil, fmt.Errorf("failed to fetch go.mod for %s@%s: %w", packageName, targetVersion, err)
 	}
 
-	// Build map of current versions in the project
+	// Build map of current versions for packages the project directly depends on.
+	// Indirect deps are excluded: if a package is indirect in the project's go.mod,
+	// the project doesn't import it directly, so API changes in that package cannot
+	// break the project's own code. Go's MVS resolves the appropriate version
+	// automatically from the transitive dependency graph.
 	currentVersions := make(map[string]string)
 	for _, req := range currentModFile.Require {
-		if req != nil {
+		if req != nil && !req.Indirect {
 			currentVersions[req.Mod.Path] = req.Mod.Version
 		}
 	}
@@ -632,6 +636,58 @@ func CheckTransitiveRequirements(
 	}
 
 	return missing, nil
+}
+
+// moduleFamilyPrefix returns the module family prefix used to identify tightly-coupled
+// module ecosystems. For vanity domains (e.g., go.opentelemetry.io/otel/sdk), the family
+// is domain/project (go.opentelemetry.io/otel), grouping all otel sub-modules together.
+// For standard code-hosting domains (github.com, gitlab.com, etc.), the family is the
+// full three-part path (github.com/org/repo), since different repos are unrelated projects.
+func moduleFamilyPrefix(pkg string) string {
+	parts := strings.SplitN(pkg, "/", 4)
+	if len(parts) < 2 {
+		return pkg
+	}
+	domain := parts[0]
+	switch domain {
+	case "github.com", "gitlab.com", "bitbucket.org", "codeberg.org":
+		// Hosting domain: family is domain/org/repo
+		if len(parts) >= 3 {
+			return parts[0] + "/" + parts[1] + "/" + parts[2]
+		}
+	}
+	// Vanity domain: family is domain/project (first path component after domain)
+	return parts[0] + "/" + parts[1]
+}
+
+// FindVersionGroupPackages returns all packages in the project's go.mod that belong to the
+// same module family as packageName and are at or below currentVersion. This covers both
+// the common case (all packages co-released at the same version) and the drift case (a
+// package in the same ecosystem that was left behind at an older version in a prior update).
+//
+// Module family is determined by moduleFamilyPrefix: for example, all
+// go.opentelemetry.io/otel/* packages share the family go.opentelemetry.io/otel and must
+// move together to preserve internal API compatibility.
+func FindVersionGroupPackages(packageName, currentVersion string, modFile *modfile.File) []string {
+	if !semver.IsValid(currentVersion) {
+		return nil
+	}
+	family := moduleFamilyPrefix(packageName)
+	group := make([]string, 0, len(modFile.Require))
+	for _, req := range modFile.Require {
+		if req == nil || req.Mod.Path == packageName {
+			continue
+		}
+		// Only include packages in the same module family.
+		if req.Mod.Path != family && !strings.HasPrefix(req.Mod.Path, family+"/") {
+			continue
+		}
+		// Include packages at or below the current version: same release or drifted behind.
+		if semver.IsValid(req.Mod.Version) && semver.Compare(req.Mod.Version, currentVersion) <= 0 {
+			group = append(group, req.Mod.Path)
+		}
+	}
+	return group
 }
 
 // CheckAPICompatibilityWithCache checks API compatibility using a shared cache to reduce HTTP requests.

@@ -434,6 +434,21 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 	preFetchDependencies(ctx, modFile, cache)
 
 	for name, pkg := range filtered {
+		// Recommend updating all packages in the same release group (e.g. all otel/*)
+		// to preserve internal API compatibility, including any that have drifted behind.
+		currentVer := getVersion(modFile, name)
+		for _, groupPkg := range FindVersionGroupPackages(name, currentVer, modFile) {
+			if _, alreadyUpdating := packagesBeingUpdated[groupPkg]; alreadyUpdating {
+				continue
+			}
+			allMissingDeps[groupPkg] = MissingDependency{
+				Package:         groupPkg,
+				RequiredVersion: pkg.Version,
+				CurrentVersion:  getVersion(modFile, groupPkg),
+				Reason:          fmt.Sprintf("version group with %s (both at %s)", name, currentVer),
+			}
+		}
+
 		missingDeps, err := CheckTransitiveRequirements(ctx, name, pkg.Version, modFile)
 		if err != nil {
 			log.Warnf("Could not check transitive requirements for %s@%s: %v", name, pkg.Version, err)
@@ -450,6 +465,23 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 				apiCompatibilityAlerts[issue.Package] = struct{}{}
 				log.Infof("API compatibility alert for %s", issue.Package)
 			}
+		}
+	}
+
+	// Second pass: run API compat checks for each discovered co-update.
+	// This catches packages that import a co-updated dep (e.g. otelgrpc importing otel)
+	// and may break when that dep's API changes.
+	for _, dep := range allMissingDeps {
+		if _, isBeingUpdated := packagesBeingUpdated[dep.Package]; isBeingUpdated {
+			continue
+		}
+		apiIssues, err := CheckAPICompatibilityWithCache(ctx, dep.Package, dep.RequiredVersion, modFile, cache)
+		if err != nil {
+			log.Debugf("Could not check API compatibility for co-update %s@%s: %v", dep.Package, dep.RequiredVersion, err)
+			continue
+		}
+		for _, issue := range apiIssues {
+			apiCompatibilityAlerts[issue.Package] = struct{}{}
 		}
 	}
 

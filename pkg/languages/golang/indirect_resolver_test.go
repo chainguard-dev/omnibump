@@ -522,7 +522,9 @@ func TestCheckTransitiveRequirements(t *testing.T) {
 		skipTest            bool // Skip if network required
 	}{
 		{
-			name:          "oras-go v1.2.7 requires newer docker packages",
+			// Indirect deps are excluded from version-constraint checks because Go's MVS
+			// resolves them automatically; only direct deps can cause API breakage for the project.
+			name:          "oras-go v1.2.7 with docker packages as indirect — no co-updates needed",
 			packageName:   "oras.land/oras-go",
 			targetVersion: "v1.2.7",
 			currentGoModContent: `module test
@@ -534,6 +536,26 @@ require (
 	github.com/docker/docker v28.0.0+incompatible // indirect
 	github.com/docker/go-connections v0.5.0 // indirect
 	golang.org/x/crypto v0.41.0 // indirect
+)
+`,
+			expectedMissing:  0,
+			expectedPackages: []string{},
+		},
+		{
+			// When the project directly depends on docker packages, a version bump
+			// by oras-go that requires newer docker APIs IS flagged as a co-update.
+			name:          "oras-go v1.2.7 with docker packages as direct — co-updates required",
+			packageName:   "oras.land/oras-go",
+			targetVersion: "v1.2.7",
+			currentGoModContent: `module test
+
+go 1.24
+
+require (
+	github.com/docker/cli v25.0.1+incompatible
+	github.com/docker/docker v28.0.0+incompatible
+	github.com/docker/go-connections v0.5.0
+	golang.org/x/crypto v0.41.0
 )
 `,
 			expectedMissing: 4,
@@ -617,17 +639,19 @@ func TestCheckTransitiveRequirements_Integration(t *testing.T) {
 
 		// Create a temp directory with a go.mod similar to gatekeeper
 		tmpDir := t.TempDir()
+		// docker packages listed as direct deps — the project imports them directly,
+		// so a version bump from oras-go that requires newer docker is a real co-update.
 		goModContent := `module github.com/example/test
 
 go 1.24.0
 
 require (
 	oras.land/oras-go v1.2.5
-	github.com/docker/cli v25.0.1+incompatible // indirect
-	github.com/docker/docker v28.0.0+incompatible // indirect
-	github.com/docker/go-connections v0.5.0 // indirect
+	github.com/docker/cli v25.0.1+incompatible
+	github.com/docker/docker v28.0.0+incompatible
+	github.com/docker/go-connections v0.5.0
 	github.com/spf13/cobra v1.9.1
-	golang.org/x/crypto v0.41.0 // indirect
+	golang.org/x/crypto v0.41.0
 	golang.org/x/sync v0.16.0 // indirect
 )
 `
@@ -719,6 +743,175 @@ require (
 		// Verify no issues are returned (all existing deps are direct, none import uuid typically)
 		_ = issues // Just verify we can call it without error
 	})
+}
+
+// TestCheckAPICompatibilityWithCache_CoUpdateDeps verifies the second-pass behavior:
+// when a package (e.g. otel) is discovered as a co-update, running API compat against
+// it should surface community packages that import it (e.g. otelgrpc) and may break.
+func TestCheckAPICompatibilityWithCache_CoUpdateDeps(t *testing.T) {
+	ctx := t.Context()
+
+	// Project directly depends on otelgrpc, which imports otel@v1.31.0 in its own go.mod.
+	// When otel is bumped to v1.43.0 (as a co-update from bumping otel/sdk), otelgrpc
+	// should be flagged because it imports the package being co-updated.
+	modContent := `module github.com/example/test
+
+go 1.24
+
+require (
+	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.56.0
+	go.opentelemetry.io/otel/sdk v1.40.0
+)
+`
+	modFile, err := modfile.Parse("go.mod", []byte(modContent), nil)
+	require.NoError(t, err)
+
+	cache := newGoModCache()
+	issues, err := CheckAPICompatibilityWithCache(ctx, "go.opentelemetry.io/otel", "v1.43.0", modFile, cache)
+	require.NoError(t, err)
+
+	found := false
+	for _, issue := range issues {
+		if issue.Package == "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc" {
+			found = true
+			assert.Contains(t, issue.Reason, "imports")
+		}
+	}
+	assert.True(t, found, "otelgrpc should be flagged: it imports otel which is being co-updated")
+}
+
+func TestModuleFamilyPrefix(t *testing.T) {
+	tests := []struct {
+		pkg  string
+		want string
+	}{
+		{"go.opentelemetry.io/otel/sdk", "go.opentelemetry.io/otel"},
+		{"go.opentelemetry.io/otel/metric", "go.opentelemetry.io/otel"},
+		{"go.opentelemetry.io/otel", "go.opentelemetry.io/otel"},
+		{"go.opentelemetry.io/auto/sdk", "go.opentelemetry.io/auto"},
+		{"github.com/stretchr/testify", "github.com/stretchr/testify"},
+		{"github.com/stretchr/testify/mock", "github.com/stretchr/testify"},
+		{"gitlab.com/org/repo/sub", "gitlab.com/org/repo"},
+		{"k8s.io/client-go", "k8s.io/client-go"},
+		{"k8s.io/api", "k8s.io/api"},
+		{"google.golang.org/grpc", "google.golang.org/grpc"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.pkg, func(t *testing.T) {
+			assert.Equal(t, tt.want, moduleFamilyPrefix(tt.pkg))
+		})
+	}
+}
+
+func TestFindVersionGroupPackages(t *testing.T) {
+	tests := []struct {
+		name           string
+		packageName    string
+		currentVersion string
+		goModContent   string
+		wantGroup      []string
+	}{
+		{
+			name:           "otel ecosystem — siblings at same version included",
+			packageName:    "go.opentelemetry.io/otel/sdk",
+			currentVersion: "v1.40.0",
+			goModContent: `module test
+go 1.24
+require (
+	go.opentelemetry.io/otel/sdk v1.40.0
+	go.opentelemetry.io/otel v1.40.0
+	go.opentelemetry.io/otel/metric v1.40.0
+	go.opentelemetry.io/otel/trace v1.40.0
+	golang.org/x/sys v0.38.0 // indirect
+	github.com/stretchr/testify v1.9.0 // indirect
+)
+`,
+			wantGroup: []string{
+				"go.opentelemetry.io/otel",
+				"go.opentelemetry.io/otel/metric",
+				"go.opentelemetry.io/otel/trace",
+			},
+		},
+		{
+			name:           "otel ecosystem — drifted sibling at lower version included",
+			packageName:    "go.opentelemetry.io/otel/sdk",
+			currentVersion: "v1.40.0",
+			goModContent: `module test
+go 1.24
+require (
+	go.opentelemetry.io/otel/sdk v1.40.0
+	go.opentelemetry.io/otel v1.40.0
+	go.opentelemetry.io/otel/metric v1.39.0
+	go.opentelemetry.io/otel/trace v1.40.0
+	golang.org/x/sys v0.38.0 // indirect
+)
+`,
+			wantGroup: []string{
+				"go.opentelemetry.io/otel",
+				"go.opentelemetry.io/otel/metric",
+				"go.opentelemetry.io/otel/trace",
+			},
+		},
+		{
+			name:           "auto/sdk is a different family — not included with otel/*",
+			packageName:    "go.opentelemetry.io/otel/sdk",
+			currentVersion: "v1.40.0",
+			goModContent: `module test
+go 1.24
+require (
+	go.opentelemetry.io/otel/sdk v1.40.0
+	go.opentelemetry.io/otel v1.40.0
+	go.opentelemetry.io/auto/sdk v1.1.0
+)
+`,
+			wantGroup: []string{
+				"go.opentelemetry.io/otel",
+			},
+		},
+		{
+			name:           "github package — unrelated same-repo package not included",
+			packageName:    "github.com/google/uuid",
+			currentVersion: "v1.6.0",
+			goModContent: `module test
+go 1.24
+require (
+	github.com/google/uuid v1.6.0
+	github.com/google/go-cmp v1.6.0
+	golang.org/x/sys v0.38.0
+)
+`,
+			// go-cmp is a different repo (github.com/google/go-cmp vs github.com/google/uuid)
+			wantGroup: []string{},
+		},
+		{
+			name:           "non-semver version — returns nil immediately",
+			packageName:    "github.com/example/pkg",
+			currentVersion: "not-a-semver",
+			goModContent: `module test
+go 1.24
+require (
+	github.com/example/pkg v1.0.0
+	github.com/example/other v1.0.0
+)
+`,
+			wantGroup: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			modFile, err := modfile.Parse("go.mod", []byte(tt.goModContent), nil)
+			require.NoError(t, err)
+
+			got := FindVersionGroupPackages(tt.packageName, tt.currentVersion, modFile)
+
+			if tt.wantGroup == nil {
+				assert.Nil(t, got)
+				return
+			}
+			assert.ElementsMatch(t, tt.wantGroup, got)
+		})
+	}
 }
 
 func TestGoModCache_BasicOperations(t *testing.T) {
