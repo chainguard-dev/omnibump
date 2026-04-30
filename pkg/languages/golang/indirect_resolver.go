@@ -690,6 +690,57 @@ func FindVersionGroupPackages(packageName, currentVersion string, modFile *modfi
 	return group
 }
 
+// findMinCompatibleVersion returns the lowest version of depPkg (above depVer) whose go.mod
+// requires importedPkg at >= minVersion. This identifies the minimum version of a package
+// that is compatible with a dependency upgrade — e.g., the lowest go-ldap that requires
+// go-ntlmssp@v0.1.1 after ntlmssp's ProcessChallenge signature changed.
+//
+// Returns empty string if no compatible version is found within the version limit.
+func findMinCompatibleVersion(ctx context.Context, depPkg, depVer, importedPkg, minVersion string, cache goModCache) string {
+	versions, err := fetchAvailableVersions(ctx, depPkg)
+	if err != nil {
+		return ""
+	}
+
+	// Collect versions strictly above the current one, then sort ascending
+	// so we find the minimum compatible version rather than the latest.
+	candidates := make([]string, 0, len(versions))
+	for _, v := range versions {
+		if semver.IsValid(v) && semver.Compare(v, depVer) > 0 {
+			candidates = append(candidates, v)
+		}
+	}
+	semver.Sort(candidates)
+
+	// Cap to avoid excessive HTTP calls for packages with many releases.
+	const maxCandidates = 30
+	if len(candidates) > maxCandidates {
+		candidates = candidates[:maxCandidates]
+	}
+
+	for _, v := range candidates {
+		var mod *modfile.File
+		if cached, ok := cache.get(depPkg, v); ok {
+			mod = cached
+		} else {
+			mod, err = fetchGoModForPackage(ctx, depPkg, v)
+			if err != nil {
+				continue
+			}
+			cache.set(depPkg, v, mod)
+		}
+		for _, req := range mod.Require {
+			if req == nil || req.Indirect || req.Mod.Path != importedPkg {
+				continue
+			}
+			if semver.IsValid(req.Mod.Version) && semver.Compare(req.Mod.Version, minVersion) >= 0 {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
 // CheckAPICompatibilityWithCache checks API compatibility using a shared cache to reduce HTTP requests.
 // The cache improves performance when analyzing multiple packages by avoiding redundant go.mod fetches.
 func CheckAPICompatibilityWithCache(
@@ -741,10 +792,16 @@ func CheckAPICompatibilityWithCache(
 		for _, depReq := range depModFile.Require {
 			if depReq != nil && depReq.Mod.Path == packageName {
 				// This dependency imports the package being updated.
-				// Flag it as potentially needing an update due to API/schema changes.
+				// Try to find the minimum version of depPkg that is compatible with
+				// the new targetVersion, so we can recommend a concrete upgrade path.
+				recommendedVer := findMinCompatibleVersion(ctx, depPkg, depVer, packageName, targetVersion, cache)
+				if recommendedVer == "" {
+					// No compatible version found within the search limit; keep current.
+					recommendedVer = depVer
+				}
 				potentialIssues = append(potentialIssues, MissingDependency{
 					Package:         depPkg,
-					RequiredVersion: depVer, // Keep current version as suggestion; user should verify
+					RequiredVersion: recommendedVer,
 					CurrentVersion:  depVer,
 					Reason:          fmt.Sprintf("%s imports %s which is being updated to %s (potential API/schema incompatibility — may need manual verification and version bump)", depPkg, packageName, targetVersion),
 				})

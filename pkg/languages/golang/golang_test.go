@@ -1695,8 +1695,8 @@ func TestBuildSuggestedCommand_NonSemverFilteredReplacedBySemverRequirement(t *t
 func TestBuildSuggestedCommand_APIAlertPackageNotInGoMod(t *testing.T) {
 	// A package in apiAlerts that isn't present in go.mod should be silently
 	// skipped rather than emitting a "pkg@" line with an empty version.
-	apiAlerts := map[string]struct{}{
-		"github.com/missing/pkg": {},
+	apiAlerts := map[string]string{
+		"github.com/missing/pkg": "",
 	}
 
 	out := buildSuggestedCommand(nil, nil, apiAlerts, minimalModFile(t))

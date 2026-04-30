@@ -745,6 +745,46 @@ require (
 	})
 }
 
+func TestFindMinCompatibleVersion(t *testing.T) {
+	ctx := t.Context()
+	cache := newGoModCache()
+
+	t.Run("finds minimum otelgrpc version compatible with otel v1.43.0", func(t *testing.T) {
+		// otelgrpc@v0.56.0 requires otel@v1.31.0. When otel is bumped to v1.43.0,
+		// we need the first otelgrpc version that requires otel >= v1.43.0.
+		// Verified from proxy: otelgrpc@v0.68.0 is the first to require otel@v1.43.0.
+		got := findMinCompatibleVersion(ctx,
+			"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc",
+			"v0.56.0",
+			"go.opentelemetry.io/otel",
+			"v1.43.0",
+			cache)
+		assert.Equal(t, "v0.68.0", got)
+	})
+
+	t.Run("returns empty string when no compatible version exists within limit", func(t *testing.T) {
+		// Using a version that is already at the top of available releases so no
+		// newer version with the required dep bump will be found.
+		got := findMinCompatibleVersion(ctx,
+			"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc",
+			"v0.68.0",
+			"go.opentelemetry.io/otel",
+			"v9.99.0", // far-future version that no release will satisfy
+			cache)
+		assert.Equal(t, "", got)
+	})
+
+	t.Run("returns empty string for unknown package", func(t *testing.T) {
+		got := findMinCompatibleVersion(ctx,
+			"github.com/does-not-exist/package",
+			"v1.0.0",
+			"github.com/some/dep",
+			"v2.0.0",
+			cache)
+		assert.Equal(t, "", got)
+	})
+}
+
 // TestCheckAPICompatibilityWithCache_CoUpdateDeps verifies the second-pass behavior:
 // when a package (e.g. otel) is discovered as a co-update, running API compat against
 // it should surface community packages that import it (e.g. otelgrpc) and may break.
