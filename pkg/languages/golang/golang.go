@@ -357,10 +357,7 @@ func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package,
 	log := clog.FromContext(ctx)
 	filtered := make(map[string]*Package)
 
-	mainModule := ""
-	if modFile.Module != nil {
-		mainModule = modFile.Module.Mod.Path
-	}
+	mainModule := mainModulePath(modFile)
 
 	for name, pkg := range packages {
 		// Skip the main module — bumping a module as its own dependency is not allowed.
@@ -449,10 +446,7 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 	// Skip the module currently being built — it cannot be bumped as its own dependency.
 	// For example, when analyzing the coredns source directory, github.com/coredns/coredns
 	// is the main module and cannot appear as a co-update recommendation.
-	mainModule := ""
-	if modFile.Module != nil {
-		mainModule = modFile.Module.Mod.Path
-	}
+	mainModule := mainModulePath(modFile)
 
 	for name, pkg := range filtered {
 		// Recommend updating all packages in the same release group (e.g. all otel/*)
@@ -594,6 +588,14 @@ func runCoUpdateAPICompatChecks(
 			apiCompatibilityAlerts[issue.Package] = issue.RequiredVersion
 		}
 	}
+}
+
+// mainModulePath returns the module path declared in the go.mod, or empty string if absent.
+func mainModulePath(modFile *modfile.File) string {
+	if modFile.Module != nil {
+		return modFile.Module.Mod.Path
+	}
+	return ""
 }
 
 // buildSuggestedCommand builds the omnibump --packages "..." command string.
