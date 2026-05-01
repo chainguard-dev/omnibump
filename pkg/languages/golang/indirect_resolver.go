@@ -809,7 +809,9 @@ func loadPackageTypes(ctx context.Context, packageName, version string) (*types.
 		Mode:    packages.NeedTypes | packages.NeedSyntax | packages.NeedImports | packages.NeedDeps,
 		Dir:     tmpDir,
 		Context: ctx,
-		Env:     append(os.Environ(), "GOFLAGS=-mod=mod", "GONOSUMCHECK=*"),
+		// GONOSUMCHECK=* disables checksum verification because this is a throwaway
+		// temp module used only for type analysis, not a production build artifact.
+		Env: append(os.Environ(), "GOFLAGS=-mod=mod", "GONOSUMCHECK=*"),
 	}
 
 	pkgs, err := packages.Load(cfg, packageName)
