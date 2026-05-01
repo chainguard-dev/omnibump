@@ -418,37 +418,36 @@ func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package,
 	return filtered, nil
 }
 
-// checkMissingTransitiveDeps checks all packages being updated for transitive dependency
-// requirements not satisfied by the current go.mod, and logs a warning with co-update
-// recommendations if any are found.
-func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Package, modFile *modfile.File) {
+// detectCoUpdates analyzes the requested package updates against the current go.mod
+// and returns the set of additional co-updates required (transitive requirements,
+// version-group siblings) along with API compatibility alerts (mapping each affected
+// package to a recommended minimum compatible version, or empty string when no
+// concrete version could be determined).
+func detectCoUpdates(ctx context.Context, packagesToUpdate map[string]string, modFile *modfile.File) (map[string]MissingDependency, map[string]string) {
 	log := clog.FromContext(ctx)
 
-	// Build set of packages being updated
-	packagesBeingUpdated := make(map[string]string)
-	for name, pkg := range filtered {
-		packagesBeingUpdated[name] = pkg.Version
+	// Snapshot the input so callers can pass the same map without aliasing concerns.
+	packagesBeingUpdated := make(map[string]string, len(packagesToUpdate))
+	for name, ver := range packagesToUpdate {
+		packagesBeingUpdated[name] = ver
 	}
 
 	allMissingDeps := make(map[string]MissingDependency)
-	// Maps package name to the recommended minimum compatible version.
-	// Empty string means no compatible version was determined; user should verify manually.
 	apiCompatibilityAlerts := make(map[string]string)
-
-	// Create a cache for go.mod files to reduce HTTP requests when checking API compatibility
-	// across multiple packages. This significantly reduces round trips when updating many packages.
-	cache := newGoModCache()
-
-	// Pre-fetch all dependencies in one batch to minimize HTTP calls.
-	// For 50 dependencies and 10 package updates: 50 calls total instead of up to 500.
-	preFetchDependencies(ctx, modFile, cache)
 
 	// Skip the module currently being built — it cannot be bumped as its own dependency.
 	// For example, when analyzing the coredns source directory, github.com/coredns/coredns
 	// is the main module and cannot appear as a co-update recommendation.
 	mainModule := mainModulePath(modFile)
 
-	for name, pkg := range filtered {
+	// Cache go.mod files to reduce HTTP requests across packages.
+	cache := newGoModCache()
+
+	// Pre-fetch all dependencies in one batch to minimize HTTP calls.
+	// For 50 dependencies and 10 package updates: 50 calls total instead of up to 500.
+	preFetchDependencies(ctx, modFile, cache)
+
+	for name, version := range packagesToUpdate {
 		// Recommend updating all packages in the same release group (e.g. all otel/*)
 		// to preserve internal API compatibility, including any that have drifted behind.
 		currentVer := getVersion(modFile, name)
@@ -462,28 +461,28 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 			}
 			allMissingDeps[groupPkg] = MissingDependency{
 				Package:         groupPkg,
-				RequiredVersion: pkg.Version,
+				RequiredVersion: version,
 				CurrentVersion:  getVersion(modFile, groupPkg),
 				Reason:          fmt.Sprintf("version group with %s (both at %s)", name, currentVer),
 			}
 		}
 
-		missingDeps, err := CheckTransitiveRequirements(ctx, name, pkg.Version, modFile)
+		missingDeps, err := CheckTransitiveRequirements(ctx, name, version, modFile)
 		if err != nil {
-			log.Warnf("Could not check transitive requirements for %s@%s: %v", name, pkg.Version, err)
+			log.Warnf("Could not check transitive requirements for %s@%s: %v", name, version, err)
 			continue
 		}
 		collectMissingDeps(ctx, missingDeps, packagesBeingUpdated, allMissingDeps)
 
-		// Also check for API compatibility issues
-		apiIssues, err := CheckAPICompatibilityWithCache(ctx, name, pkg.Version, modFile, cache)
+		// Check for API compatibility issues using the shared cache.
+		apiIssues, err := CheckAPICompatibilityWithCache(ctx, name, version, modFile, cache)
 		if err != nil {
-			log.Debugf("Could not check API compatibility for %s@%s: %v", name, pkg.Version, err)
-		} else {
-			for _, issue := range apiIssues {
-				apiCompatibilityAlerts[issue.Package] = issue.RequiredVersion
-				log.Infof("API compatibility alert for %s", issue.Package)
-			}
+			log.Debugf("Could not check API compatibility for %s@%s: %v", name, version, err)
+			continue
+		}
+		for _, issue := range apiIssues {
+			apiCompatibilityAlerts[issue.Package] = issue.RequiredVersion
+			log.Infof("API compatibility alert for %s", issue.Package)
 		}
 	}
 
@@ -499,6 +498,22 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 	// This catches packages that import a co-updated dep (e.g. otelgrpc importing otel)
 	// and may break when that dep's API changes.
 	runCoUpdateAPICompatChecks(ctx, allMissingDeps, packagesBeingUpdated, modFile, cache, apiCompatibilityAlerts)
+
+	return allMissingDeps, apiCompatibilityAlerts
+}
+
+// checkMissingTransitiveDeps checks all packages being updated for transitive dependency
+// requirements not satisfied by the current go.mod, and logs a warning with co-update
+// recommendations if any are found.
+func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Package, modFile *modfile.File) {
+	log := clog.FromContext(ctx)
+
+	packagesToUpdate := make(map[string]string, len(filtered))
+	for name, pkg := range filtered {
+		packagesToUpdate[name] = pkg.Version
+	}
+
+	allMissingDeps, apiCompatibilityAlerts := detectCoUpdates(ctx, packagesToUpdate, modFile)
 
 	if len(allMissingDeps) == 0 && len(apiCompatibilityAlerts) == 0 {
 		return
