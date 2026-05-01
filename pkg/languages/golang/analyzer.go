@@ -378,7 +378,22 @@ func (ga *GolangAnalyzer) RecommendStrategy(ctx context.Context, analysis *analy
 		AffectedDependencies: make(map[string][]string),
 	}
 
+	// Determine the main module path so we can skip it — the main module cannot be
+	// bumped as one of its own dependencies (same guard as the update path).
+	mainModule := ""
+	if rootPath, ok := analysis.Metadata["moduleRoot"].(string); ok {
+		modFilePath := filepath.Join(rootPath, "go.mod")
+		if modFile, _, err := ParseGoModfile(modFilePath); err == nil {
+			mainModule = mainModulePath(modFile)
+		}
+	}
+
 	for _, dep := range deps {
+		if dep.Name == mainModule {
+			log.Warnf("Skipping %s: it is the main module of this go.mod and cannot be bumped as a dependency", dep.Name)
+			continue
+		}
+
 		if depInfo, exists := analysis.Dependencies[dep.Name]; exists {
 			// Check if this is a replaced dependency
 			if replaced, ok := depInfo.Metadata["replaced"].(bool); ok && replaced {
