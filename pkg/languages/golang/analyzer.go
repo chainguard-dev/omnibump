@@ -378,13 +378,14 @@ func (ga *GolangAnalyzer) RecommendStrategy(ctx context.Context, analysis *analy
 		AffectedDependencies: make(map[string][]string),
 	}
 
-	// Determine the main module path so we can skip it — the main module cannot be
-	// bumped as one of its own dependencies (same guard as the update path).
+	// Parse go.mod once here and pass it to checkTransitiveRequirementsForStrategy
+	// to avoid a second disk read for the same file.
+	var strategyModFile *modfile.File
 	mainModule := ""
 	if rootPath, ok := analysis.Metadata["moduleRoot"].(string); ok {
-		modFilePath := filepath.Join(rootPath, "go.mod")
-		if modFile, _, err := ParseGoModfile(modFilePath); err == nil {
-			mainModule = mainModulePath(modFile)
+		if mf, _, err := ParseGoModfile(filepath.Join(rootPath, "go.mod")); err == nil {
+			strategyModFile = mf
+			mainModule = mainModulePath(mf)
 		}
 	}
 
@@ -415,8 +416,9 @@ func (ga *GolangAnalyzer) RecommendStrategy(ctx context.Context, analysis *analy
 		log.Debugf("Will update %s to %s", dep.Name, dep.Version)
 	}
 
-	// Check transitive requirements for all packages being updated
-	ga.checkTransitiveRequirementsForStrategy(ctx, analysis, strategy)
+	// Check transitive requirements for all packages being updated.
+	// Pass the already-parsed modFile to avoid a redundant disk read.
+	ga.checkTransitiveRequirementsForStrategy(ctx, analysis, strategy, strategyModFile)
 
 	// Deduplicate DirectUpdates — the same package can be added from multiple paths
 	// (direct update, parent bump for an indirect dep, transitive co-update).
@@ -433,23 +435,23 @@ func (ga *GolangAnalyzer) checkTransitiveRequirementsForStrategy(
 	ctx context.Context,
 	analysis *analyzer.AnalysisResult,
 	strategy *analyzer.Strategy,
+	modFile *modfile.File,
 ) {
 	log := clog.FromContext(ctx)
 
-	// Get module root from analysis
-	modRoot := "."
-	if rootPath, ok := analysis.Metadata["moduleRoot"].(string); ok {
-		modRoot = rootPath
-	}
-
-	// Parse go.mod (if moduleRoot is set and file exists)
-	modFilePath := filepath.Join(modRoot, "go.mod")
-	modFile, _, err := ParseGoModfile(modFilePath)
-	if err != nil {
-		// If we can't parse go.mod, skip transitive checking
-		// This can happen in tests or when analyzing remotely
-		log.Debugf("Could not parse go.mod for transitive checking: %v", err)
-		return
+	// Caller may pass nil if go.mod could not be parsed (e.g. remote analysis without checkout).
+	if modFile == nil {
+		// Fall back to parsing go.mod ourselves if caller couldn't provide it.
+		modRoot := "."
+		if rootPath, ok := analysis.Metadata["moduleRoot"].(string); ok {
+			modRoot = rootPath
+		}
+		var err error
+		modFile, _, err = ParseGoModfile(filepath.Join(modRoot, "go.mod"))
+		if err != nil {
+			log.Debugf("Could not parse go.mod for transitive checking: %v", err)
+			return
+		}
 	}
 
 	packagesToUpdate := make(map[string]string, len(strategy.DirectUpdates))

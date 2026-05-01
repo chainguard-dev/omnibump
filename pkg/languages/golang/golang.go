@@ -432,8 +432,8 @@ func detectCoUpdates(ctx context.Context, packagesToUpdate map[string]string, mo
 		packagesBeingUpdated[name] = ver
 	}
 
-	allMissingDeps := make(map[string]MissingDependency)
-	apiCompatibilityAlerts := make(map[string]string)
+	allMissingDeps := make(map[string]MissingDependency, len(packagesToUpdate))
+	apiCompatibilityAlerts := make(map[string]string, len(packagesToUpdate))
 
 	// Skip the module currently being built — it cannot be bumped as its own dependency.
 	// For example, when analyzing the coredns source directory, github.com/coredns/coredns
