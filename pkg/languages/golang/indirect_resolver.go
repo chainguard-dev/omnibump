@@ -7,7 +7,9 @@ package golang
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"go/types"
 	"io"
 	"net/http"
 	"net/url"
@@ -17,14 +19,18 @@ import (
 	"strings"
 	"time"
 
-	"go/types"
-
 	"github.com/chainguard-dev/clog"
 	"golang.org/x/exp/apidiff"
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
 	"golang.org/x/tools/go/packages"
+)
+
+// Sentinel errors for loadPackageTypes.
+var (
+	errPackageNotFound = errors.New("package not found")
+	errNoTypeInfo      = errors.New("no type information available")
 )
 
 // IndirectResolution contains information about resolving an indirect dependency CVE.
@@ -788,7 +794,7 @@ func loadPackageTypes(ctx context.Context, packageName, version string) (*types.
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	goModContent := fmt.Sprintf("module apidiff_temp\n\ngo 1.21\n\nrequire %s %s\n", packageName, version)
 	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goModContent), 0o600); err != nil {
@@ -811,13 +817,13 @@ func loadPackageTypes(ctx context.Context, packageName, version string) (*types.
 		return nil, err
 	}
 	if len(pkgs) == 0 {
-		return nil, fmt.Errorf("package %s not found", packageName)
+		return nil, fmt.Errorf("%s@%s: %w", packageName, version, errPackageNotFound)
 	}
 	if pkgs[0].Types == nil {
 		if len(pkgs[0].Errors) > 0 {
-			return nil, fmt.Errorf("%s", pkgs[0].Errors[0])
+			return nil, fmt.Errorf("loading package: %w", pkgs[0].Errors[0])
 		}
-		return nil, fmt.Errorf("no type information for %s", packageName)
+		return nil, fmt.Errorf("%s@%s: %w", packageName, version, errNoTypeInfo)
 	}
 	return pkgs[0].Types, nil
 }

@@ -504,19 +504,7 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 	// Second pass: run API compat checks for each discovered co-update.
 	// This catches packages that import a co-updated dep (e.g. otelgrpc importing otel)
 	// and may break when that dep's API changes.
-	for _, dep := range allMissingDeps {
-		if _, isBeingUpdated := packagesBeingUpdated[dep.Package]; isBeingUpdated {
-			continue
-		}
-		apiIssues, err := CheckAPICompatibilityWithCache(ctx, dep.Package, dep.RequiredVersion, modFile, cache)
-		if err != nil {
-			log.Debugf("Could not check API compatibility for co-update %s@%s: %v", dep.Package, dep.RequiredVersion, err)
-			continue
-		}
-		for _, issue := range apiIssues {
-			apiCompatibilityAlerts[issue.Package] = issue.RequiredVersion
-		}
-	}
+	runCoUpdateAPICompatChecks(ctx, allMissingDeps, packagesBeingUpdated, modFile, cache, apiCompatibilityAlerts)
 
 	if len(allMissingDeps) == 0 && len(apiCompatibilityAlerts) == 0 {
 		return
@@ -579,6 +567,33 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 		fmt.Fprintf(&msg, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	}
 	log.Warnf("%s", msg.String())
+}
+
+// runCoUpdateAPICompatChecks runs API compatibility checks for each discovered co-update,
+// recording any required minimum versions in apiCompatibilityAlerts. Packages already in
+// packagesBeingUpdated are skipped to avoid redundant checks.
+func runCoUpdateAPICompatChecks(
+	ctx context.Context,
+	allMissingDeps map[string]MissingDependency,
+	packagesBeingUpdated map[string]string,
+	modFile *modfile.File,
+	cache goModCache,
+	apiCompatibilityAlerts map[string]string,
+) {
+	log := clog.FromContext(ctx)
+	for _, dep := range allMissingDeps {
+		if _, isBeingUpdated := packagesBeingUpdated[dep.Package]; isBeingUpdated {
+			continue
+		}
+		apiIssues, err := CheckAPICompatibilityWithCache(ctx, dep.Package, dep.RequiredVersion, modFile, cache)
+		if err != nil {
+			log.Debugf("Could not check API compatibility for co-update %s@%s: %v", dep.Package, dep.RequiredVersion, err)
+			continue
+		}
+		for _, issue := range apiIssues {
+			apiCompatibilityAlerts[issue.Package] = issue.RequiredVersion
+		}
+	}
 }
 
 // buildSuggestedCommand builds the omnibump --packages "..." command string.
