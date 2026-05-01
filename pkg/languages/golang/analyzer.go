@@ -482,20 +482,32 @@ func (ga *GolangAnalyzer) checkTransitiveRequirementsForStrategy(
 		}
 	}
 
-	// Surface API compatibility alerts as warnings. When detectCoUpdates determined
-	// a minimum compatible version, recommend it explicitly; otherwise fall back to
-	// a manual-check message keyed off the originating update.
+	// Surface API compatibility alerts. When detectCoUpdates determined a minimum
+	// compatible version, add it as a DirectUpdate so it appears in all output types
+	// (JSON, YAML, deps file). A warning is also emitted for human-readable context.
+	// When no version could be determined, emit a warning only.
 	for pkg, recommendedVer := range apiCompatibilityAlerts {
+		// Skip packages that are already being updated — they're handled by DirectUpdates.
+		if _, alreadyUpdating := packagesToUpdate[pkg]; alreadyUpdating {
+			continue
+		}
 		currentVer := getVersion(modFile, pkg)
+		importingPkg, importingVer := findImporterForAlert(pkg, packagesToUpdate, modFile)
 		if recommendedVer != "" && recommendedVer != currentVer {
-			// Find an originating package@version that pulls in this alert for context.
-			importingPkg, importingVer := findImporterForAlert(pkg, packagesToUpdate, modFile)
+			strategy.DirectUpdates = append(strategy.DirectUpdates, analyzer.Dependency{
+				Name:    pkg,
+				Version: recommendedVer,
+				Metadata: map[string]any{
+					"required_by": "api compatibility check",
+					"reason":      fmt.Sprintf("imports %s@%s which has breaking API changes", importingPkg, importingVer),
+				},
+			})
+			log.Infof("Adding API compat co-update: %s@%s (imports %s)", pkg, recommendedVer, importingPkg)
 			strategy.Warnings = append(strategy.Warnings,
-				fmt.Sprintf("API Compatibility Alert - consider updating %s to %s (imports %s@%s)",
+				fmt.Sprintf("API Compatibility Alert - updating %s to %s (imports %s@%s with breaking changes)",
 					pkg, recommendedVer, importingPkg, importingVer))
 			continue
 		}
-		importingPkg, importingVer := findImporterForAlert(pkg, packagesToUpdate, modFile)
 		strategy.Warnings = append(strategy.Warnings,
 			fmt.Sprintf("API Compatibility Alert - %s imports %s which is being updated to %s (may require manual version bump)",
 				pkg, importingPkg, importingVer))
