@@ -1564,6 +1564,32 @@ require (
 	require.NoError(t, err)
 }
 
+func TestResolveAndFilterPackages_SkipsMainModule(t *testing.T) {
+	// When the bump step runs inside the coredns source directory, the bot may include
+	// github.com/coredns/coredns itself in the package list (to update the pinned version).
+	// resolveAndFilterPackages must skip it to prevent gobump from failing with
+	// "bumping the main module is not allowed".
+	//
+	// testdata/hello has module = github.com/puerco/hello.
+	ctx := t.Context()
+	modFile, _, err := ParseGoModfile("testdata/hello/go.mod")
+	require.NoError(t, err)
+	require.Equal(t, "github.com/puerco/hello", modFile.Module.Mod.Path)
+
+	packages := map[string]*Package{
+		// The main module — should be silently skipped.
+		"github.com/puerco/hello": {Name: "github.com/puerco/hello", Version: "v1.9.0"},
+		// A normal dep — should pass through.
+		"github.com/sirupsen/logrus": {Name: "github.com/sirupsen/logrus", Version: "v1.9.0"},
+	}
+
+	filtered, err := resolveAndFilterPackages(ctx, packages, modFile, "testdata/hello")
+	require.NoError(t, err)
+
+	require.NotContains(t, filtered, "github.com/puerco/hello",
+		"main module must not appear in filtered packages")
+}
+
 func minimalModFile(t *testing.T) *modfile.File {
 	t.Helper()
 	f, err := modfile.Parse("go.mod", []byte("module example.com/test\n\ngo 1.21\n"), nil)

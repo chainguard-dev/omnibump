@@ -357,7 +357,18 @@ func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package,
 	log := clog.FromContext(ctx)
 	filtered := make(map[string]*Package)
 
+	mainModule := ""
+	if modFile.Module != nil {
+		mainModule = modFile.Module.Mod.Path
+	}
+
 	for name, pkg := range packages {
+		// Skip the main module — bumping a module as its own dependency is not allowed.
+		if name == mainModule {
+			log.Warnf("Skipping %s: it is the main module of this go.mod and cannot be bumped as a dependency", name)
+			continue
+		}
+
 		resolvedVersion, err := resolvePackageVersion(ctx, name, pkg.Version, modroot)
 		if err != nil {
 			return nil, err
@@ -435,12 +446,24 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 	// For 50 dependencies and 10 package updates: 50 calls total instead of up to 500.
 	preFetchDependencies(ctx, modFile, cache)
 
+	// Skip the module currently being built — it cannot be bumped as its own dependency.
+	// For example, when analyzing the coredns source directory, github.com/coredns/coredns
+	// is the main module and cannot appear as a co-update recommendation.
+	mainModule := ""
+	if modFile.Module != nil {
+		mainModule = modFile.Module.Mod.Path
+	}
+
 	for name, pkg := range filtered {
 		// Recommend updating all packages in the same release group (e.g. all otel/*)
 		// to preserve internal API compatibility, including any that have drifted behind.
 		currentVer := getVersion(modFile, name)
 		for _, groupPkg := range FindVersionGroupPackages(name, currentVer, modFile) {
 			if _, alreadyUpdating := packagesBeingUpdated[groupPkg]; alreadyUpdating {
+				continue
+			}
+			if groupPkg == mainModule {
+				log.Infof("Skipping %s as co-update: it is the main module of this go.mod", groupPkg)
 				continue
 			}
 			allMissingDeps[groupPkg] = MissingDependency{
@@ -467,6 +490,14 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 				apiCompatibilityAlerts[issue.Package] = issue.RequiredVersion
 				log.Infof("API compatibility alert for %s", issue.Package)
 			}
+		}
+	}
+
+	// Remove the main module from any co-updates that slipped through transitive checks.
+	if mainModule != "" {
+		if _, found := allMissingDeps[mainModule]; found {
+			log.Infof("Skipping %s as co-update: it is the main module of this go.mod", mainModule)
+			delete(allMissingDeps, mainModule)
 		}
 	}
 

@@ -752,13 +752,21 @@ func findMinCompatibleVersion(ctx context.Context, depPkg, depVer, importedPkg, 
 // Use this to distinguish genuine API incompatibilities (e.g. a changed function signature)
 // from false-positive compat alerts where the dependency simply added new symbols.
 func CheckAPIBreakingChanges(ctx context.Context, packageName, oldVersion, newVersion string) ([]string, error) {
+	log := clog.FromContext(ctx)
+
 	oldTypes, err := loadPackageTypes(ctx, packageName, oldVersion)
 	if err != nil {
 		return nil, fmt.Errorf("loading %s@%s: %w", packageName, oldVersion, err)
 	}
+
 	newTypes, err := loadPackageTypes(ctx, packageName, newVersion)
 	if err != nil {
-		return nil, fmt.Errorf("loading %s@%s: %w", packageName, newVersion, err)
+		// The new version failed to load. This means either:
+		// - the package was removed from the module (e.g. loki/v3/pkg/storage/wal)
+		// - the new version is internally broken (e.g. references an undefined symbol)
+		// Both are breaking changes from the consumer's perspective.
+		log.Warnf("Package %s unavailable in %s (removed or internally broken): %v", packageName, newVersion, err)
+		return []string{fmt.Sprintf("package %s is unavailable in %s — it may have been removed or contains internal errors", packageName, newVersion)}, nil
 	}
 
 	report := apidiff.Changes(oldTypes, newTypes)
@@ -766,6 +774,7 @@ func CheckAPIBreakingChanges(ctx context.Context, packageName, oldVersion, newVe
 	var breaking []string
 	for _, change := range report.Changes {
 		if !change.Compatible {
+			log.Infof("Breaking change in %s %s→%s: %s", packageName, oldVersion, newVersion, change.Message)
 			breaking = append(breaking, change.Message)
 		}
 	}

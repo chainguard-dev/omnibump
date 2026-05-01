@@ -853,6 +853,21 @@ func TestCheckAPIBreakingChanges(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, breaking, "expected no breaking changes between uuid v1.5.0 and v1.6.0")
 	})
+
+	t.Run("reports package unavailable when new version does not contain it", func(t *testing.T) {
+		// When the new version of a module does not contain the requested package
+		// (e.g. a sub-package was removed, or the version simply does not exist),
+		// we treat it as a breaking change so the caller knows not to bump to that version.
+		// Using a non-existent version forces loadPackageTypes to fail on the new side
+		// while the old side loads successfully — the same code path as a removed package.
+		breaking, err := CheckAPIBreakingChanges(ctx,
+			"github.com/google/uuid",
+			"v1.5.0",
+			"v99.99.99")
+		require.NoError(t, err)
+		require.NotEmpty(t, breaking, "expected a breaking change when new version is unavailable")
+		assert.Contains(t, breaking[0], "unavailable")
+	})
 }
 
 func TestModuleFamilyPrefix(t *testing.T) {
