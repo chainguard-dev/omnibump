@@ -974,11 +974,12 @@ require (
 			wantGroup: []string{},
 		},
 		{
-			// otlploghttp is in the go.opentelemetry.io/otel family but uses a v0.x
-			// version cadence while core otel uses v1.x. FindVersionGroupPackages still
-			// returns it as a family member — the caller (detectCoUpdates) is responsible
-			// for skipping cross-major packages to avoid recommending a wrong target version.
-			name:           "otel exporter on v0 track returned by family match despite major difference",
+			// otlploghttp uses v0.x (max release v0.19.0) while core otel uses v1.x.
+			// It must NOT appear in the version group — recommending it at the core otel
+			// target (e.g. v1.43.0) would fail since that version does not exist.
+			// The correct upgrade path (v0.18.0 → v0.19.0) is handled by the second-pass
+			// API compat chain, verified by TestDetectCoUpdates_CrossMajorVersionGroupSkipped.
+			name:           "otel otlploghttp v0.x excluded from version group targeting v1.x",
 			packageName:    "go.opentelemetry.io/otel/sdk",
 			currentVersion: "v1.40.0",
 			goModContent: `module test
@@ -989,12 +990,34 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.18.0
 )
 `,
-			// FindVersionGroupPackages includes otlploghttp because v0.18.0 ≤ v1.40.0 and
-			// it shares the go.opentelemetry.io/otel family prefix. The major-version guard
-			// lives in detectCoUpdates, not here.
 			wantGroup: []string{
 				"go.opentelemetry.io/otel",
-				"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp",
+			},
+		},
+		{
+			// go.opentelemetry.io/otel/exporters/prometheus deliberately uses v0.x versioning
+			// and has never had a v1.x release. When bumping core otel (v1.x), recommending
+			// exporters/prometheus at v1.43.0 would cause a go mod tidy failure because that
+			// version does not exist. FindVersionGroupPackages must exclude it.
+			//
+			// Confirmed from pkg.go.dev: latest exporters/prometheus is v0.65.0 (v0.x track).
+			name:           "otel exporters/prometheus v0.x must not be recommended at v1.43.0",
+			packageName:    "go.opentelemetry.io/otel/sdk",
+			currentVersion: "v1.40.0",
+			goModContent: `module test
+go 1.24
+require (
+	go.opentelemetry.io/otel/sdk v1.40.0
+	go.opentelemetry.io/otel v1.40.0
+	go.opentelemetry.io/otel/metric v1.40.0
+	go.opentelemetry.io/otel/exporters/prometheus v0.60.0
+)
+`,
+			// exporters/prometheus must NOT appear in the group — it is v0.x and cannot
+			// be bumped to v1.43.0 (that version does not exist).
+			wantGroup: []string{
+				"go.opentelemetry.io/otel",
+				"go.opentelemetry.io/otel/metric",
 			},
 		},
 		{

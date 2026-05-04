@@ -683,6 +683,7 @@ func FindVersionGroupPackages(packageName, currentVersion string, modFile *modfi
 		return nil
 	}
 	family := moduleFamilyPrefix(packageName)
+	targetMajor := semver.Major(currentVersion)
 	group := make([]string, 0, len(modFile.Require))
 	for _, req := range modFile.Require {
 		if req == nil || req.Mod.Path == packageName {
@@ -692,10 +693,17 @@ func FindVersionGroupPackages(packageName, currentVersion string, modFile *modfi
 		if req.Mod.Path != family && !strings.HasPrefix(req.Mod.Path, family+"/") {
 			continue
 		}
-		// Include packages at or below the current version: same release or drifted behind.
-		if semver.IsValid(req.Mod.Version) && semver.Compare(req.Mod.Version, currentVersion) <= 0 {
-			group = append(group, req.Mod.Path)
+		if !semver.IsValid(req.Mod.Version) || semver.Compare(req.Mod.Version, currentVersion) > 0 {
+			continue
 		}
+		// Skip packages on a different major version track — they use a separate release
+		// cadence and cannot adopt the same target version. For example,
+		// go.opentelemetry.io/otel/exporters/prometheus uses v0.x while core otel uses
+		// v1.x; recommending it at v1.43.0 would fail because that version does not exist.
+		if semver.Major(req.Mod.Version) != targetMajor {
+			continue
+		}
+		group = append(group, req.Mod.Path)
 	}
 	return group
 }
