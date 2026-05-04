@@ -974,6 +974,30 @@ require (
 			wantGroup: []string{},
 		},
 		{
+			// otlploghttp is in the go.opentelemetry.io/otel family but uses a v0.x
+			// version cadence while core otel uses v1.x. FindVersionGroupPackages still
+			// returns it as a family member — the caller (detectCoUpdates) is responsible
+			// for skipping cross-major packages to avoid recommending a wrong target version.
+			name:           "otel exporter on v0 track returned by family match despite major difference",
+			packageName:    "go.opentelemetry.io/otel/sdk",
+			currentVersion: "v1.40.0",
+			goModContent: `module test
+go 1.24
+require (
+	go.opentelemetry.io/otel/sdk v1.40.0
+	go.opentelemetry.io/otel v1.40.0
+	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.18.0
+)
+`,
+			// FindVersionGroupPackages includes otlploghttp because v0.18.0 ≤ v1.40.0 and
+			// it shares the go.opentelemetry.io/otel family prefix. The major-version guard
+			// lives in detectCoUpdates, not here.
+			wantGroup: []string{
+				"go.opentelemetry.io/otel",
+				"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp",
+			},
+		},
+		{
 			name:           "non-semver version — returns nil immediately",
 			packageName:    "github.com/example/pkg",
 			currentVersion: "not-a-semver",

@@ -1564,6 +1564,54 @@ require (
 	require.NoError(t, err)
 }
 
+// TestDetectCoUpdates_CrossMajorVersionGroupSkipped is a regression test for the scenario
+// where an otel exporter package (v0.x cadence) shares the go.opentelemetry.io/otel family
+// with core otel (v1.x cadence). detectCoUpdates must NOT recommend the exporter at the
+// core otel target version (e.g. v1.43.0) — instead it must find the correct v0.x version
+// via the second-pass API compat chain.
+//
+// Failure mode before fix: otlploghttp@v1.43.0 (non-existent) would be recommended
+// instead of otlploghttp@v0.19.0.
+func TestDetectCoUpdates_CrossMajorVersionGroupSkipped(t *testing.T) {
+	ctx := t.Context()
+
+	// Project has otel core at v1.40.0 and the otlploghttp exporter at v0.18.0.
+	// Both are in the go.opentelemetry.io/otel module family, but otlploghttp uses
+	// a v0.x version cadence while the core packages use v1.x.
+	modContent := `module github.com/example/test
+
+go 1.24
+
+require (
+	go.opentelemetry.io/otel v1.40.0
+	go.opentelemetry.io/otel/sdk v1.40.0
+	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.18.0
+)
+`
+	modFile, err := modfile.Parse("go.mod", []byte(modContent), nil)
+	require.NoError(t, err)
+
+	allMissingDeps, apiAlerts := detectCoUpdates(ctx, map[string]string{
+		"go.opentelemetry.io/otel/sdk": "v1.43.0",
+	}, modFile)
+
+	// The wrong version must never appear — v1.43.0 of otlploghttp does not exist.
+	for pkg, dep := range allMissingDeps {
+		if pkg == "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp" {
+			require.NotEqual(t, "v1.43.0", dep.RequiredVersion,
+				"otlploghttp must not be recommended at v1.43.0 — it uses v0.x versioning")
+		}
+	}
+
+	// The correct version must be found via the second-pass API compat chain.
+	// otlploghttp@v0.19.0 is the first release that requires otel@v1.43.0.
+	const otlploghttp = "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
+	recommendedVer, hasAlert := apiAlerts[otlploghttp]
+	require.True(t, hasAlert, "otlploghttp should appear in API compat alerts")
+	require.Equal(t, "v0.19.0", recommendedVer,
+		"otlploghttp should be recommended at v0.19.0 via findMinCompatibleVersion")
+}
+
 func TestResolveAndFilterPackages_SkipsMainModule(t *testing.T) {
 	// When the bump step runs inside the coredns source directory, the bot may include
 	// github.com/coredns/coredns itself in the package list (to update the pinned version).
