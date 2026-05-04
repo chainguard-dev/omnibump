@@ -1564,15 +1564,15 @@ require (
 	require.NoError(t, err)
 }
 
-// TestDetectCoUpdates_CrossMajorVersionGroupSkipped is a regression test for the scenario
+// TestDetectCoUpdates_CrossMajorVersionGroup is a regression test for the scenario
 // where an otel exporter package (v0.x cadence) shares the go.opentelemetry.io/otel family
 // with core otel (v1.x cadence). detectCoUpdates must NOT recommend the exporter at the
-// core otel target version (e.g. v1.43.0) — instead it must find the correct v0.x version
-// via the second-pass API compat chain.
+// core otel target version (e.g. v1.43.0) — instead it must actively find the correct
+// v0.x version via findMinCompatibleVersion within the version group loop.
 //
-// Failure mode before fix: otlploghttp@v1.43.0 (non-existent) would be recommended
-// instead of otlploghttp@v0.19.0.
-func TestDetectCoUpdates_CrossMajorVersionGroupSkipped(t *testing.T) {
+// Failure mode before fix: otlploghttp@v1.43.0 (non-existent) would be recommended.
+// Correct behaviour: otlploghttp@v0.19.0 appears in allMissingDeps (not just apiAlerts).
+func TestDetectCoUpdates_CrossMajorVersionGroup(t *testing.T) {
 	ctx := t.Context()
 
 	// Project has otel core at v1.40.0 and the otlploghttp exporter at v0.18.0.
@@ -1591,24 +1591,21 @@ require (
 	modFile, err := modfile.Parse("go.mod", []byte(modContent), nil)
 	require.NoError(t, err)
 
-	allMissingDeps, apiAlerts := detectCoUpdates(ctx, map[string]string{
+	allMissingDeps, _ := detectCoUpdates(ctx, map[string]string{
 		"go.opentelemetry.io/otel/sdk": "v1.43.0",
 	}, modFile)
 
-	// The wrong version must never appear — v1.43.0 of otlploghttp does not exist.
-	for pkg, dep := range allMissingDeps {
-		if pkg == "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp" {
-			require.NotEqual(t, "v1.43.0", dep.RequiredVersion,
-				"otlploghttp must not be recommended at v1.43.0 — it uses v0.x versioning")
-		}
-	}
-
-	// The correct version must be found via the second-pass API compat chain.
-	// otlploghttp@v0.19.0 is the first release that requires otel@v1.43.0.
 	const otlploghttp = "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
-	recommendedVer, hasAlert := apiAlerts[otlploghttp]
-	require.True(t, hasAlert, "otlploghttp should appear in API compat alerts")
-	require.Equal(t, "v0.19.0", recommendedVer,
+
+	// The wrong version must never appear — v1.43.0 of otlploghttp does not exist.
+	dep, found := allMissingDeps[otlploghttp]
+	require.True(t, found, "otlploghttp should appear in allMissingDeps")
+	require.NotEqual(t, "v1.43.0", dep.RequiredVersion,
+		"otlploghttp must not be recommended at v1.43.0 — it uses v0.x versioning")
+
+	// The correct version must be found proactively via findMinCompatibleVersion.
+	// otlploghttp@v0.19.0 is the first release that requires otel@v1.43.0.
+	require.Equal(t, "v0.19.0", dep.RequiredVersion,
 		"otlploghttp should be recommended at v0.19.0 via findMinCompatibleVersion")
 }
 

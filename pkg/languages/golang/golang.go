@@ -451,6 +451,10 @@ func detectCoUpdates(ctx context.Context, packagesToUpdate map[string]string, mo
 		// Recommend updating all packages in the same release group (e.g. all otel/*)
 		// to preserve internal API compatibility, including any that have drifted behind.
 		currentVer := getVersion(modFile, name)
+		// familyRoot is used to find compatible versions for cross-major family members.
+		// e.g. for otel/sdk → "go.opentelemetry.io/otel", which otel/exporters/prometheus
+		// requires directly even though it doesn't require otel/sdk specifically.
+		familyRoot := moduleFamilyPrefix(name)
 		for _, groupPkg := range FindVersionGroupPackages(name, currentVer, modFile) {
 			if _, alreadyUpdating := packagesBeingUpdated[groupPkg]; alreadyUpdating {
 				continue
@@ -459,10 +463,23 @@ func detectCoUpdates(ctx context.Context, packagesToUpdate map[string]string, mo
 				log.Infof("Skipping %s as co-update: it is the main module of this go.mod", groupPkg)
 				continue
 			}
+			groupCurrentVer := getVersion(modFile, groupPkg)
+			targetVer := version
+			if semver.Major(groupCurrentVer) != semver.Major(version) {
+				// Cross-major family member (e.g. otel/exporters/prometheus on v0.x while
+				// core otel is v1.x). Actively find the correct compatible version rather
+				// than skipping or relying on the second-pass API compat chain.
+				targetVer = findMinCompatibleVersion(ctx, groupPkg, groupCurrentVer, familyRoot, version, cache)
+				if targetVer == "" {
+					log.Debugf("No compatible version found for cross-major family member %s (requires %s@%s)", groupPkg, familyRoot, version)
+					continue
+				}
+				log.Infof("Found cross-major co-update: %s@%s (family %s requires %s@%s)", groupPkg, targetVer, familyRoot, familyRoot, version)
+			}
 			allMissingDeps[groupPkg] = MissingDependency{
 				Package:         groupPkg,
-				RequiredVersion: version,
-				CurrentVersion:  getVersion(modFile, groupPkg),
+				RequiredVersion: targetVer,
+				CurrentVersion:  groupCurrentVer,
 				Reason:          fmt.Sprintf("version group with %s (both at %s)", name, currentVer),
 			}
 		}
