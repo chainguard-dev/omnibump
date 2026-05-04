@@ -700,13 +700,13 @@ func FindVersionGroupPackages(packageName, currentVersion string, modFile *modfi
 	return group
 }
 
-// findMinCompatibleVersion returns the lowest version of depPkg (above depVer) whose go.mod
+// FindMinCompatibleVersion returns the lowest version of depPkg (above depVer) whose go.mod
 // requires importedPkg at >= minVersion. This identifies the minimum version of a package
 // that is compatible with a dependency upgrade — e.g., the lowest go-ldap that requires
 // go-ntlmssp@v0.1.1 after ntlmssp's ProcessChallenge signature changed.
 //
 // Returns empty string if no compatible version is found within the version limit.
-func findMinCompatibleVersion(ctx context.Context, depPkg, depVer, importedPkg, minVersion string, cache goModCache) string {
+func FindMinCompatibleVersion(ctx context.Context, depPkg, depVer, importedPkg, minVersion string, cache goModCache) string {
 	versions, err := fetchAvailableVersions(ctx, depPkg)
 	if err != nil {
 		return ""
@@ -883,7 +883,7 @@ func CheckAPICompatibilityWithCache(
 				// This dependency imports the package being updated.
 				// Try to find the minimum version of depPkg that is compatible with
 				// the new targetVersion, so we can recommend a concrete upgrade path.
-				recommendedVer := findMinCompatibleVersion(ctx, depPkg, depVer, packageName, targetVersion, cache)
+				recommendedVer := FindMinCompatibleVersion(ctx, depPkg, depVer, packageName, targetVersion, cache)
 				if recommendedVer == "" {
 					// No compatible version found within the search limit; keep current.
 					recommendedVer = depVer

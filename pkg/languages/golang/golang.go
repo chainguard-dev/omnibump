@@ -418,12 +418,12 @@ func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package,
 	return filtered, nil
 }
 
-// detectCoUpdates analyzes the requested package updates against the current go.mod
+// DetectCoUpdates analyzes the requested package updates against the current go.mod
 // and returns the set of additional co-updates required (transitive requirements,
 // version-group siblings) along with API compatibility alerts (mapping each affected
 // package to a recommended minimum compatible version, or empty string when no
 // concrete version could be determined).
-func detectCoUpdates(ctx context.Context, packagesToUpdate map[string]string, modFile *modfile.File) (map[string]MissingDependency, map[string]string) {
+func DetectCoUpdates(ctx context.Context, packagesToUpdate map[string]string, modFile *modfile.File) (map[string]MissingDependency, map[string]string) {
 	log := clog.FromContext(ctx)
 
 	// Snapshot the input so callers can pass the same map without aliasing concerns.
@@ -467,7 +467,7 @@ func detectCoUpdates(ctx context.Context, packagesToUpdate map[string]string, mo
 				// core otel is v1.x). The family root (e.g. go.opentelemetry.io/otel) is
 				// what the exporter requires directly — not otel/sdk specifically.
 				familyRoot := moduleFamilyPrefix(name)
-				targetVer = findMinCompatibleVersion(ctx, groupPkg, groupCurrentVer, familyRoot, version, cache)
+				targetVer = FindMinCompatibleVersion(ctx, groupPkg, groupCurrentVer, familyRoot, version, cache)
 				if targetVer == "" {
 					log.Debugf("No compatible version found for cross-major family member %s (requires %s@%s)", groupPkg, familyRoot, version)
 					continue
@@ -529,7 +529,7 @@ func checkMissingTransitiveDeps(ctx context.Context, filtered map[string]*Packag
 		packagesToUpdate[name] = pkg.Version
 	}
 
-	allMissingDeps, apiCompatibilityAlerts := detectCoUpdates(ctx, packagesToUpdate, modFile)
+	allMissingDeps, apiCompatibilityAlerts := DetectCoUpdates(ctx, packagesToUpdate, modFile)
 
 	if len(allMissingDeps) == 0 && len(apiCompatibilityAlerts) == 0 {
 		return

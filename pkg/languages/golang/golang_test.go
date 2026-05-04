@@ -1591,7 +1591,7 @@ require (
 	modFile, err := modfile.Parse("go.mod", []byte(modContent), nil)
 	require.NoError(t, err)
 
-	allMissingDeps, _ := detectCoUpdates(ctx, map[string]string{
+	allMissingDeps, _ := DetectCoUpdates(ctx, map[string]string{
 		"go.opentelemetry.io/otel/sdk": "v1.43.0",
 	}, modFile)
 

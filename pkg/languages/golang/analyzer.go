@@ -459,7 +459,7 @@ func (ga *GolangAnalyzer) checkTransitiveRequirementsForStrategy(
 		packagesToUpdate[dep.Name] = dep.Version
 	}
 
-	allMissingDeps, apiCompatibilityAlerts := detectCoUpdates(ctx, packagesToUpdate, modFile)
+	allMissingDeps, apiCompatibilityAlerts := DetectCoUpdates(ctx, packagesToUpdate, modFile)
 
 	// Add missing dependencies to DirectUpdates, skipping no-ops (where version isn't changing).
 	if len(allMissingDeps) > 0 {
