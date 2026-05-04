@@ -459,10 +459,19 @@ func detectCoUpdates(ctx context.Context, packagesToUpdate map[string]string, mo
 				log.Infof("Skipping %s as co-update: it is the main module of this go.mod", groupPkg)
 				continue
 			}
+			groupCurrentVer := getVersion(modFile, groupPkg)
+			// Skip packages on a different major version track — they cannot adopt the same
+			// target version. For example, go.opentelemetry.io/otel/exporters/* uses v0.x
+			// while the core otel packages use v1.x. The second-pass API compat check will
+			// find the correct minimum version for these packages via findMinCompatibleVersion.
+			if semver.Major(groupCurrentVer) != semver.Major(version) {
+				log.Debugf("Skipping %s as version group co-update: major version mismatch (current %s vs target %s)", groupPkg, groupCurrentVer, version)
+				continue
+			}
 			allMissingDeps[groupPkg] = MissingDependency{
 				Package:         groupPkg,
 				RequiredVersion: version,
-				CurrentVersion:  getVersion(modFile, groupPkg),
+				CurrentVersion:  groupCurrentVer,
 				Reason:          fmt.Sprintf("version group with %s (both at %s)", name, currentVer),
 			}
 		}
