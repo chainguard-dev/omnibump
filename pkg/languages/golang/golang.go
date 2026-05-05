@@ -474,18 +474,16 @@ func DetectCoUpdates(ctx context.Context, packagesToUpdate map[string]string, mo
 				}
 				reason = fmt.Sprintf("cross-major ecosystem package: %s requires %s@%s", groupPkg, familyRoot, version)
 				log.Infof("Found cross-major co-update: %s@%s", groupPkg, targetVer)
-			} else {
+			} else if _, inCache := cache.get(groupPkg, targetVer); !inCache {
 				// Some families share a path prefix but release independently
 				// (e.g. golang.org/x/net and golang.org/x/oauth2), so the primary
 				// package's new version may not yet exist for all siblings.
-				if _, inCache := cache.get(groupPkg, targetVer); !inCache {
-					mf, err := fetchGoModForPackage(ctx, groupPkg, targetVer)
-					if err != nil {
-						log.Debugf("Skipping co-update for %s@%s: version not available on proxy: %v", groupPkg, targetVer, err)
-						continue
-					}
-					cache.set(groupPkg, targetVer, mf)
+				mf, err := fetchGoModForPackage(ctx, groupPkg, targetVer)
+				if err != nil {
+					log.Debugf("Skipping co-update for %s@%s: version not available on proxy: %v", groupPkg, targetVer, err)
+					continue
 				}
+				cache.set(groupPkg, targetVer, mf)
 			}
 			allMissingDeps[groupPkg] = MissingDependency{
 				Package:         groupPkg,

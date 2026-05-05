@@ -1795,7 +1795,7 @@ func TestDetectCoUpdates_SkipsSiblingWithNonExistentVersion(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "go.example.io/pkg/net") &&
 			strings.Contains(r.URL.Path, "v0.35.0") {
-			fmt.Fprint(w, "module go.example.io/pkg/net\n\ngo 1.21\n")
+			_, _ = fmt.Fprint(w, "module go.example.io/pkg/net\n\ngo 1.21\n")
 			return
 		}
 		http.NotFound(w, r)
