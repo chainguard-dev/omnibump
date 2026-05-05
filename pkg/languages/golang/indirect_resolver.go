@@ -449,7 +449,7 @@ func (c goModCache) has(pkg, ver string) bool {
 // path must begin with "/" and is appended to goProxyBase.
 func fetchFromProxy(ctx context.Context, path string) ([]byte, error) {
 	// Parse the path to validate it before use; only .Path is taken so the
-	// host component of the final request always comes from the proxyHost constant.
+	// host component of the final request always comes from the proxyHost variable.
 	parsedPath, err := url.Parse(path)
 	if err != nil {
 		return nil, fmt.Errorf("invalid proxy path: %w", err)
