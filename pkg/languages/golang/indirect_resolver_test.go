@@ -885,6 +885,15 @@ func TestModuleFamilyPrefix(t *testing.T) {
 		{"k8s.io/client-go", "k8s.io/client-go"},
 		{"k8s.io/api", "k8s.io/api"},
 		{"google.golang.org/grpc", "google.golang.org/grpc"},
+		// golang.org/x/* packages have independent release cadences and must NOT
+		// be grouped as one family — each is its own family.
+		{"golang.org/x/net", "golang.org/x/net"},
+		{"golang.org/x/oauth2", "golang.org/x/oauth2"},
+		{"golang.org/x/crypto", "golang.org/x/crypto"},
+		{"golang.org/x/net/http2", "golang.org/x/net"},
+		// gopkg.in packages are also independent projects.
+		{"gopkg.in/yaml.v3", "gopkg.in/yaml.v3"},
+		{"gopkg.in/check.v1", "gopkg.in/check.v1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.pkg, func(t *testing.T) {

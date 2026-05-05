@@ -371,10 +371,12 @@ func checkModFileForIndirectDep(
 }
 
 // goProxyBase is the base URL for the Go module proxy.
-const (
-	goProxyBase = "https://proxy.golang.org"
-	proxyHost   = "proxy.golang.org"
-)
+const goProxyBase = "https://proxy.golang.org"
+
+// proxyHost is the hostname used for all module proxy requests.
+// It is a variable rather than a constant so tests can redirect requests
+// to a local httptest server.
+var proxyHost = "proxy.golang.org"
 
 // proxyClient is used for all Go module proxy requests with a reasonable timeout.
 var proxyClient = &http.Client{Timeout: 30 * time.Second}
@@ -661,12 +663,20 @@ func moduleFamilyPrefix(pkg string) string {
 	domain := parts[0]
 	switch domain {
 	case "github.com", "gitlab.com", "bitbucket.org", "codeberg.org":
-		// Hosting domain: family is domain/org/repo
+		// Code-hosting domains: family is domain/org/repo.
+		if len(parts) >= 3 {
+			return parts[0] + "/" + parts[1] + "/" + parts[2]
+		}
+	case "golang.org", "gopkg.in":
+		// These vanity domains host many independent projects under a shared path
+		// prefix (e.g. golang.org/x/net, golang.org/x/oauth2, gopkg.in/yaml.v3).
+		// Each project has its own release cadence, so treat them like hosting
+		// domains: the family is the full three-part path, not just domain/prefix.
 		if len(parts) >= 3 {
 			return parts[0] + "/" + parts[1] + "/" + parts[2]
 		}
 	}
-	// Vanity domain: family is domain/project (first path component after domain)
+	// Vanity domain: family is domain/project (first path component after domain).
 	return parts[0] + "/" + parts[1]
 }
 

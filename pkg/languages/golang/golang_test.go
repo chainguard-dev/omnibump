@@ -7,6 +7,9 @@ package golang
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1773,4 +1776,61 @@ func TestBuildSuggestedCommand_APIAlertPackageNotInGoMod(t *testing.T) {
 	out := buildSuggestedCommand(nil, nil, apiAlerts, minimalModFile(t))
 
 	require.NotContains(t, out, "github.com/missing/pkg")
+}
+
+// TestDetectCoUpdates_SkipsSiblingWithNonExistentVersion is a regression test for the
+// golang.org/x/* family bug. Bumping golang.org/x/net pulled every other golang.org/x/*
+// package as a co-update, even when those sibling versions did not exist on the proxy,
+// causing "unknown revision" build failures in elastic-build.
+//
+// The fix: before recommending a same-major sibling, verify its target version exists on
+// the proxy. If the proxy returns 404 the sibling is silently skipped.
+//
+// Note: with the moduleFamilyPrefix fix also applied, golang.org/x/oauth2 is not even
+// considered a sibling of golang.org/x/net (different 3-part family paths). This test
+// validates the version-existence safety net by using go.example.io/pkg/* packages that
+// share a family prefix and mocking a proxy that only serves one of them.
+func TestDetectCoUpdates_SkipsSiblingWithNonExistentVersion(t *testing.T) {
+	// Mock proxy: serves net@v0.35.0 but returns 404 for oauth2@v0.35.0.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "go.example.io/pkg/net") &&
+			strings.Contains(r.URL.Path, "v0.35.0") {
+			fmt.Fprint(w, "module go.example.io/pkg/net\n\ngo 1.21\n")
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	origHost := proxyHost
+	proxyHost = srv.Listener.Addr().String()
+	defer func() { proxyHost = origHost }()
+
+	origClient := proxyClient
+	proxyClient = &http.Client{Transport: &http.Transport{}}
+	defer func() { proxyClient = origClient }()
+
+	// go.example.io is a vanity domain — net and oauth2 share the go.example.io/pkg family.
+	modContent := `module example.com/consumer
+go 1.24
+require (
+	go.example.io/pkg/net    v0.34.0
+	go.example.io/pkg/oauth2 v0.30.0
+)
+`
+	modFile, err := modfile.Parse("go.mod", []byte(modContent), nil)
+	require.NoError(t, err)
+
+	allMissingDeps, _ := DetectCoUpdates(t.Context(), map[string]string{
+		"go.example.io/pkg/net": "v0.35.0",
+	}, modFile)
+
+	// net is the primary package — it should not appear as a co-update.
+	_, netFound := allMissingDeps["go.example.io/pkg/net"]
+	require.False(t, netFound, "primary package must not appear in allMissingDeps")
+
+	// oauth2@v0.35.0 returns 404 from the mock proxy — must be skipped.
+	_, oauth2Found := allMissingDeps["go.example.io/pkg/oauth2"]
+	require.False(t, oauth2Found,
+		"go.example.io/pkg/oauth2 must not be suggested when its target version returns 404")
 }
