@@ -1804,11 +1804,11 @@ func TestDetectCoUpdates_SkipsSiblingWithNonExistentVersion(t *testing.T) {
 
 	origHost := proxyHost
 	proxyHost = srv.Listener.Addr().String()
-	defer func() { proxyHost = origHost }()
+	t.Cleanup(func() { proxyHost = origHost })
 
 	origClient := proxyClient
 	proxyClient = &http.Client{Transport: &http.Transport{}}
-	defer func() { proxyClient = origClient }()
+	t.Cleanup(func() { proxyClient = origClient })
 
 	// go.example.io is a vanity domain — net and oauth2 share the go.example.io/pkg family.
 	modContent := `module example.com/consumer

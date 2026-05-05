@@ -662,16 +662,13 @@ func moduleFamilyPrefix(pkg string) string {
 	}
 	domain := parts[0]
 	switch domain {
-	case "github.com", "gitlab.com", "bitbucket.org", "codeberg.org":
-		// Code-hosting domains: family is domain/org/repo.
-		if len(parts) >= 3 {
-			return parts[0] + "/" + parts[1] + "/" + parts[2]
-		}
-	case "golang.org", "gopkg.in":
-		// These vanity domains host many independent projects under a shared path
-		// prefix (e.g. golang.org/x/net, golang.org/x/oauth2, gopkg.in/yaml.v3).
-		// Each project has its own release cadence, so treat them like hosting
-		// domains: the family is the full three-part path, not just domain/prefix.
+	case "github.com", "gitlab.com", "bitbucket.org", "codeberg.org",
+		// golang.org and gopkg.in host many independent projects under a shared
+		// path prefix (e.g. golang.org/x/net vs golang.org/x/oauth2 release
+		// independently). Treat them like hosting domains so each project gets
+		// its own family prefix rather than being grouped under domain/x.
+		"golang.org", "gopkg.in":
+		// Family is domain/org/repo (or domain/prefix/project for vanity domains).
 		if len(parts) >= 3 {
 			return parts[0] + "/" + parts[1] + "/" + parts[2]
 		}

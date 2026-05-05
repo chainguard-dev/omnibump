@@ -475,11 +475,9 @@ func DetectCoUpdates(ctx context.Context, packagesToUpdate map[string]string, mo
 				reason = fmt.Sprintf("cross-major ecosystem package: %s requires %s@%s", groupPkg, familyRoot, version)
 				log.Infof("Found cross-major co-update: %s@%s", groupPkg, targetVer)
 			} else {
-				// Same-major sibling: verify the proposed target version actually exists on
-				// the proxy before recommending it. Some module families that share a path
-				// prefix (e.g. golang.org/x/net and golang.org/x/oauth2) release
-				// independently, so the primary package's new version may not exist for all
-				// siblings yet.
+				// Some families share a path prefix but release independently
+				// (e.g. golang.org/x/net and golang.org/x/oauth2), so the primary
+				// package's new version may not yet exist for all siblings.
 				if _, inCache := cache.get(groupPkg, targetVer); !inCache {
 					mf, err := fetchGoModForPackage(ctx, groupPkg, targetVer)
 					if err != nil {
