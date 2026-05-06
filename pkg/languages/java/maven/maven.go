@@ -99,6 +99,14 @@ func depDisplayName(dep languages.Dependency) string {
 	return "<unknown>"
 }
 
+// pomFilePath returns the pom.xml path to use, honouring ManifestFile when set.
+func pomFilePath(cfg *languages.UpdateConfig) string {
+	if cfg.ManifestFile != "" {
+		return cfg.ManifestFile
+	}
+	return filepath.Join(cfg.RootDir, "pom.xml")
+}
+
 // Update performs dependency updates on a Maven project.
 func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	clog.InfoContextf(ctx, "Updating Maven project at: %s", cfg.RootDir)
@@ -129,9 +137,9 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	}
 
 	// Find pom.xml
-	pomPath := filepath.Join(cfg.RootDir, "pom.xml")
+	pomPath := pomFilePath(cfg)
 	if _, err := os.Stat(pomPath); os.IsNotExist(err) {
-		return fmt.Errorf("%w in: %s", ErrPomNotFound, cfg.RootDir)
+		return fmt.Errorf("%w in: %s", ErrPomNotFound, pomPath)
 	}
 
 	// Apply precedence: properties take precedence over direct dependency patches
@@ -176,7 +184,7 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error {
 	log := clog.FromContext(ctx)
 
-	pomPath := filepath.Join(cfg.RootDir, "pom.xml")
+	pomPath := pomFilePath(cfg)
 
 	// Parse the updated POM
 	project, err := ParsePom(pomPath)

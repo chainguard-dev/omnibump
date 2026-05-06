@@ -53,6 +53,10 @@ type UpdateConfig struct {
 	// DryRun indicates whether to only simulate the update without making changes
 	DryRun bool
 
+	// ManifestFile overrides the default manifest file path (e.g. a specific pom.xml).
+	// When empty, each language falls back to its default filename within RootDir.
+	ManifestFile string
+
 	// Options contains language-specific options as a flexible map
 	Options map[string]any
 }

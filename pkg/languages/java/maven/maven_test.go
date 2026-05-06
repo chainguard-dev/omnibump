@@ -557,24 +557,24 @@ func TestMaven_Update_EmptyVersionPreservesAndAdds(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	initialPOM := `<?xml version="1.0" encoding="UTF-8"?>
-<project>
-  <groupId>com.example</groupId>
-  <artifactId>test-project</artifactId>
-  <version>1.0.0</version>
-  <dependencies>
-    <dependency>
-      <groupId>org.example</groupId>
-      <artifactId>real-dep</artifactId>
-      <version>1.0.0</version>
-    </dependency>
-    <dependency>
-      <groupId>javax.servlet</groupId>
-      <artifactId>javax.servlet-api</artifactId>
-      <version>4.0.1</version>
-      <scope>provided</scope>
-    </dependency>
-  </dependencies>
-</project>`
+	<project>
+	  <groupId>com.example</groupId>
+	  <artifactId>test-project</artifactId>
+	  <version>1.0.0</version>
+	  <dependencies>
+	    <dependency>
+	      <groupId>org.example</groupId>
+	      <artifactId>real-dep</artifactId>
+	      <version>1.0.0</version>
+	    </dependency>
+	    <dependency>
+	      <groupId>javax.servlet</groupId>
+	      <artifactId>javax.servlet-api</artifactId>
+	      <version>4.0.1</version>
+	      <scope>provided</scope>
+	    </dependency>
+	  </dependencies>
+	</project>`
 
 	pomPath := tmpDir + "/pom.xml"
 	if err := os.WriteFile(pomPath, []byte(initialPOM), 0o600); err != nil {
@@ -668,18 +668,18 @@ func TestMaven_Update_RejectsInvalidVersion(t *testing.T) {
 
 	// Create initial POM with known content
 	initialPOM := `<?xml version="1.0" encoding="UTF-8"?>
-<project>
-  <groupId>com.example</groupId>
-  <artifactId>test-project</artifactID>
-  <version>1.0.0</version>
-  <dependencies>
-    <dependency>
-      <groupId>org.example</groupId>
-      <artifactId>test-dep</artifactId>
-      <version>1.0.0</version>
-    </dependency>
-  </dependencies>
-</project>`
+	<project>
+	  <groupId>com.example</groupId>
+	  <artifactId>test-project</artifactID>
+	  <version>1.0.0</version>
+	  <dependencies>
+	    <dependency>
+	      <groupId>org.example</groupId>
+	      <artifactId>test-dep</artifactId>
+	      <version>1.0.0</version>
+	    </dependency>
+	  </dependencies>
+	</project>`
 
 	pomPath := fmt.Sprintf("%s/pom.xml", tmpDir)
 	if err := os.WriteFile(pomPath, []byte(initialPOM), 0o600); err != nil {
@@ -716,4 +716,124 @@ func TestMaven_Update_RejectsInvalidVersion(t *testing.T) {
 	if string(updatedContent) != initialPOM {
 		t.Error("POM file should be unchanged after rejected update")
 	}
+}
+
+// TestMaven_Update_CustomManifestPath verifies that Update() uses the path supplied via
+// cfg.Options["manifestFile"] rather than the default <RootDir>/pom.xml.
+func TestMaven_Update_CustomManifestPath(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Place the POM at a non-default path; leave RootDir empty of any pom.xml.
+	customPath := tmpDir + "/subdir/custom.xml"
+	if err := os.MkdirAll(tmpDir+"/subdir", 0o755); err != nil {
+		t.Fatalf("Failed to create subdir: %v", err)
+	}
+
+	initialPOM := `<?xml version="1.0" encoding="UTF-8"?>
+	<project>
+	  <groupId>com.example</groupId>
+	  <artifactId>test-project</artifactId>
+	  <version>1.0.0</version>
+	  <dependencies>
+	    <dependency>
+	      <groupId>com.example</groupId>
+	      <artifactId>artifact</artifactId>
+	      <version>1.0.0</version>
+	    </dependency>
+	  </dependencies>
+	</project>`
+
+	if err := os.WriteFile(customPath, []byte(initialPOM), 0o600); err != nil {
+		t.Fatalf("Failed to write POM: %v", err)
+	}
+
+	m := &Maven{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir, // no pom.xml here — would fail without the manifest override
+		Dependencies: []languages.Dependency{
+			{
+				Version: "2.0.0",
+				Metadata: map[string]any{
+					"groupId":    "com.example",
+					"artifactId": "artifact",
+				},
+			},
+		},
+		ManifestFile: customPath,
+	}
+
+	if err := m.Update(context.Background(), cfg); err != nil {
+		t.Fatalf("Maven.Update() with custom manifest path failed: %v", err)
+	}
+
+	project, err := ParsePom(customPath)
+	if err != nil {
+		t.Fatalf("Failed to parse updated POM: %v", err)
+	}
+	for _, dep := range *project.Dependencies {
+		if dep.GroupID == "com.example" && dep.ArtifactID == "artifact" {
+			if dep.Version != "2.0.0" {
+				t.Errorf("artifact version = %q, want 2.0.0", dep.Version)
+			}
+			return
+		}
+	}
+	t.Error("dependency com.example:artifact not found in updated POM")
+}
+
+// TestMaven_Update_DefaultFallback verifies that Update() still uses <RootDir>/pom.xml
+// when no "manifestFile" option is set (regression guard).
+func TestMaven_Update_DefaultFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	initialPOM := `<?xml version="1.0" encoding="UTF-8"?>
+	<project>
+	  <groupId>com.example</groupId>
+	  <artifactId>test-project</artifactId>
+	  <version>1.0.0</version>
+	  <dependencies>
+	    <dependency>
+	      <groupId>com.example</groupId>
+	      <artifactId>artifact</artifactId>
+	      <version>1.0.0</version>
+	    </dependency>
+	  </dependencies>
+	</project>`
+
+	if err := os.WriteFile(tmpDir+"/pom.xml", []byte(initialPOM), 0o600); err != nil {
+		t.Fatalf("Failed to write POM: %v", err)
+	}
+
+	m := &Maven{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{
+				Version: "3.0.0",
+				Metadata: map[string]any{
+					"groupId":    "com.example",
+					"artifactId": "artifact",
+				},
+			},
+		},
+		// No Options set — must fall back to <RootDir>/pom.xml
+	}
+
+	if err := m.Update(context.Background(), cfg); err != nil {
+		t.Fatalf("Maven.Update() with default path failed: %v", err)
+	}
+
+	project, err := ParsePom(tmpDir + "/pom.xml")
+	if err != nil {
+		t.Fatalf("Failed to parse updated POM: %v", err)
+	}
+	for _, dep := range *project.Dependencies {
+		if dep.GroupID == "com.example" && dep.ArtifactID == "artifact" {
+			if dep.Version != "3.0.0" {
+				t.Errorf("artifact version = %q, want 3.0.0", dep.Version)
+			}
+			return
+		}
+	}
+	t.Error("dependency com.example:artifact not found in updated POM")
 }

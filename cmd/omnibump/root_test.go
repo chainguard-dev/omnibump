@@ -204,6 +204,38 @@ func TestSetupLogging_AllowsBuiltinStderr(t *testing.T) {
 	}
 }
 
+// TestConvertToUpdateConfig_WithManifestFile tests that flags.manifestFile is wired into ManifestFile.
+func TestConvertToUpdateConfig_WithManifestFile(t *testing.T) {
+	original := flags.manifestFile
+	defer func() { flags.manifestFile = original }()
+
+	flags.manifestFile = "/some/path/custom-pom.xml"
+
+	cfg := &config.Config{}
+	updateCfg := convertToUpdateConfig(cfg)
+	updateCfg.ManifestFile = flags.manifestFile
+
+	if updateCfg.ManifestFile != "/some/path/custom-pom.xml" {
+		t.Errorf("ManifestFile = %q, want %q", updateCfg.ManifestFile, "/some/path/custom-pom.xml")
+	}
+}
+
+// TestConvertToUpdateConfig_WithoutManifestFile tests that ManifestFile is empty when flag is unset.
+func TestConvertToUpdateConfig_WithoutManifestFile(t *testing.T) {
+	original := flags.manifestFile
+	defer func() { flags.manifestFile = original }()
+
+	flags.manifestFile = ""
+
+	cfg := &config.Config{}
+	updateCfg := convertToUpdateConfig(cfg)
+	updateCfg.ManifestFile = flags.manifestFile
+
+	if updateCfg.ManifestFile != "" {
+		t.Errorf("ManifestFile = %q, want empty string", updateCfg.ManifestFile)
+	}
+}
+
 // TestConvertToUpdateConfig_WithProperties tests property conversion.
 func TestConvertToUpdateConfig_WithProperties(t *testing.T) {
 	cfg := &config.Config{

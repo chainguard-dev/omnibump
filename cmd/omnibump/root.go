@@ -35,6 +35,7 @@ type rootFlags struct {
 	replaces       string
 	properties     string
 	rootDir        string
+	manifestFile   string
 	tidy           bool
 	showDiff       bool
 	dryRun         bool
@@ -85,6 +86,7 @@ func New() *cobra.Command {
 	f.BoolVar(&flags.tidy, "tidy", false, "run tidy command after update")
 	f.BoolVar(&flags.showDiff, "show-diff", false, "show diff of changes")
 	f.BoolVar(&flags.dryRun, "dry-run", false, "simulate update without making changes")
+	f.StringVar(&flags.manifestFile, "manifest", "", "path to manifest file to update (e.g. a specific pom.xml); defaults to <dir>/pom.xml")
 
 	// Add version command
 	cmd.AddCommand(version.WithFont("starwars"))
@@ -329,6 +331,7 @@ func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but requir
 	updateCfg.Tidy = flags.tidy
 	updateCfg.ShowDiff = flags.showDiff
 	updateCfg.DryRun = flags.dryRun
+	updateCfg.ManifestFile = flags.manifestFile
 
 	// Perform update
 	if err := lang.Update(ctx, updateCfg); err != nil {
