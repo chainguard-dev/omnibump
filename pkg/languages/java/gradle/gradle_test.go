@@ -75,7 +75,7 @@ func TestGradle_Detect(t *testing.T) {
 			}
 
 			g := &Gradle{}
-			found, err := g.Detect(context.Background(), tmpDir, "")
+			found, err := g.Detect(context.Background(), tmpDir)
 			if err != nil {
 				t.Fatalf("Detect() error = %v", err)
 			}

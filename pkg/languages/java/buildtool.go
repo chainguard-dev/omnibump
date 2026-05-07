@@ -21,9 +21,9 @@ type BuildTool interface {
 	// Name returns the build tool identifier (e.g., "maven", "gradle")
 	Name() string
 
-	// Detect checks if this build tool is present given the directory and manifest file path.
-	// manifestFile may be empty; each build tool resolves its own default filename.
-	Detect(ctx context.Context, dir string, manifestFile string) (bool, error)
+	// Detect checks if this build tool is present in the given directory.
+	// Returns true if manifest files for this build tool are found.
+	Detect(ctx context.Context, dir string) (bool, error)
 
 	// Update performs the dependency update using the provided configuration.
 	Update(ctx context.Context, cfg *languages.UpdateConfig) error

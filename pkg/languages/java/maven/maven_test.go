@@ -887,7 +887,7 @@ func TestMaven_Detect_StandardName(t *testing.T) {
 	}
 
 	m := &Maven{}
-	ok, err := m.Detect(t.Context(), tmpDir, "")
+	ok, err := m.Detect(t.Context(), tmpDir)
 	if err != nil {
 		t.Fatalf("Detect() unexpected error: %v", err)
 	}
@@ -897,20 +897,20 @@ func TestMaven_Detect_StandardName(t *testing.T) {
 }
 
 func TestMaven_Detect_CustomManifestFile(t *testing.T) {
-	tmpDir := t.TempDir()
-	customPath := tmpDir + "/custom-pom.xml"
+	// Custom-named POM files are identified via IsMavenPom before detection;
+	// verify that a non-standard filename with Maven content is recognised.
+	customPath := t.TempDir() + "/parent-pom-template.xml"
 	pomContent := `<?xml version="1.0" encoding="UTF-8"?><project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"></project>`
 	if err := os.WriteFile(customPath, []byte(pomContent), 0o600); err != nil {
 		t.Fatalf("failed to write custom POM: %v", err)
 	}
 
-	m := &Maven{}
-	ok, err := m.Detect(t.Context(), tmpDir, customPath)
+	ok, err := IsMavenPom(customPath)
 	if err != nil {
-		t.Fatalf("Detect() unexpected error: %v", err)
+		t.Fatalf("IsMavenPom() unexpected error: %v", err)
 	}
 	if !ok {
-		t.Error("Detect() = false, want true for valid custom manifest")
+		t.Error("IsMavenPom() = false, want true for valid Maven POM with non-standard filename")
 	}
 }
 
@@ -955,7 +955,7 @@ func TestMaven_Detect_WrongContent(t *testing.T) {
 	}
 
 	m := &Maven{}
-	ok, err := m.Detect(t.Context(), tmpDir, "")
+	ok, err := m.Detect(t.Context(), tmpDir)
 	if err != nil {
 		t.Fatalf("Detect() unexpected error: %v", err)
 	}

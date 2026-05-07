@@ -290,7 +290,7 @@ func TestMavenDetect(t *testing.T) {
 			}
 
 			maven := &Maven{}
-			got, err := maven.Detect(context.Background(), tmpDir, "")
+			got, err := maven.Detect(context.Background(), tmpDir)
 			if err != nil {
 				t.Fatalf("Detect() error = %v", err)
 			}

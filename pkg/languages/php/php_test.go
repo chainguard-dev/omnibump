@@ -38,13 +38,13 @@ func TestPHPDetect(t *testing.T) {
 	require.NoError(t, err)
 
 	// Should detect PHP project
-	detected, err := p.Detect(ctx, tmpDir, "")
+	detected, err := p.Detect(ctx, tmpDir)
 	require.NoError(t, err)
 	assert.True(t, detected)
 
 	// Test with directory that doesn't have any PHP build tool files
 	emptyDir := t.TempDir()
-	detected, err = p.Detect(ctx, emptyDir, "")
+	detected, err = p.Detect(ctx, emptyDir)
 	require.NoError(t, err)
 	assert.False(t, detected)
 }

@@ -88,23 +88,21 @@ func (m *Maven) Name() string {
 	return "maven"
 }
 
-// Detect checks whether the manifest file is a valid Maven POM by content.
-// If manifestFile is empty, falls back to <dir>/pom.xml.
-func (m *Maven) Detect(ctx context.Context, dir string, manifestFile string) (bool, error) {
+// Detect checks if a Maven project is present in the directory by looking for
+// pom.xml and validating it is a genuine Maven POM by content.
+func (m *Maven) Detect(ctx context.Context, dir string) (bool, error) {
 	log := clog.FromContext(ctx)
-	if manifestFile == "" {
-		manifestFile = filepath.Join(dir, DefaultManifestFile)
-	}
-	ok, err := IsMavenPom(manifestFile)
+	pomPath := filepath.Join(dir, DefaultManifestFile)
+	ok, err := IsMavenPom(pomPath)
 	if err != nil {
-		log.Debugf("No Maven project detected (cannot read %s: %v)", manifestFile, err)
+		log.Debugf("No Maven project detected at %s: %v", dir, err)
 		return false, nil
 	}
 	if !ok {
-		log.Debugf("No Maven project detected (not a Maven POM: %s)", manifestFile)
+		log.Debugf("No Maven project detected at %s", dir)
 		return false, nil
 	}
-	log.Debugf("Detected Maven project (%s)", filepath.Base(manifestFile))
+	log.Debugf("Detected Maven project at %s", dir)
 	return true, nil
 }
 

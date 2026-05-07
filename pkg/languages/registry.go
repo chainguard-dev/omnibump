@@ -55,15 +55,13 @@ func List() []string {
 }
 
 // DetectLanguage attempts to detect which language is present in the given directory.
-// manifestFile is passed to each language's Detect; languages that use it (e.g. Java/Maven)
-// will validate the provided file rather than scanning for a default filename.
 // Returns the first language that reports a positive detection.
-func DetectLanguage(ctx context.Context, dir string, manifestFile string) (string, error) {
+func DetectLanguage(ctx context.Context, dir string) (string, error) {
 	mu.RLock()
 	defer mu.RUnlock()
 
 	for name, lang := range registry {
-		detected, err := lang.Detect(ctx, dir, manifestFile)
+		detected, err := lang.Detect(ctx, dir)
 		if err != nil {
 			continue // Skip languages that error during detection
 		}
@@ -77,13 +75,13 @@ func DetectLanguage(ctx context.Context, dir string, manifestFile string) (strin
 
 // DetectLanguages returns all languages detected in the given directory.
 // Useful for multi-language projects.
-func DetectLanguages(ctx context.Context, dir string, manifestFile string) ([]string, error) {
+func DetectLanguages(ctx context.Context, dir string) ([]string, error) {
 	mu.RLock()
 	defer mu.RUnlock()
 
 	var detected []string
 	for name, lang := range registry {
-		found, err := lang.Detect(ctx, dir, manifestFile)
+		found, err := lang.Detect(ctx, dir)
 		if err != nil {
 			continue
 		}

@@ -40,8 +40,7 @@ func (r *Rust) Name() string {
 }
 
 // Detect checks if Rust manifest files exist in the directory.
-// manifestFile is unused — Rust always detects by looking for Cargo.lock by name.
-func (r *Rust) Detect(ctx context.Context, dir string, _ string) (bool, error) {
+func (r *Rust) Detect(ctx context.Context, dir string) (bool, error) {
 	log := clog.FromContext(ctx)
 	cargoLockPath := filepath.Join(dir, "Cargo.lock")
 	_, err := os.Stat(cargoLockPath)

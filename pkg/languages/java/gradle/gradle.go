@@ -94,8 +94,7 @@ func (g *Gradle) Name() string {
 }
 
 // Detect checks if Gradle manifest files exist in the directory.
-// manifestFile is unused — Gradle always scans for its own standard filenames.
-func (g *Gradle) Detect(ctx context.Context, dir string, _ string) (bool, error) {
+func (g *Gradle) Detect(ctx context.Context, dir string) (bool, error) {
 	log := clog.FromContext(ctx)
 	// Check for build files in priority order
 	buildFiles := []string{

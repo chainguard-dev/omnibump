@@ -68,7 +68,7 @@ func TestRust_Detect(t *testing.T) {
 			}
 
 			r := &Rust{}
-			found, err := r.Detect(context.Background(), tmpDir, "")
+			found, err := r.Detect(context.Background(), tmpDir)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantFound, found)
 		})

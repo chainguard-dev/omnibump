@@ -41,8 +41,7 @@ func (p *PHP) Name() string {
 }
 
 // Detect checks if any PHP build tool is present in the directory.
-// manifestFile is unused — PHP delegates detection to its registered build tools.
-func (p *PHP) Detect(ctx context.Context, dir string, _ string) (bool, error) {
+func (p *PHP) Detect(ctx context.Context, dir string) (bool, error) {
 	buildTool := detectBuildTool(ctx, dir)
 	if buildTool == nil {
 		return false, nil

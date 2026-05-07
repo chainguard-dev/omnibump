@@ -18,10 +18,11 @@ import (
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/config"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
-	_ "github.com/chainguard-dev/omnibump/pkg/languages/golang" // Register Go
-	_ "github.com/chainguard-dev/omnibump/pkg/languages/java"   // Register Java (Maven, Gradle, etc.)
-	_ "github.com/chainguard-dev/omnibump/pkg/languages/php"    // Register PHP (Composer, etc.)
-	_ "github.com/chainguard-dev/omnibump/pkg/languages/rust"   // Register Rust
+	_ "github.com/chainguard-dev/omnibump/pkg/languages/golang"      // Register Go
+	_ "github.com/chainguard-dev/omnibump/pkg/languages/java"        // Register Java (Maven, Gradle, etc.)
+	"github.com/chainguard-dev/omnibump/pkg/languages/java/maven"
+	_ "github.com/chainguard-dev/omnibump/pkg/languages/php"         // Register PHP (Composer, etc.)
+	_ "github.com/chainguard-dev/omnibump/pkg/languages/rust"        // Register Rust
 	charmlog "github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
 	"sigs.k8s.io/release-utils/version"
@@ -300,9 +301,21 @@ func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but requir
 	}
 
 	if detectedLang == languageAuto || detectedLang == "" {
-		detectedLang, err = languages.DetectLanguage(ctx, flags.rootDir, flags.manifestFile)
-		if err != nil {
-			return fmt.Errorf("failed to detect language: %w (try specifying --language explicitly)", err)
+		// When --manifest is set, detect language from the file content directly.
+		if flags.manifestFile != "" {
+			ok, err := maven.IsMavenPom(flags.manifestFile)
+			if err != nil {
+				return fmt.Errorf("failed to read manifest file: %w", err)
+			}
+			if !ok {
+				return fmt.Errorf("--manifest: %q is not a valid Maven POM", flags.manifestFile)
+			}
+			detectedLang = languageJava
+		} else {
+			detectedLang, err = languages.DetectLanguage(ctx, flags.rootDir)
+			if err != nil {
+				return fmt.Errorf("failed to detect language: %w (try specifying --language explicitly)", err)
+			}
 		}
 		log.Infof("Detected language: %s", detectedLang)
 	}
