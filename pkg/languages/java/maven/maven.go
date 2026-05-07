@@ -45,6 +45,9 @@ var (
 
 	// ErrMissingRequiredFields is returned when a dependency is missing groupId or artifactId.
 	ErrMissingRequiredFields = errors.New("missing required fields for dependency")
+
+	// ErrNotMavenPOM is returned when a file is not a valid Maven POM.
+	ErrNotMavenPOM = errors.New("file is not a valid Maven POM")
 )
 
 // DefaultManifestFile is the conventional Maven POM filename.

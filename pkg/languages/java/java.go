@@ -73,26 +73,12 @@ func (j *Java) SupportsAnalysis() bool {
 func (j *Java) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	log := clog.FromContext(ctx)
 
-	// Detect build tool if not already detected.
-	// When a manifest file is provided, detect the build tool from its content
-	// rather than scanning the directory for a default filename.
 	if j.buildTool == nil {
-		if cfg.ManifestFile != "" {
-			ok, err := maven.IsMavenPom(cfg.ManifestFile)
-			if err != nil {
-				return fmt.Errorf("failed to read manifest file: %w", err)
-			}
-			if ok {
-				j.buildTool = &maven.Maven{}
-			}
+		tool, err := resolveBuildTool(ctx, cfg)
+		if err != nil {
+			return err
 		}
-		if j.buildTool == nil {
-			buildTool := detectBuildTool(ctx, cfg.RootDir)
-			if buildTool == nil {
-				return fmt.Errorf("%w in: %s", ErrNoBuildToolFound, cfg.RootDir)
-			}
-			j.buildTool = buildTool
-		}
+		j.buildTool = tool
 	}
 
 	log.Infof("Detected Java build tool: %s", j.buildTool.Name())
@@ -103,24 +89,12 @@ func (j *Java) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 
 // Validate checks if the updates were applied successfully.
 func (j *Java) Validate(ctx context.Context, cfg *languages.UpdateConfig) error {
-	// Detect build tool if not already detected.
 	if j.buildTool == nil {
-		if cfg.ManifestFile != "" {
-			ok, err := maven.IsMavenPom(cfg.ManifestFile)
-			if err != nil {
-				return fmt.Errorf("failed to read manifest file: %w", err)
-			}
-			if ok {
-				j.buildTool = &maven.Maven{}
-			}
+		tool, err := resolveBuildTool(ctx, cfg)
+		if err != nil {
+			return err
 		}
-		if j.buildTool == nil {
-			buildTool := detectBuildTool(ctx, cfg.RootDir)
-			if buildTool == nil {
-				return fmt.Errorf("%w in: %s", ErrNoBuildToolFound, cfg.RootDir)
-			}
-			j.buildTool = buildTool
-		}
+		j.buildTool = tool
 	}
 
 	// Delegate to the build tool
@@ -141,6 +115,26 @@ func (j *Java) GetBuildTool(ctx context.Context, dir string) (BuildTool, error) 
 
 	j.buildTool = buildTool
 	return buildTool, nil
+}
+
+// resolveBuildTool returns the appropriate build tool for the given config.
+// When ManifestFile is set it identifies the tool by file content; otherwise
+// it falls back to directory-based detection.
+func resolveBuildTool(ctx context.Context, cfg *languages.UpdateConfig) (BuildTool, error) {
+	if cfg.ManifestFile != "" {
+		ok, err := maven.IsMavenPom(cfg.ManifestFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read manifest file: %w", err)
+		}
+		if ok {
+			return &maven.Maven{}, nil
+		}
+	}
+	tool := detectBuildTool(ctx, cfg.RootDir)
+	if tool == nil {
+		return nil, fmt.Errorf("%w in: %s", ErrNoBuildToolFound, cfg.RootDir)
+	}
+	return tool, nil
 }
 
 // detectBuildTool detects which Java build tool is present in the directory.
