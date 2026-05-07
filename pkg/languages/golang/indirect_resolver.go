@@ -475,6 +475,9 @@ func fetchFromProxy(ctx context.Context, path string) ([]byte, error) {
 		_ = resp.Body.Close()
 	}()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("%w: status 404 for %s", ErrModuleVersionNotFound, goProxyBase+path)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%w: status %d for %s", ErrProxyRequestFailed, resp.StatusCode, goProxyBase+path)
 	}

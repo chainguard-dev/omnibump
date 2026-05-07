@@ -7,6 +7,9 @@ package golang
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,6 +132,40 @@ func TestExtractModuleVersion(t *testing.T) {
 	}
 }
 
+func TestFetchFromProxy_404ReturnsErrModuleVersionNotFound(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.NotFound(w, nil)
+	}))
+	defer srv.Close()
+
+	origHost, origClient := proxyHost, proxyClient
+	proxyHost = srv.Listener.Addr().String()
+	proxyClient = srv.Client()
+	defer func() { proxyHost, proxyClient = origHost, origClient }()
+
+	_, err := fetchFromProxy(context.Background(), "/github.com/example/pkg/@v/v3.0.0.mod")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrModuleVersionNotFound), "expected ErrModuleVersionNotFound, got: %v", err)
+	assert.False(t, errors.Is(err, ErrProxyRequestFailed), "should not be ErrProxyRequestFailed for a 404")
+}
+
+func TestFetchFromProxy_NonOKNon404ReturnsErrProxyRequestFailed(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	origHost, origClient := proxyHost, proxyClient
+	proxyHost = srv.Listener.Addr().String()
+	proxyClient = srv.Client()
+	defer func() { proxyHost, proxyClient = origHost, origClient }()
+
+	_, err := fetchFromProxy(context.Background(), "/github.com/example/pkg/@v/v1.0.0.mod")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrProxyRequestFailed), "expected ErrProxyRequestFailed for 500, got: %v", err)
+	assert.False(t, errors.Is(err, ErrModuleVersionNotFound), "should not be ErrModuleVersionNotFound for a 500")
+}
+
 func TestFetchGoModForPackage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test that fetches from Go proxy")
@@ -141,6 +178,7 @@ func TestFetchGoModForPackage(t *testing.T) {
 		pkgPath     string
 		version     string
 		expectError bool
+		errTarget   error
 		checkFunc   func(*testing.T, *modfile.File)
 	}{
 		{
@@ -163,16 +201,18 @@ func TestFetchGoModForPackage(t *testing.T) {
 			},
 		},
 		{
-			name:        "invalid version",
+			name:        "version not on proxy returns ErrModuleVersionNotFound",
 			pkgPath:     "github.com/libp2p/go-libp2p",
 			version:     "v999.999.999",
 			expectError: true,
+			errTarget:   ErrModuleVersionNotFound,
 		},
 		{
-			name:        "invalid package",
+			name:        "nonexistent package returns ErrModuleVersionNotFound",
 			pkgPath:     "github.com/nonexistent/package",
 			version:     "v1.0.0",
 			expectError: true,
+			errTarget:   ErrModuleVersionNotFound,
 		},
 	}
 
@@ -181,7 +221,10 @@ func TestFetchGoModForPackage(t *testing.T) {
 			mod, err := fetchGoModForPackage(ctx, tt.pkgPath, tt.version)
 
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
+				if tt.errTarget != nil {
+					assert.True(t, errors.Is(err, tt.errTarget), "expected errors.Is(%v), got: %v", tt.errTarget, err)
+				}
 			} else {
 				require.NoError(t, err)
 				require.NotNil(t, mod)

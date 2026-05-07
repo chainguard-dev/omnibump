@@ -48,6 +48,10 @@ var (
 	// ErrProxyRequestFailed is returned when the Go proxy request fails.
 	ErrProxyRequestFailed = errors.New("proxy request failed")
 
+	// ErrModuleVersionNotFound is returned when a module version does not exist on the Go proxy (HTTP 404).
+	// Callers that need to distinguish "version doesn't exist" from transient proxy errors can use errors.Is.
+	ErrModuleVersionNotFound = errors.New("module version not found on proxy")
+
 	// ErrNilHTTPResponse is returned when HTTP client returns nil response.
 	ErrNilHTTPResponse = errors.New("http request returned nil response")
 )
