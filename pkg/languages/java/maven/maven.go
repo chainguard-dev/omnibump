@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
@@ -52,14 +53,16 @@ const DefaultManifestFile = "pom.xml"
 // Maven implements the BuildTool interface for Maven projects.
 type Maven struct{}
 
-// mavenXMLNamespace is the XML namespace that identifies a Maven POM root element.
-const mavenXMLNamespace = "http://maven.apache.org/POM/4.0.0"
+// mavenXMLNamespacePrefix is the namespace prefix that identifies a Maven POM root element.
+// Using a prefix rather than an exact version allows detection of future POM model versions
+// (e.g. 4.1.0) without code changes.
+const mavenXMLNamespacePrefix = "http://maven.apache.org/POM/"
 
 // IsMavenPom reports whether path is a Maven POM by parsing the XML and checking
 // that the root element is <project> with the Maven namespace.
 // Returns an error if the file cannot be opened or is not valid XML.
 func IsMavenPom(path string) (bool, error) {
-	f, err := os.Open(path) //nolint:gosec // path comes from validated --manifest flag or default pom.xml
+	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return false, fmt.Errorf("cannot open manifest file %q: %w", path, err)
 	}
@@ -75,7 +78,7 @@ func IsMavenPom(path string) (bool, error) {
 			return false, fmt.Errorf("cannot parse manifest file %q: %w", path, err)
 		}
 		if se, ok := token.(xml.StartElement); ok {
-			return se.Name.Local == "project" && se.Name.Space == mavenXMLNamespace, nil
+			return se.Name.Local == "project" && strings.HasPrefix(se.Name.Space, mavenXMLNamespacePrefix), nil
 		}
 	}
 }
