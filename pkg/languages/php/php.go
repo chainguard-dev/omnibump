@@ -41,7 +41,7 @@ func (p *PHP) Name() string {
 }
 
 // Detect checks if any PHP build tool is present in the directory.
-func (p *PHP) Detect(ctx context.Context, dir string) (bool, error) {
+func (p *PHP) Detect(ctx context.Context, dir string, _ string) (bool, error) {
 	buildTool := detectBuildTool(ctx, dir)
 	if buildTool == nil {
 		return false, nil

@@ -778,7 +778,7 @@ func TestMaven_Update_CustomManifestPath(t *testing.T) {
 			return
 		}
 	}
-	t.Error("dependency com.example:artifact not found in updated POM")
+	t.Error("dependency com.example:artifact not found in updated POM (CustomManifestPath)")
 }
 
 // TestMaven_Update_DefaultFallback verifies that Update() still uses <RootDir>/pom.xml
@@ -835,5 +835,131 @@ func TestMaven_Update_DefaultFallback(t *testing.T) {
 			return
 		}
 	}
-	t.Error("dependency com.example:artifact not found in updated POM")
+	t.Error("dependency com.example:artifact not found in updated POM (DefaultFallback)")
+}
+
+func TestIsMavenPom_Valid(t *testing.T) {
+	path := t.TempDir() + "/pom.xml"
+	content := `<?xml version="1.0" encoding="UTF-8"?><project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"></project>`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+
+	ok, err := IsMavenPom(path)
+	if err != nil {
+		t.Fatalf("IsMavenPom() unexpected error: %v", err)
+	}
+	if !ok {
+		t.Error("IsMavenPom() = false, want true for valid Maven POM")
+	}
+}
+
+func TestIsMavenPom_NonMaven(t *testing.T) {
+	path := t.TempDir() + "/other.xml"
+	if err := os.WriteFile(path, []byte(`<?xml version="1.0"?><configuration><foo>bar</foo></configuration>`), 0o600); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+
+	ok, err := IsMavenPom(path)
+	if err != nil {
+		t.Fatalf("IsMavenPom() unexpected error: %v", err)
+	}
+	if ok {
+		t.Error("IsMavenPom() = true, want false for non-Maven XML")
+	}
+}
+
+func TestIsMavenPom_NotFound(t *testing.T) {
+	ok, err := IsMavenPom("/nonexistent/path/pom.xml")
+	if err == nil {
+		t.Error("IsMavenPom() expected error for missing file, got nil")
+	}
+	if ok {
+		t.Error("IsMavenPom() = true, want false for missing file")
+	}
+}
+
+func TestMaven_Detect_StandardName(t *testing.T) {
+	tmpDir := t.TempDir()
+	pomContent := `<?xml version="1.0" encoding="UTF-8"?><project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"></project>`
+	if err := os.WriteFile(tmpDir+"/pom.xml", []byte(pomContent), 0o600); err != nil {
+		t.Fatalf("failed to write pom.xml: %v", err)
+	}
+
+	m := &Maven{}
+	ok, err := m.Detect(t.Context(), tmpDir, "")
+	if err != nil {
+		t.Fatalf("Detect() unexpected error: %v", err)
+	}
+	if !ok {
+		t.Error("Detect() = false, want true for valid pom.xml")
+	}
+}
+
+func TestMaven_Detect_CustomManifestFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	customPath := tmpDir + "/custom-pom.xml"
+	pomContent := `<?xml version="1.0" encoding="UTF-8"?><project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"></project>`
+	if err := os.WriteFile(customPath, []byte(pomContent), 0o600); err != nil {
+		t.Fatalf("failed to write custom POM: %v", err)
+	}
+
+	m := &Maven{}
+	ok, err := m.Detect(t.Context(), tmpDir, customPath)
+	if err != nil {
+		t.Fatalf("Detect() unexpected error: %v", err)
+	}
+	if !ok {
+		t.Error("Detect() = false, want true for valid custom manifest")
+	}
+}
+
+func TestIsMavenPom_LargeLicenseHeader(t *testing.T) {
+	// Reproduces the real-world case where an Apache license comment pushes
+	// the <project> element past what a naive fixed-buffer read would capture.
+	content := `<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one or more
+  contributor license agreements. See the NOTICE file distributed with
+  this work for additional information regarding copyright ownership.
+  The ASF licenses this file to You under the Apache License, Version 2.0
+  (the "License"); you may not use this file except in compliance with
+  the License. You may obtain a copy of the License at
+      http://www.apache.org/licenses/LICENSE-2.0
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"></project>`
+
+	path := t.TempDir() + "/parent-pom-template.xml"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+
+	ok, err := IsMavenPom(path)
+	if err != nil {
+		t.Fatalf("IsMavenPom() unexpected error: %v", err)
+	}
+	if !ok {
+		t.Error("IsMavenPom() = false, want true — license header must not prevent detection")
+	}
+}
+
+func TestMaven_Detect_WrongContent(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(tmpDir+"/pom.xml", []byte(`<notmaven/>`), 0o600); err != nil {
+		t.Fatalf("failed to write pom.xml: %v", err)
+	}
+
+	m := &Maven{}
+	ok, err := m.Detect(t.Context(), tmpDir, "")
+	if err != nil {
+		t.Fatalf("Detect() unexpected error: %v", err)
+	}
+	if ok {
+		t.Error("Detect() = true, want false for file without Maven namespace")
+	}
 }

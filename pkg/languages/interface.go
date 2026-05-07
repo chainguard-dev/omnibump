@@ -15,8 +15,9 @@ type Language interface {
 	Name() string
 
 	// Detect checks if this language is present in the given directory.
-	// Returns true if manifest files for this language are found.
-	Detect(ctx context.Context, dir string) (bool, error)
+	// manifestFile may be empty; languages that support it use it to validate
+	// a non-standard manifest path, falling back to their default filename.
+	Detect(ctx context.Context, dir string, manifestFile string) (bool, error)
 
 	// Update performs the dependency update using the provided configuration.
 	Update(ctx context.Context, cfg *UpdateConfig) error

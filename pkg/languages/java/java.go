@@ -45,8 +45,8 @@ func (j *Java) Name() string {
 }
 
 // Detect checks if any Java build tool is present in the directory.
-func (j *Java) Detect(ctx context.Context, dir string) (bool, error) {
-	buildTool := detectBuildTool(ctx, dir)
+func (j *Java) Detect(ctx context.Context, dir string, manifestFile string) (bool, error) {
+	buildTool := detectBuildTool(ctx, dir, manifestFile)
 	if buildTool == nil {
 		return false, nil
 	}
@@ -75,7 +75,7 @@ func (j *Java) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 
 	// Detect build tool if not already detected
 	if j.buildTool == nil {
-		buildTool := detectBuildTool(ctx, cfg.RootDir)
+		buildTool := detectBuildTool(ctx, cfg.RootDir, cfg.ManifestFile)
 		if buildTool == nil {
 			return fmt.Errorf("%w in: %s", ErrNoBuildToolFound, cfg.RootDir)
 		}
@@ -92,7 +92,7 @@ func (j *Java) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 func (j *Java) Validate(ctx context.Context, cfg *languages.UpdateConfig) error {
 	// Detect build tool if not already detected
 	if j.buildTool == nil {
-		buildTool := detectBuildTool(ctx, cfg.RootDir)
+		buildTool := detectBuildTool(ctx, cfg.RootDir, cfg.ManifestFile)
 		if buildTool == nil {
 			return fmt.Errorf("%w in: %s", ErrNoBuildToolFound, cfg.RootDir)
 		}
@@ -110,7 +110,7 @@ func (j *Java) GetBuildTool(ctx context.Context, dir string) (BuildTool, error) 
 		return j.buildTool, nil
 	}
 
-	buildTool := detectBuildTool(ctx, dir)
+	buildTool := detectBuildTool(ctx, dir, "")
 	if buildTool == nil {
 		return nil, fmt.Errorf("%w in: %s", ErrNoBuildToolFound, dir)
 	}
@@ -120,12 +120,13 @@ func (j *Java) GetBuildTool(ctx context.Context, dir string) (BuildTool, error) 
 }
 
 // detectBuildTool detects which Java build tool is present in the directory.
+// manifestFile may be empty; each build tool resolves its own default.
 // Returns the first build tool that reports a positive detection.
-func detectBuildTool(ctx context.Context, dir string) BuildTool {
+func detectBuildTool(ctx context.Context, dir string, manifestFile string) BuildTool {
 	log := clog.FromContext(ctx)
 
 	for _, tool := range registeredBuildTools {
-		detected, err := tool.Detect(ctx, dir)
+		detected, err := tool.Detect(ctx, dir, manifestFile)
 		if err != nil {
 			log.Debugf("Error detecting %s: %v", tool.Name(), err)
 			continue

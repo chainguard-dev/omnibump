@@ -42,7 +42,7 @@ func ExamplePHP_Detect() {
 	}
 
 	p := &php.PHP{}
-	detected, err := p.Detect(context.Background(), dir)
+	detected, err := p.Detect(context.Background(), dir, "")
 	if err != nil {
 		fmt.Println("error:", err)
 		return

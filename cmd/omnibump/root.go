@@ -300,7 +300,7 @@ func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but requir
 	}
 
 	if detectedLang == languageAuto || detectedLang == "" {
-		detectedLang, err = languages.DetectLanguage(ctx, flags.rootDir)
+		detectedLang, err = languages.DetectLanguage(ctx, flags.rootDir, flags.manifestFile)
 		if err != nil {
 			return fmt.Errorf("failed to detect language: %w (try specifying --language explicitly)", err)
 		}

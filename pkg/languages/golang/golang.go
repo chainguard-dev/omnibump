@@ -46,7 +46,7 @@ func (g *Golang) Name() string {
 }
 
 // Detect checks if Go manifest files exist in the directory.
-func (g *Golang) Detect(ctx context.Context, dir string) (bool, error) {
+func (g *Golang) Detect(ctx context.Context, dir string, _ string) (bool, error) {
 	log := clog.FromContext(ctx)
 	goModPath := filepath.Join(dir, "go.mod")
 	_, err := os.Stat(goModPath)

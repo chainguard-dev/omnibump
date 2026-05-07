@@ -40,7 +40,7 @@ func (r *Rust) Name() string {
 }
 
 // Detect checks if Rust manifest files exist in the directory.
-func (r *Rust) Detect(ctx context.Context, dir string) (bool, error) {
+func (r *Rust) Detect(ctx context.Context, dir string, _ string) (bool, error) {
 	log := clog.FromContext(ctx)
 	cargoLockPath := filepath.Join(dir, "Cargo.lock")
 	_, err := os.Stat(cargoLockPath)

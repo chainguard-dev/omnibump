@@ -617,7 +617,7 @@ func TestGolang_Detect(t *testing.T) {
 			}
 
 			g := &Golang{}
-			found, err := g.Detect(context.Background(), tmpDir)
+			found, err := g.Detect(context.Background(), tmpDir, "")
 			if err != nil {
 				t.Fatalf("Detect failed: %v", err)
 			}
