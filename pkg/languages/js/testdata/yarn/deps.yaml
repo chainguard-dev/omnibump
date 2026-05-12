@@ -1,0 +1,7 @@
+language: js
+manager: yarn
+packages:
+  - name: axios
+    version: "1.12.0"
+  - name: lodash
+    version: "4.18.0"

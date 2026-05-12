@@ -1,0 +1,13 @@
+{
+  "name": "example-yarn-project",
+  "version": "2.1.0",
+  "description": "Fixture for omnibump JS updater (yarn).",
+  "private": true,
+  "dependencies": {
+    "lodash": "^4.17.0",
+    "axios": "^1.0.0"
+  },
+  "resolutions": {
+    "axios": "1.6.0"
+  }
+}

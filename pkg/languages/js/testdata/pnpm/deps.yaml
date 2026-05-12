@@ -1,0 +1,9 @@
+language: js
+manager: pnpm
+packages:
+  - name: simple-git
+    version: "3.36.0"
+    reason: GHSA-hffm-xvc3-vprc
+  - name: "undici@^6"
+    version: "6.24.0"
+    reason: GHSA-2mjp-6q6p-2qxm

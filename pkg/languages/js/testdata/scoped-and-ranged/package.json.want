@@ -1,0 +1,10 @@
+{
+  "name": "example-scoped-and-ranged",
+  "version": "1.2.3",
+  "description": "Fixture exercising overrides that need quoting (scoped names, version range selectors).",
+  "private": true,
+  "dependencies": {
+    "@isaacs/brace-expansion": "^4.0.0",
+    "undici": "^6.0.0"
+  }
+,"pnpm":{"overrides":{"@isaacs/brace-expansion":"5.0.1","undici@^6":"6.24.0"}}}

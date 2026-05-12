@@ -1,0 +1,9 @@
+{
+  "name": "example-npm-project",
+  "version": "3.0.0",
+  "description": "Fixture for omnibump JS updater (npm).",
+  "private": true,
+  "dependencies": {
+    "tar": "^7.0.0"
+  }
+,"overrides":{"tar":"7.5.11"}}

@@ -60,6 +60,13 @@ func runSupported(_ *cobra.Command, _ []string) error { // Both unused but requi
 			fmt.Println("  Build Tools:")
 			fmt.Println("    - Composer (composer.json, composer.lock)")
 		}
+		if langName == "js" {
+			fmt.Println("  Package Managers (selected via lock file or --manager):")
+			fmt.Println("    - pnpm  (pnpm-lock.yaml,    writes pnpm.overrides)")
+			fmt.Println("    - yarn  (yarn.lock,         writes resolutions)")
+			fmt.Println("    - npm   (package-lock.json, writes overrides)")
+			fmt.Println("    - bun   (bun.lock(b),       writes overrides)")
+		}
 
 		fmt.Println()
 	}

@@ -1,0 +1,5 @@
+language: js
+manager: bun
+packages:
+  - name: drizzle-orm
+    version: "0.30.4"

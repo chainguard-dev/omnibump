@@ -19,6 +19,7 @@ import (
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 	"github.com/chainguard-dev/omnibump/pkg/languages/golang"
 	"github.com/chainguard-dev/omnibump/pkg/languages/java"
+	"github.com/chainguard-dev/omnibump/pkg/languages/js"
 	"github.com/chainguard-dev/omnibump/pkg/languages/php"
 	"github.com/chainguard-dev/omnibump/pkg/languages/rust"
 	"github.com/ghodss/yaml"
@@ -61,7 +62,7 @@ func analyzeCmd() *cobra.Command {
 		Long: `Analyze a project to understand how dependencies are defined.
 This helps determine whether to use direct dependency patches or property updates.
 
-Supports Java (Maven), Go, and Rust projects with automatic language detection.
+Supports Java (Maven), Go, Rust, and JavaScript projects with automatic language detection.
 
 Examples:
   # Analyze current directory
@@ -77,7 +78,7 @@ Examples:
 	}
 
 	f := cmd.Flags()
-	f.StringVarP(&analyzeF.language, "language", "l", "auto", "language to analyze (auto, java, go, rust, or deprecated: maven)")
+	f.StringVarP(&analyzeF.language, "language", "l", "auto", "language to analyze (auto, java, go, rust, js, or deprecated: maven)")
 	f.StringVar(&analyzeF.outputFormat, "output", "text", "output format (text, json, yaml)")
 	f.StringVar(&analyzeF.depsFile, "deps", "", "dependencies file to analyze strategy for")
 	f.StringVar(&analyzeF.packages, "packages", "", "inline package list to analyze")
@@ -138,6 +139,8 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		projectAnalyzer = &golang.GolangAnalyzer{}
 	case "rust":
 		projectAnalyzer = &rust.RustAnalyzer{}
+	case "js":
+		projectAnalyzer = &js.JSAnalyzer{}
 	case "php":
 		// Get the PHP language and detect build tool
 		phpLang := &php.PHP{}

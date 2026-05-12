@@ -21,6 +21,7 @@ import (
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/golang" // Register Go
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/java"   // Register Java (Maven, Gradle, etc.)
 	"github.com/chainguard-dev/omnibump/pkg/languages/java/maven"
+	"github.com/chainguard-dev/omnibump/pkg/languages/js"
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/php"  // Register PHP (Composer, etc.)
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/rust" // Register Rust
 	charmlog "github.com/charmbracelet/log"
@@ -30,6 +31,7 @@ import (
 
 type rootFlags struct {
 	language       string
+	managers       []string
 	depsFile       string
 	propertiesFile string
 	packages       string
@@ -77,7 +79,8 @@ func New() *cobra.Command {
 
 	// Add root command flags
 	f := cmd.Flags()
-	f.StringVarP(&flags.language, "language", "l", "auto", "language to use (auto, java, go, rust, or deprecated: maven)")
+	f.StringVarP(&flags.language, "language", "l", "auto", "language to use (auto, java, go, rust, js, or deprecated: maven)")
+	f.StringSliceVar(&flags.managers, "manager", nil, "build tool(s) within a language (currently only used for js: pnpm, yarn, npm, bun). May be repeated or comma-separated to write the same overrides under more than one manager's field.")
 	f.StringVar(&flags.depsFile, "deps", "", "dependencies file (deps.yaml, or legacy names)")
 	f.StringVar(&flags.propertiesFile, "properties", "", "properties file (properties.yaml)")
 	f.StringVar(&flags.packages, "packages", "", "inline package list (space-separated)")
@@ -259,7 +262,45 @@ func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but requir
 	ctx := cmd.Context()
 	log := clog.FromContext(ctx)
 
-	// Validate input - require at least one input source
+	if err := validateUpdateFlags(); err != nil {
+		return err
+	}
+
+	cfg, err := loadUpdateConfig(ctx)
+	if err != nil {
+		return err
+	}
+
+	detectedLang, err := resolveLanguage(ctx, cfg)
+	if err != nil {
+		return err
+	}
+
+	lang, err := languages.Get(detectedLang)
+	if err != nil {
+		return fmt.Errorf("failed to get language implementation: %w", err)
+	}
+
+	log.Infof("Using language: %s", lang.Name())
+
+	updateCfg := buildUpdateConfig(cfg)
+
+	if err := lang.Update(ctx, updateCfg); err != nil {
+		return fmt.Errorf("update failed: %w", err)
+	}
+
+	if !flags.dryRun {
+		if err := lang.Validate(ctx, updateCfg); err != nil {
+			log.Warnf("Validation completed with warnings: %v", err)
+		}
+	}
+
+	log.Infof("Update completed successfully")
+	return nil
+}
+
+// validateUpdateFlags checks the CLI flags for mutually exclusive or missing inputs.
+func validateUpdateFlags() error {
 	hasFileInput := flags.depsFile != "" || flags.propertiesFile != ""
 	hasInlineInput := flags.packages != "" || flags.replaces != "" || flags.properties != ""
 
@@ -275,74 +316,25 @@ func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but requir
 		return fmt.Errorf("%w: cannot use both --properties (file) and --props (inline)", ErrConflictingInput)
 	}
 
-	// Load configuration
-	var cfg *config.Config
-
-	if hasFileInput {
-		var err error
-		cfg, err = loadFileInputConfig(ctx)
-		if err != nil {
-			return err
-		}
-	} else {
-		var err error
-		cfg, err = loadInlineInputConfig()
-		if err != nil {
-			return err
-		}
-	}
-
-	// Detect language
-	detectedLang, err := resolveLanguage(ctx, log, cfg)
-	if err != nil {
-		return err
-	}
-
-	// Get language implementation
-	lang, err := languages.Get(detectedLang)
-	if err != nil {
-		return fmt.Errorf("failed to get language implementation: %w", err)
-	}
-
-	log.Infof("Using language: %s", lang.Name())
-
-	// Convert config to UpdateConfig
-	updateCfg := convertToUpdateConfig(cfg)
-	updateCfg.RootDir = flags.rootDir
-	updateCfg.Tidy = flags.tidy
-	updateCfg.ShowDiff = flags.showDiff
-	updateCfg.DryRun = flags.dryRun
-	updateCfg.ManifestFile = flags.manifestFile
-
-	// Perform update
-	if err := lang.Update(ctx, updateCfg); err != nil {
-		return fmt.Errorf("update failed: %w", err)
-	}
-
-	// Validate
-	if !flags.dryRun {
-		if err := lang.Validate(ctx, updateCfg); err != nil {
-			log.Warnf("Validation completed with warnings: %v", err)
-		}
-	}
-
-	log.Infof("Update completed successfully")
 	return nil
 }
 
-// resolveLanguage determines the target language from flags, manifest detection,
-// config overrides, and auto-detection — in that priority order.
-func resolveLanguage(ctx context.Context, log *clog.Logger, cfg *config.Config) (string, error) {
-	lang := flags.language
-
-	// Handle backward compatibility: "maven" -> "java"
-	if lang == languageMaven {
-		log.Warnf("Language 'maven' is deprecated, use 'java' instead")
-		lang = languageJava
+// loadUpdateConfig loads configuration from file or inline sources based on the flags.
+func loadUpdateConfig(ctx context.Context) (*config.Config, error) {
+	if flags.depsFile != "" || flags.propertiesFile != "" {
+		return loadFileInputConfig(ctx)
 	}
+	return loadInlineInputConfig()
+}
 
-	// When --manifest is set, detect language from the file content directly.
-	if flags.manifestFile != "" && (lang == languageAuto || lang == "") {
+// resolveLanguage determines which language implementation to use, honouring
+// --language, --manifest, config overrides and auto-detection.
+func resolveLanguage(ctx context.Context, cfg *config.Config) (string, error) {
+	log := clog.FromContext(ctx)
+
+	detectedLang := normaliseLanguage(flags.language, "Language 'maven' is deprecated, use 'java' instead", log)
+
+	if flags.manifestFile != "" && (detectedLang == languageAuto || detectedLang == "") {
 		ok, err := maven.IsMavenPom(flags.manifestFile)
 		if err != nil {
 			return "", fmt.Errorf("failed to read manifest file: %w", err)
@@ -350,80 +342,56 @@ func resolveLanguage(ctx context.Context, log *clog.Logger, cfg *config.Config) 
 		if !ok {
 			return "", fmt.Errorf("--manifest %q: %w", flags.manifestFile, maven.ErrNotMavenPOM)
 		}
-		lang = languageJava
-		log.Infof("Detected language: %s", lang)
+		detectedLang = languageJava
+		log.Infof("Detected language: %s", detectedLang)
 	}
 
-	if lang == languageAuto || lang == "" {
-		detected, err := languages.DetectLanguage(ctx, flags.rootDir)
-		if err != nil && detected == "" {
+	if detectedLang == languageAuto || detectedLang == "" {
+		auto, err := languages.DetectLanguage(ctx, flags.rootDir)
+		if err != nil && auto == "" {
 			return "", fmt.Errorf("failed to detect language: %w (try specifying --language explicitly)", err)
 		}
 		if err != nil {
 			// Multiple languages detected — warn but proceed with the chosen one.
 			log.Warnf("%v", err)
 		}
-		lang = detected
-		log.Infof("Detected language: %s", lang)
+		detectedLang = auto
+		log.Infof("Detected language: %s", detectedLang)
 	}
 
-	// Override language from config if specified
-	if cfg.Language != "" && cfg.Language != "auto" {
-		lang = cfg.Language
-		// Handle backward compatibility in config too
-		if lang == "maven" {
-			log.Warnf("Language 'maven' in config is deprecated, use 'java' instead")
-			lang = "java"
-		}
+	if cfg.Language != "" && cfg.Language != languageAuto {
+		detectedLang = normaliseLanguage(cfg.Language, "Language 'maven' in config is deprecated, use 'java' instead", log)
 	}
 
-	return lang, nil
+	return detectedLang, nil
 }
 
-func convertToUpdateConfig(cfg *config.Config) *languages.UpdateConfig {
-	updateCfg := &languages.UpdateConfig{
-		Dependencies: make([]languages.Dependency, 0, len(cfg.Packages)),
-		Properties:   make(map[string]string),
-		Options:      make(map[string]any),
+// normaliseLanguage applies backward-compatibility aliasing (e.g. "maven" -> "java").
+func normaliseLanguage(name, deprecationMsg string, log *clog.Logger) string {
+	if name == languageMaven {
+		log.Warnf("%s", deprecationMsg)
+		return languageJava
 	}
+	return name
+}
 
-	// Convert packages
-	for _, pkg := range cfg.Packages {
-		dep := languages.Dependency{
-			Name:     pkg.Name,
-			Version:  pkg.Version,
-			Scope:    pkg.Scope,
-			Type:     pkg.Type,
-			Metadata: make(map[string]any),
+// buildUpdateConfig converts the loaded config plus CLI flags into an UpdateConfig.
+func buildUpdateConfig(cfg *config.Config) *languages.UpdateConfig {
+	updateCfg := cfg.ToUpdateConfig()
+	updateCfg.RootDir = flags.rootDir
+	updateCfg.Tidy = flags.tidy
+	updateCfg.ShowDiff = flags.showDiff
+	updateCfg.DryRun = flags.dryRun
+	updateCfg.ManifestFile = flags.manifestFile
+
+	// The CLI's --manager flag always wins over a value in the deps file
+	// (which ToUpdateConfig already stamped into Options).
+	if len(flags.managers) > 0 {
+		managers := make([]js.Manager, len(flags.managers))
+		for i, s := range flags.managers {
+			managers[i] = js.Manager(s)
 		}
-
-		// Store Maven-specific fields in metadata
-		if pkg.GroupID != "" {
-			dep.Metadata["groupId"] = pkg.GroupID
-		}
-		if pkg.ArtifactID != "" {
-			dep.Metadata["artifactId"] = pkg.ArtifactID
-		}
-
-		updateCfg.Dependencies = append(updateCfg.Dependencies, dep)
-	}
-
-	// Convert properties
-	for _, prop := range cfg.Properties {
-		updateCfg.Properties[prop.Property] = prop.Value
-	}
-
-	// Convert replaces (Go-specific)
-	if len(cfg.Replaces) > 0 {
-		for _, repl := range cfg.Replaces {
-			dep := languages.Dependency{
-				OldName: repl.OldName,
-				Name:    repl.Name,
-				Version: repl.Version,
-				Replace: true,
-			}
-			updateCfg.Dependencies = append(updateCfg.Dependencies, dep)
-		}
+		updateCfg.Options["manager"] = managers
 	}
 
 	return updateCfg

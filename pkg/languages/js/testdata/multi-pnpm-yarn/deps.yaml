@@ -1,0 +1,6 @@
+language: js
+manager: [pnpm, yarn]
+packages:
+  - name: axios
+    version: "1.12.0"
+    reason: GHSA-jr5f-v2jv-69x6
