@@ -37,14 +37,12 @@ func (ma *MavenAnalyzer) Analyze(ctx context.Context, projectPath string) (*anal
 
 	log.Debugf("Analyzing Maven project: %s", absPath)
 
-	// Determine POM file path
-	pomPath := absPath
 	if info, err := os.Stat(absPath); err == nil && info.IsDir() {
-		pomPath = filepath.Join(absPath, "pom.xml")
+		return ma.analyzeAllPoms(ctx, absPath)
 	}
 
 	// Parse the POM
-	project, err := gopom.Parse(pomPath)
+	project, err := gopom.Parse(absPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse POM file: %w", err)
 	}
@@ -78,8 +76,7 @@ func (ma *MavenAnalyzer) Analyze(ctx context.Context, projectPath string) (*anal
 		len(result.Dependencies), countPropertiesUsage(result))
 
 	// Search for additional properties in project tree
-	dir := filepath.Dir(absPath)
-	additionalProps := searchForProperties(ctx, dir, absPath)
+	additionalProps := searchForProperties(ctx, filepath.Dir(absPath), absPath)
 	log.Debugf("Property search found %d additional properties", len(additionalProps))
 
 	// Merge additional properties
@@ -259,56 +256,20 @@ func searchForProperties(ctx context.Context, startDir string, excludePath strin
 	log.Debugf("Starting property search from project root: %s", projectRoot)
 
 	pomFilesChecked := 0
-
-	// Use WalkDir instead of Walk - it doesn't follow symlinks and provides type info directly
-	err := filepath.WalkDir(projectRoot, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // Intentionally skip directories with errors
-		}
-
-		// Skip directories
-		if d.IsDir() {
-			if isSkippableDirectory(d.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		// Skip symlinks to prevent following malicious symlinks
-		// WalkDir provides type info directly without needing Lstat
-		if d.Type()&os.ModeSymlink != 0 {
-			return nil
-		}
-
-		// Only process XML files
-		if !strings.HasSuffix(d.Name(), ".xml") {
-			return nil
-		}
-
-		// Skip the file we're analyzing
+	for _, path := range walkXMLFiles(projectRoot) {
 		if absPath, _ := filepath.Abs(path); absPath == excludePath {
-			return nil
+			continue
 		}
-
-		// Try to parse as POM
 		project, err := gopom.Parse(path)
 		if err != nil {
-			// Not a valid POM file, skip it
-			return nil //nolint:nilerr // Intentionally skip non-POM XML files
+			continue
 		}
-
 		pomFilesChecked++
-		pomProperties := extractPropertiesFromProject(project)
-		for k, v := range pomProperties {
+		for k, v := range extractPropertiesFromProject(project) {
 			if _, exists := properties[k]; !exists {
 				properties[k] = v
 			}
 		}
-
-		return nil
-	})
-	if err != nil {
-		log.Warnf("Error walking project tree: %v", err)
 	}
 
 	if log.Enabled(context.Background(), slog.LevelDebug) {
@@ -341,14 +302,113 @@ func findProjectRoot(startDir string) string {
 	return projectRoot
 }
 
-// isSkippableDirectory checks if a directory should be skipped.
+// isSkippableDirectory checks if a directory should be skipped during tree walks.
+// Explicit VCS and build-output directories are skipped; other dot-prefixed directories
+// (e.g. .build/) are intentionally allowed so non-standard project layouts are scanned.
 func isSkippableDirectory(name string) bool {
-	return strings.HasPrefix(name, ".") ||
-		name == "target" ||
-		name == "node_modules" ||
-		name == "build" ||
-		name == "dist" ||
-		name == "out"
+	switch name {
+	case ".git", ".svn", ".hg", ".bzr",
+		"target", "node_modules",
+		"build", "dist", "out":
+		return true
+	}
+	return false
+}
+
+// walkXMLFiles returns paths of all non-symlink .xml files under rootDir,
+// skipping directories matched by isSkippableDirectory.
+func walkXMLFiles(rootDir string) []string {
+	var files []string
+	_ = filepath.WalkDir(rootDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil //nolint:nilerr // skip unreadable entries
+		}
+		if d.IsDir() {
+			if isSkippableDirectory(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".xml") {
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		files = append(files, path)
+		return nil
+	})
+	return files
+}
+
+// findMavenPoms walks rootDir and returns the paths of all valid Maven POM XML files.
+func findMavenPoms(rootDir string) []string {
+	var poms []string
+	for _, path := range walkXMLFiles(rootDir) {
+		if ok, _ := IsMavenPom(path); ok {
+			poms = append(poms, path)
+		}
+	}
+	return poms
+}
+
+// hasMavenPom reports whether any valid Maven POM XML file exists under dir.
+func hasMavenPom(dir string) bool {
+	for _, path := range walkXMLFiles(dir) {
+		if ok, _ := IsMavenPom(path); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// analyzeAllPoms collects every Maven POM in the project tree via findMavenPoms,
+// then parses each one and aggregates their dependencies and properties.
+func (ma *MavenAnalyzer) analyzeAllPoms(ctx context.Context, rootDir string) (*analyzer.AnalysisResult, error) {
+	log := clog.FromContext(ctx)
+	log.Debugf("Scanning %s for Maven POMs", rootDir)
+
+	pomPaths := findMavenPoms(rootDir)
+	if len(pomPaths) == 0 {
+		return nil, fmt.Errorf("%w in %s", ErrNoPOMsFound, rootDir)
+	}
+
+	result := &analyzer.AnalysisResult{
+		Language:      "maven",
+		Dependencies:  make(map[string]*analyzer.DependencyInfo),
+		Properties:    make(map[string]string),
+		PropertyUsage: make(map[string]int),
+		Metadata:      make(map[string]any),
+	}
+
+	for _, pomPath := range pomPaths {
+		log.Debugf("Analyzing Maven POM: %s", pomPath)
+		project, err := gopom.Parse(pomPath)
+		if err != nil {
+			log.Debugf("Skipping %s: %v", pomPath, err)
+			continue
+		}
+		for k, v := range extractPropertiesFromProject(project) {
+			if _, exists := result.Properties[k]; !exists {
+				result.Properties[k] = v
+			}
+		}
+		if project.Dependencies != nil {
+			for _, dep := range *project.Dependencies {
+				analyzeDependency(ctx, dep, result)
+			}
+		}
+		if project.DependencyManagement != nil && project.DependencyManagement.Dependencies != nil {
+			for _, dep := range *project.DependencyManagement.Dependencies {
+				analyzeDependency(ctx, dep, result)
+			}
+		}
+	}
+
+	log.Infof("Analysis complete: found %d Maven POMs, %d dependencies, %d using properties",
+		len(pomPaths), len(result.Dependencies), countPropertiesUsage(result))
+
+	return result, nil
 }
 
 // extractPropertiesFromProject extracts properties from a parsed POM.

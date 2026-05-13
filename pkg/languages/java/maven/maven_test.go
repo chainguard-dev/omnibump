@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/chainguard-dev/gopom"
@@ -961,5 +962,169 @@ func TestMaven_Detect_WrongContent(t *testing.T) {
 	}
 	if ok {
 		t.Error("Detect() = true, want false for file without Maven namespace")
+	}
+}
+
+// minimalPOM is a valid Maven POM with no dependencies used across multiple tests.
+const minimalPOM = `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>test</artifactId>
+  <version>1.0.0</version>
+</project>`
+
+// pomWithDep returns a minimal Maven POM that declares one dependency in dependencyManagement.
+func pomWithDep(groupID, artifactID, version string) string {
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>test</artifactId>
+  <version>1.0.0</version>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>` + groupID + `</groupId>
+        <artifactId>` + artifactID + `</artifactId>
+        <version>` + version + `</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", path, err)
+	}
+}
+
+// TestIsSkippableDirectory verifies the explicit allowlist behaviour:
+// VCS and build-output dirs are skipped; dot-prefixed source dirs (e.g. .build) are not.
+func TestIsSkippableDirectory(t *testing.T) {
+	skippable := []string{
+		".git", ".svn", ".hg", ".bzr",
+		"target", "node_modules",
+		"build", "dist", "out",
+	}
+	for _, name := range skippable {
+		if !isSkippableDirectory(name) {
+			t.Errorf("isSkippableDirectory(%q) = false, want true", name)
+		}
+	}
+
+	allowed := []string{".build", ".mvn", ".github", "src", "lib", "my-module"}
+	for _, name := range allowed {
+		if isSkippableDirectory(name) {
+			t.Errorf("isSkippableDirectory(%q) = true, want false", name)
+		}
+	}
+}
+
+func TestFindMavenPoms(t *testing.T) {
+	tests := []struct {
+		name      string
+		setup     func(t *testing.T, dir string)
+		wantCount int
+		wantPaths func(dir string) []string // optional: paths that must be present
+	}{
+		{
+			name:      "empty directory",
+			setup:     func(_ *testing.T, _ string) {},
+			wantCount: 0,
+		},
+		{
+			name: "root pom.xml",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, filepath.Join(dir, "pom.xml"), minimalPOM)
+			},
+			wantCount: 1,
+			wantPaths: func(dir string) []string { return []string{filepath.Join(dir, "pom.xml")} },
+		},
+		{
+			name: "pom in subdirectory, no root pom.xml",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, filepath.Join(dir, "submodule", "pom.xml"), minimalPOM)
+			},
+			wantCount: 1,
+		},
+		{
+			name: "pom in dot-prefixed source dir (.build)",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, filepath.Join(dir, ".build", "parent-pom-template.xml"), minimalPOM)
+			},
+			wantCount: 1,
+		},
+		{
+			name: "pom inside skipped VCS dir (.git) is not returned",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, filepath.Join(dir, ".git", "pom.xml"), minimalPOM)
+			},
+			wantCount: 0,
+		},
+		{
+			name: "pom inside skipped build-output dir (target) is not returned",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, filepath.Join(dir, "target", "pom.xml"), minimalPOM)
+			},
+			wantCount: 0,
+		},
+		{
+			name: "non-Maven XML is not returned",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, filepath.Join(dir, "config.xml"), `<?xml version="1.0"?><configuration/>`)
+			},
+			wantCount: 0,
+		},
+		{
+			name: "non-XML file is not returned",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, filepath.Join(dir, "pom.json"), `{}`)
+			},
+			wantCount: 0,
+		},
+		{
+			name: "multiple POMs across subdirectories",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, filepath.Join(dir, ".build", "parent.xml"), minimalPOM)
+				writeFile(t, filepath.Join(dir, "module-a", "pom.xml"), minimalPOM)
+				writeFile(t, filepath.Join(dir, "module-b", "pom.xml"), minimalPOM)
+				// This one is in target/ and must be excluded
+				writeFile(t, filepath.Join(dir, "target", "pom.xml"), minimalPOM)
+			},
+			wantCount: 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tt.setup(t, dir)
+
+			got := findMavenPoms(dir)
+			if len(got) != tt.wantCount {
+				t.Errorf("findMavenPoms() returned %d paths, want %d: %v", len(got), tt.wantCount, got)
+			}
+			if tt.wantPaths != nil {
+				want := tt.wantPaths(dir)
+				for _, p := range want {
+					found := false
+					for _, g := range got {
+						if g == p {
+							found = true
+							break
+						}
+					}
+					if !found {
+						t.Errorf("findMavenPoms() missing expected path %s; got %v", p, got)
+					}
+				}
+			}
+		})
 	}
 }

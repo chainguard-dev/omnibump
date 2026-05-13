@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/chainguard-dev/omnibump/pkg/analyzer"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 )
 
@@ -280,6 +281,46 @@ func TestMavenDetect(t *testing.T) {
 			},
 			want: false,
 		},
+		{
+			name: "no root pom.xml but POM in subdirectory",
+			setupFunc: func(dir string) error {
+				sub := filepath.Join(dir, "submodule")
+				if err := os.MkdirAll(sub, 0o755); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(sub, "pom.xml"), []byte(minimalPOM), 0o600)
+			},
+			want: true,
+		},
+		{
+			name: "no root pom.xml but POM in dot-prefixed source dir (.build)",
+			setupFunc: func(dir string) error {
+				build := filepath.Join(dir, ".build")
+				if err := os.MkdirAll(build, 0o755); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(build, "parent-pom-template.xml"), []byte(minimalPOM), 0o600)
+			},
+			want: true,
+		},
+		{
+			name: "POM only inside skipped VCS dir (.git) is not detected",
+			setupFunc: func(dir string) error {
+				git := filepath.Join(dir, ".git")
+				if err := os.MkdirAll(git, 0o755); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(git, "pom.xml"), []byte(minimalPOM), 0o600)
+			},
+			want: false,
+		},
+		{
+			name: "only non-Maven XML files present",
+			setupFunc: func(dir string) error {
+				return os.WriteFile(filepath.Join(dir, "config.xml"), []byte(`<?xml version="1.0"?><configuration/>`), 0o600)
+			},
+			want: false,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -296,6 +337,155 @@ func TestMavenDetect(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Errorf("Detect() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMavenAnalyzer_AnalyzeAllPoms covers analysis of projects that have no root pom.xml.
+func TestMavenAnalyzer_AnalyzeAllPoms(t *testing.T) {
+	tests := []struct {
+		name      string
+		setup     func(t *testing.T, dir string)
+		wantErr   bool
+		checkFunc func(t *testing.T, result *analyzer.AnalysisResult)
+	}{
+		{
+			name: "no POMs anywhere returns error",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, filepath.Join(dir, "build.xml"), `<?xml version="1.0"?><project/>`)
+			},
+			wantErr: true,
+		},
+		{
+			name: "single POM in subdirectory is found and analyzed",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, filepath.Join(dir, ".build", "parent.xml"),
+					pomWithDep("io.netty", "netty-all", "4.1.130.Final"))
+			},
+			checkFunc: func(t *testing.T, result *analyzer.AnalysisResult) {
+				t.Helper()
+				dep, ok := result.Dependencies["io.netty:netty-all"]
+				if !ok {
+					t.Fatal("expected dependency io.netty:netty-all not found")
+				}
+				if dep.Version != "4.1.130.Final" {
+					t.Errorf("netty-all version = %q, want 4.1.130.Final", dep.Version)
+				}
+			},
+		},
+		{
+			name: "dependencies from multiple POMs are aggregated",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, filepath.Join(dir, ".build", "parent.xml"),
+					pomWithDep("io.netty", "netty-all", "4.1.130.Final"))
+				writeFile(t, filepath.Join(dir, "module-a", "pom.xml"),
+					pomWithDep("com.google.guava", "guava", "32.0.0-jre"))
+			},
+			checkFunc: func(t *testing.T, result *analyzer.AnalysisResult) {
+				t.Helper()
+				if _, ok := result.Dependencies["io.netty:netty-all"]; !ok {
+					t.Error("missing io.netty:netty-all")
+				}
+				if _, ok := result.Dependencies["com.google.guava:guava"]; !ok {
+					t.Error("missing com.google.guava:guava")
+				}
+			},
+		},
+		{
+			name: "properties from multiple POMs are aggregated, first definition wins",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, filepath.Join(dir, "module-a", "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>a</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <netty.version>4.1.100.Final</netty.version>
+    <shared.prop>from-a</shared.prop>
+  </properties>
+</project>`)
+				writeFile(t, filepath.Join(dir, "module-b", "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>b</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <guava.version>32.0.0-jre</guava.version>
+    <shared.prop>from-b</shared.prop>
+  </properties>
+</project>`)
+			},
+			checkFunc: func(t *testing.T, result *analyzer.AnalysisResult) {
+				t.Helper()
+				if result.Properties["netty.version"] != "4.1.100.Final" {
+					t.Errorf("netty.version = %q, want 4.1.100.Final", result.Properties["netty.version"])
+				}
+				if result.Properties["guava.version"] != "32.0.0-jre" {
+					t.Errorf("guava.version = %q, want 32.0.0-jre", result.Properties["guava.version"])
+				}
+				// First definition wins — whichever module is walked first sets shared.prop
+				if v := result.Properties["shared.prop"]; v != "from-a" && v != "from-b" {
+					t.Errorf("shared.prop = %q, want one of [from-a, from-b]", v)
+				}
+			},
+		},
+		{
+			name: "POMs inside skipped dirs (target, .git) are excluded",
+			setup: func(t *testing.T, dir string) {
+				// The only real POM lives in a proper subdir
+				writeFile(t, filepath.Join(dir, ".build", "parent.xml"),
+					pomWithDep("io.netty", "netty-all", "4.1.130.Final"))
+				// These must not contribute
+				writeFile(t, filepath.Join(dir, "target", "pom.xml"),
+					pomWithDep("should", "not-appear", "9.9.9"))
+				writeFile(t, filepath.Join(dir, ".git", "pom.xml"),
+					pomWithDep("also", "not-appear", "9.9.9"))
+			},
+			checkFunc: func(t *testing.T, result *analyzer.AnalysisResult) {
+				t.Helper()
+				if _, ok := result.Dependencies["should:not-appear"]; ok {
+					t.Error("dependency from target/ dir must not be included")
+				}
+				if _, ok := result.Dependencies["also:not-appear"]; ok {
+					t.Error("dependency from .git/ dir must not be included")
+				}
+				if _, ok := result.Dependencies["io.netty:netty-all"]; !ok {
+					t.Error("expected io.netty:netty-all from .build/")
+				}
+			},
+		},
+		{
+			name: "result language is maven",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, filepath.Join(dir, ".build", "parent.xml"), minimalPOM)
+			},
+			checkFunc: func(t *testing.T, result *analyzer.AnalysisResult) {
+				t.Helper()
+				if result.Language != "maven" {
+					t.Errorf("Language = %q, want maven", result.Language)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tt.setup(t, dir)
+
+			ma := &MavenAnalyzer{}
+			result, err := ma.Analyze(context.Background(), dir)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Analyze() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if tt.checkFunc != nil {
+				tt.checkFunc(t, result)
 			}
 		})
 	}

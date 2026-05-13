@@ -48,6 +48,9 @@ var (
 
 	// ErrNotMavenPOM is returned when a file is not a valid Maven POM.
 	ErrNotMavenPOM = errors.New("file is not a valid Maven POM")
+
+	// ErrNoPOMsFound is returned when no Maven POM files are found in the project tree.
+	ErrNoPOMsFound = errors.New("no Maven POM files found")
 )
 
 // DefaultManifestFile is the conventional Maven POM filename.
@@ -91,22 +94,23 @@ func (m *Maven) Name() string {
 	return "maven"
 }
 
-// Detect checks if a Maven project is present in the directory by looking for
-// pom.xml and validating it is a genuine Maven POM by content.
+// Detect checks if a Maven project is present in the directory.
 func (m *Maven) Detect(ctx context.Context, dir string) (bool, error) {
 	log := clog.FromContext(ctx)
+
 	pomPath := filepath.Join(dir, DefaultManifestFile)
-	ok, err := IsMavenPom(pomPath)
-	if err != nil {
-		log.Debugf("No Maven project detected at %s: %v", dir, err)
-		return false, nil
+	if ok, err := IsMavenPom(pomPath); err == nil && ok {
+		log.Debugf("Detected Maven project at %s", dir)
+		return true, nil
 	}
-	if !ok {
-		log.Debugf("No Maven project detected at %s", dir)
-		return false, nil
+
+	log.Debugf("Scanning %s recursively for Maven POMs", dir)
+	if hasMavenPom(dir) {
+		log.Debugf("Detected Maven project at %s", dir)
+		return true, nil
 	}
-	log.Debugf("Detected Maven project at %s", dir)
-	return true, nil
+	log.Debugf("No Maven project detected at %s", dir)
+	return false, nil
 }
 
 // GetManifestFiles returns Maven manifest files.
