@@ -342,6 +342,42 @@ func TestMavenDetect(t *testing.T) {
 	}
 }
 
+// TestMavenDetect_SkippedDirectories verifies that a valid Maven POM buried inside any
+// skippable directory does not cause the project to be detected as Maven.
+// This is a regression test for the Beats false-positive: the repo contains a test-fixture
+// POM at metricbeat/module/dropwizard/_meta/test/pom.xml which previously caused incorrect
+// Java detection when hasMavenPom() walked the full tree without skipping "test" directories.
+func TestMavenDetect_SkippedDirectories(t *testing.T) {
+	skippable := []string{
+		".git", ".svn", ".hg", ".bzr",
+		"target", "node_modules",
+		"build", "dist", "out",
+		"testdata", "vendor", "test",
+	}
+
+	for _, dirName := range skippable {
+		t.Run(dirName, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			// Place a fully valid pom.xml (Maven namespace + all required fields) inside
+			// the skipped directory. This mirrors the real Beats scenario where
+			// metricbeat/module/dropwizard/_meta/test/pom.xml is a legitimate Maven POM
+			// that should be invisible to the project-level detector.
+			// The file would be detected as Maven if the directory were not skipped —
+			// confirmed by TestMavenDetect/"no root pom.xml but POM in subdirectory".
+			writeFile(t, filepath.Join(tmpDir, dirName, "pom.xml"), minimalPOM)
+
+			maven := &Maven{}
+			got, err := maven.Detect(context.Background(), tmpDir)
+			if err != nil {
+				t.Fatalf("Detect() error = %v", err)
+			}
+			if got {
+				t.Errorf("Detect() = true, want false — valid pom.xml inside skipped dir %q must not trigger detection", dirName)
+			}
+		})
+	}
+}
+
 // TestMavenAnalyzer_AnalyzeAllPoms covers analysis of projects that have no root pom.xml.
 func TestMavenAnalyzer_AnalyzeAllPoms(t *testing.T) {
 	tests := []struct {

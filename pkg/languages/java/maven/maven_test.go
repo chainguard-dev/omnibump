@@ -1011,6 +1011,7 @@ func TestIsSkippableDirectory(t *testing.T) {
 		".git", ".svn", ".hg", ".bzr",
 		"target", "node_modules",
 		"build", "dist", "out",
+		"testdata", "vendor", "test",
 	}
 	for _, name := range skippable {
 		if !isSkippableDirectory(name) {

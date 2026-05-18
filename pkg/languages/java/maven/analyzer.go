@@ -309,7 +309,8 @@ func isSkippableDirectory(name string) bool {
 	switch name {
 	case ".git", ".svn", ".hg", ".bzr",
 		"target", "node_modules",
-		"build", "dist", "out":
+		"build", "dist", "out",
+		"testdata", "vendor", "test":
 		return true
 	}
 	return false
