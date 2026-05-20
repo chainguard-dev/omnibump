@@ -378,6 +378,46 @@ func TestMavenDetect_SkippedDirectories(t *testing.T) {
 	}
 }
 
+// TestMavenDetect_RootDirNameInSkipList is a regression test for the bug where Detect()
+// returned false for a valid Maven project whose root directory had a name that appears in
+// the skip list (e.g. a Flink checkout at /home/build/).
+func TestMavenDetect_RootDirNameInSkipList(t *testing.T) {
+	for _, rootName := range []string{"build", "target", "dist", "out"} {
+		t.Run(rootName, func(t *testing.T) {
+			parent := t.TempDir()
+			root := filepath.Join(parent, rootName)
+			writeFile(t, filepath.Join(root, "pom.xml"), minimalPOM)
+
+			maven := &Maven{}
+			got, err := maven.Detect(context.Background(), root)
+			if err != nil {
+				t.Fatalf("Detect() error = %v", err)
+			}
+			if !got {
+				t.Errorf("Detect() = false, want true — project root named %q must be detected as Maven", rootName)
+			}
+		})
+	}
+}
+
+// TestMavenAnalyzer_Analyze_RootDirNameInSkipList is a regression test for the bug where
+// Analyze() returned "no Maven POM files found" when the project root directory's name
+// matched an entry in the skip list (e.g. a Flink checkout at /home/build/).
+func TestMavenAnalyzer_Analyze_RootDirNameInSkipList(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "build")
+	writeFile(t, filepath.Join(root, "pom.xml"), pomWithDep("io.netty", "netty-all", "4.1.130.Final"))
+
+	ma := &MavenAnalyzer{}
+	result, err := ma.Analyze(context.Background(), root)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v — root dir named 'build' must not be skipped", err)
+	}
+	if _, ok := result.Dependencies["io.netty:netty-all"]; !ok {
+		t.Error("expected dependency io.netty:netty-all not found")
+	}
+}
+
 // TestMavenAnalyzer_AnalyzeAllPoms covers analysis of projects that have no root pom.xml.
 func TestMavenAnalyzer_AnalyzeAllPoms(t *testing.T) {
 	tests := []struct {
