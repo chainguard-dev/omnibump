@@ -325,7 +325,7 @@ func walkXMLFiles(rootDir string) []string {
 			return nil //nolint:nilerr // skip unreadable entries
 		}
 		if d.IsDir() {
-			if isSkippableDirectory(d.Name()) {
+			if path != rootDir && isSkippableDirectory(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
