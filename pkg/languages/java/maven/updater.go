@@ -101,6 +101,20 @@ func isPropertyReference(version string) bool {
 	return strings.HasPrefix(version, "${") && strings.HasSuffix(version, "}")
 }
 
+// resolveVersion returns the concrete version for a dep: if the version is a
+// property reference (e.g. ${log4j.version}), it looks up the value in the
+// project's Properties; otherwise it returns the version unchanged.
+func resolveVersion(version string, properties *gopom.Properties) string {
+	if !isPropertyReference(version) || properties == nil {
+		return version
+	}
+	propName := strings.TrimSuffix(strings.TrimPrefix(version, "${"), "}")
+	if v, ok := properties.Entries[propName]; ok {
+		return v
+	}
+	return version
+}
+
 // PatchProject updates a gopom.Project with the given patches and properties.
 // applyPatchesToDeps applies patches to a dep slice in place, removing matched
 // entries from missingDeps. A nil deps slice is a no-op.

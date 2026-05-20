@@ -257,7 +257,7 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 		if project.Dependencies != nil {
 			for _, pomDep := range *project.Dependencies {
 				key := fmt.Sprintf("%s:%s", pomDep.GroupID, pomDep.ArtifactID)
-				if key == searchKey && pomDep.Version == dep.Version {
+				if key == searchKey && resolveVersion(pomDep.Version, project.Properties) == dep.Version {
 					found = true
 					break
 				}
@@ -268,7 +268,7 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 		if !found && project.DependencyManagement != nil && project.DependencyManagement.Dependencies != nil {
 			for _, pomDep := range *project.DependencyManagement.Dependencies {
 				key := fmt.Sprintf("%s:%s", pomDep.GroupID, pomDep.ArtifactID)
-				if key == searchKey && pomDep.Version == dep.Version {
+				if key == searchKey && resolveVersion(pomDep.Version, project.Properties) == dep.Version {
 					found = true
 					break
 				}
