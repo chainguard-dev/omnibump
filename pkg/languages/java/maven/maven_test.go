@@ -1087,6 +1087,24 @@ func TestIsSkippableDirectory(t *testing.T) {
 	}
 }
 
+// TestWalkXMLFiles_RootDirNameInSkipList is a regression test for the bug where
+// walkXMLFiles skipped its own root when the root directory's name matched an entry
+// in isSkippableDirectory (e.g. a project checked out into a directory named "build").
+func TestWalkXMLFiles_RootDirNameInSkipList(t *testing.T) {
+	for _, rootName := range []string{"build", "target", "dist", "out", "node_modules"} {
+		t.Run(rootName, func(t *testing.T) {
+			parent := t.TempDir()
+			root := filepath.Join(parent, rootName)
+			writeFile(t, filepath.Join(root, "file.xml"), minimalPOM)
+
+			got := walkXMLFiles(root)
+			if len(got) == 0 {
+				t.Errorf("walkXMLFiles(%q) returned no files — root directory must not be skipped when its name matches the skip list", rootName)
+			}
+		})
+	}
+}
+
 func TestFindMavenPoms(t *testing.T) {
 	tests := []struct {
 		name      string
