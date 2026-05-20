@@ -51,6 +51,59 @@ func TestSimplePoms(t *testing.T) {
 		in:      &gopom.Project{DependencyManagement: &gopom.DependencyManagement{Dependencies: &[]gopom.Dependency{makeDep("other", "b3", "2.0.0")}}},
 		patches: []Patch{{"added", "b", "2.0.1", "import", "somethingelse"}},
 		want:    &gopom.Project{DependencyManagement: &gopom.DependencyManagement{Dependencies: &[]gopom.Dependency{makeDep("other", "b3", "2.0.0"), makeDep("added", "b", "2.0.1", "import", "somethingelse")}}},
+	}, {
+		name: "auto-resolve property: dep uses property ref, no --properties passed",
+		in: &gopom.Project{
+			Properties:   &gopom.Properties{Entries: map[string]string{"log4j2.version": "2.19.0"}},
+			Dependencies: &[]gopom.Dependency{makeDep("org.apache.logging.log4j", "log4j-core", "${log4j2.version}")},
+		},
+		patches: []Patch{{GroupID: "org.apache.logging.log4j", ArtifactID: "log4j-core", Version: "2.20.0", Scope: defaultScope, Type: defaultType}},
+		want: &gopom.Project{
+			Properties:   &gopom.Properties{Entries: map[string]string{"log4j2.version": "2.20.0"}},
+			Dependencies: &[]gopom.Dependency{makeDep("org.apache.logging.log4j", "log4j-core", "${log4j2.version}")},
+		},
+	}, {
+		name: "auto-resolve property: dep uses property ref, no existing Properties in project",
+		in: &gopom.Project{
+			Dependencies: &[]gopom.Dependency{makeDep("org.apache.logging.log4j", "log4j-core", "${log4j2.version}")},
+		},
+		patches: []Patch{{GroupID: "org.apache.logging.log4j", ArtifactID: "log4j-core", Version: "2.20.0", Scope: defaultScope, Type: defaultType}},
+		want: &gopom.Project{
+			Properties:   &gopom.Properties{Entries: map[string]string{"log4j2.version": "2.20.0"}},
+			Dependencies: &[]gopom.Dependency{makeDep("org.apache.logging.log4j", "log4j-core", "${log4j2.version}")},
+		},
+	}, {
+		name: "explicit --properties wins over auto-resolved value",
+		in: &gopom.Project{
+			Properties:   &gopom.Properties{Entries: map[string]string{"log4j2.version": "2.19.0"}},
+			Dependencies: &[]gopom.Dependency{makeDep("org.apache.logging.log4j", "log4j-core", "${log4j2.version}")},
+		},
+		patches: []Patch{{GroupID: "org.apache.logging.log4j", ArtifactID: "log4j-core", Version: "2.20.0", Scope: defaultScope, Type: defaultType}},
+		props:   map[string]string{"log4j2.version": "2.20.1"},
+		want: &gopom.Project{
+			Properties:   &gopom.Properties{Entries: map[string]string{"log4j2.version": "2.20.1"}},
+			Dependencies: &[]gopom.Dependency{makeDep("org.apache.logging.log4j", "log4j-core", "${log4j2.version}")},
+		},
+	}, {
+		name: "auto-resolve property: two deps share same property, property set once",
+		in: &gopom.Project{
+			Properties: &gopom.Properties{Entries: map[string]string{"jackson.version": "2.14.0"}},
+			Dependencies: &[]gopom.Dependency{
+				makeDep("com.fasterxml.jackson.core", "jackson-core", "${jackson.version}"),
+				makeDep("com.fasterxml.jackson.core", "jackson-databind", "${jackson.version}"),
+			},
+		},
+		patches: []Patch{
+			{GroupID: "com.fasterxml.jackson.core", ArtifactID: "jackson-core", Version: "2.15.0", Scope: defaultScope, Type: defaultType},
+			{GroupID: "com.fasterxml.jackson.core", ArtifactID: "jackson-databind", Version: "2.15.0", Scope: defaultScope, Type: defaultType},
+		},
+		want: &gopom.Project{
+			Properties: &gopom.Properties{Entries: map[string]string{"jackson.version": "2.15.0"}},
+			Dependencies: &[]gopom.Dependency{
+				makeDep("com.fasterxml.jackson.core", "jackson-core", "${jackson.version}"),
+				makeDep("com.fasterxml.jackson.core", "jackson-databind", "${jackson.version}"),
+			},
+		},
 	}}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -102,6 +155,13 @@ func TestPatchesFromPomFiles(t *testing.T) {
 		in:         "common-docker.pom.xml",
 		patches:    []Patch{{GroupID: "org.bitbucket.b_c", ArtifactID: "jose4j", Version: "0.9.6"}},
 		wantDMDeps: []Patch{{GroupID: "org.bitbucket.b_c", ArtifactID: "jose4j", Version: "0.9.6"}},
+	}, {
+		// logback-core uses ${logback-version}; no --properties passed — property
+		// should be auto-resolved from the dep patch.
+		name:      "zookeeper - auto-resolve property from dep patch",
+		in:        "zookeeper.pom.xml",
+		patches:   []Patch{{GroupID: "ch.qos.logback", ArtifactID: "logback-core", Version: "1.2.13"}},
+		wantProps: map[string]string{"logback-version": "1.2.13"},
 	}}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -107,7 +107,9 @@ func isPropertyReference(version string) bool {
 // A patch whose version is empty is treated as a scope-only entry: if the dep
 // already exists its version is preserved; if absent it stays in missingDeps
 // so it is later added to DependencyManagement without a <version> element.
-func applyPatchesToDeps(ctx context.Context, deps *[]gopom.Dependency, patches []Patch, missingDeps map[Patch]Patch) {
+// When a dependency version is a property reference (e.g. ${log4j2.version}),
+// the property is automatically added to propertyPatches so it gets updated.
+func applyPatchesToDeps(ctx context.Context, deps *[]gopom.Dependency, patches []Patch, missingDeps map[Patch]Patch, propertyPatches map[string]string) {
 	if deps == nil {
 		return
 	}
@@ -118,8 +120,15 @@ func applyPatchesToDeps(ctx context.Context, deps *[]gopom.Dependency, patches [
 				continue
 			}
 			if isPropertyReference(dep.Version) {
-				clog.WarnContextf(ctx, "Skipping patch for %s:%s (uses property %s, consider using --properties instead)",
-					patch.GroupID, patch.ArtifactID, dep.Version)
+				propName := strings.TrimSuffix(strings.TrimPrefix(dep.Version, "${"), "}")
+				if _, alreadySet := propertyPatches[propName]; !alreadySet {
+					clog.InfoContextf(ctx, "Patching %s:%s via property %s to %s",
+						patch.GroupID, patch.ArtifactID, dep.Version, patch.Version)
+					propertyPatches[propName] = patch.Version
+				} else {
+					clog.InfoContextf(ctx, "Patching %s:%s via property %s to %s (property already updated)",
+						patch.GroupID, patch.ArtifactID, dep.Version, propertyPatches[propName])
+				}
 				delete(missingDeps, patch)
 				continue
 			}
@@ -154,9 +163,12 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 		missingDeps[p] = p
 	}
 
-	applyPatchesToDeps(ctx, project.Dependencies, patches, missingDeps)
+	if propertyPatches == nil {
+		propertyPatches = make(map[string]string)
+	}
+	applyPatchesToDeps(ctx, project.Dependencies, patches, missingDeps, propertyPatches)
 	if project.DependencyManagement != nil {
-		applyPatchesToDeps(ctx, project.DependencyManagement.Dependencies, patches, missingDeps)
+		applyPatchesToDeps(ctx, project.DependencyManagement.Dependencies, patches, missingDeps, propertyPatches)
 	}
 
 	// Add missing dependencies to DependencyManagement
