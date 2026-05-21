@@ -1,0 +1,7 @@
+packages:
+  - name: rack
+    version: 3.1.9
+  - name: sinatra
+    version: 4.1.2
+  - name: puma
+    version: 6.6.0

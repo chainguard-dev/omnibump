@@ -24,6 +24,7 @@ import (
 	"github.com/chainguard-dev/omnibump/pkg/languages/js"
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/php"    // Register PHP (Composer, etc.)
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/python" // Register Python
+	_ "github.com/chainguard-dev/omnibump/pkg/languages/ruby"   // Register Ruby
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/rust"   // Register Rust
 	charmlog "github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
@@ -84,7 +85,7 @@ func New() *cobra.Command {
 
 	// Add root command flags
 	f := cmd.Flags()
-	f.StringVarP(&flags.language, "language", "l", "auto", "language to use (auto, java, go, python, rust, js, or deprecated: maven)")
+	f.StringVarP(&flags.language, "language", "l", "auto", "language to use (auto, java, go, ruby, python, rust, js, or deprecated: maven)")
 	f.StringSliceVar(&flags.managers, "manager", nil, "build tool(s) within a language (currently only used for js: pnpm, yarn, npm, bun). May be repeated or comma-separated to write the same overrides under more than one manager's field.")
 	f.StringVar(&flags.depsFile, "deps", "", "dependencies file (deps.yaml, or legacy names)")
 	f.StringVar(&flags.propertiesFile, "properties", "", "properties file (properties.yaml)")
