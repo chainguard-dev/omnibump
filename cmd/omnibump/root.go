@@ -277,58 +277,25 @@ func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but requir
 
 	// Load configuration
 	var cfg *config.Config
-	var err error
 
 	if hasFileInput {
+		var err error
 		cfg, err = loadFileInputConfig(ctx)
 		if err != nil {
 			return err
 		}
 	} else {
+		var err error
 		cfg, err = loadInlineInputConfig()
 		if err != nil {
 			return err
 		}
 	}
 
-	// Detect language if not specified
-	detectedLang := flags.language
-
-	// Handle backward compatibility: "maven" -> "java"
-	if detectedLang == languageMaven {
-		log.Warnf("Language 'maven' is deprecated, use 'java' instead")
-		detectedLang = languageJava
-	}
-
-	// When --manifest is set, detect language from the file content directly.
-	if flags.manifestFile != "" && (detectedLang == languageAuto || detectedLang == "") {
-		ok, err := maven.IsMavenPom(flags.manifestFile)
-		if err != nil {
-			return fmt.Errorf("failed to read manifest file: %w", err)
-		}
-		if !ok {
-			return fmt.Errorf("--manifest %q: %w", flags.manifestFile, maven.ErrNotMavenPOM)
-		}
-		detectedLang = languageJava
-		log.Infof("Detected language: %s", detectedLang)
-	}
-
-	if detectedLang == languageAuto || detectedLang == "" {
-		detectedLang, err = languages.DetectLanguage(ctx, flags.rootDir)
-		if err != nil {
-			return fmt.Errorf("failed to detect language: %w (try specifying --language explicitly)", err)
-		}
-		log.Infof("Detected language: %s", detectedLang)
-	}
-
-	// Override language from config if specified
-	if cfg.Language != "" && cfg.Language != "auto" {
-		detectedLang = cfg.Language
-		// Handle backward compatibility in config too
-		if detectedLang == "maven" {
-			log.Warnf("Language 'maven' in config is deprecated, use 'java' instead")
-			detectedLang = "java"
-		}
+	// Detect language
+	detectedLang, err := resolveLanguage(ctx, log, cfg)
+	if err != nil {
+		return err
 	}
 
 	// Get language implementation
@@ -361,6 +328,56 @@ func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but requir
 
 	log.Infof("Update completed successfully")
 	return nil
+}
+
+// resolveLanguage determines the target language from flags, manifest detection,
+// config overrides, and auto-detection — in that priority order.
+func resolveLanguage(ctx context.Context, log *clog.Logger, cfg *config.Config) (string, error) {
+	lang := flags.language
+
+	// Handle backward compatibility: "maven" -> "java"
+	if lang == languageMaven {
+		log.Warnf("Language 'maven' is deprecated, use 'java' instead")
+		lang = languageJava
+	}
+
+	// When --manifest is set, detect language from the file content directly.
+	if flags.manifestFile != "" && (lang == languageAuto || lang == "") {
+		ok, err := maven.IsMavenPom(flags.manifestFile)
+		if err != nil {
+			return "", fmt.Errorf("failed to read manifest file: %w", err)
+		}
+		if !ok {
+			return "", fmt.Errorf("--manifest %q: %w", flags.manifestFile, maven.ErrNotMavenPOM)
+		}
+		lang = languageJava
+		log.Infof("Detected language: %s", lang)
+	}
+
+	if lang == languageAuto || lang == "" {
+		detected, err := languages.DetectLanguage(ctx, flags.rootDir)
+		if err != nil && detected == "" {
+			return "", fmt.Errorf("failed to detect language: %w (try specifying --language explicitly)", err)
+		}
+		if err != nil {
+			// Multiple languages detected — warn but proceed with the chosen one.
+			log.Warnf("%v", err)
+		}
+		lang = detected
+		log.Infof("Detected language: %s", lang)
+	}
+
+	// Override language from config if specified
+	if cfg.Language != "" && cfg.Language != "auto" {
+		lang = cfg.Language
+		// Handle backward compatibility in config too
+		if lang == "maven" {
+			log.Warnf("Language 'maven' in config is deprecated, use 'java' instead")
+			lang = "java"
+		}
+	}
+
+	return lang, nil
 }
 
 func convertToUpdateConfig(cfg *config.Config) *languages.UpdateConfig {

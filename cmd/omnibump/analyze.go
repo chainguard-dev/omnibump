@@ -110,8 +110,12 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	if detectedLang == languageAuto || detectedLang == "" {
 		var err error
 		detectedLang, err = languages.DetectLanguage(ctx, projectPath)
-		if err != nil {
+		if err != nil && detectedLang == "" {
 			return fmt.Errorf("failed to detect language: %w", err)
+		}
+		if err != nil {
+			// Multiple languages detected — warn but proceed with the chosen one.
+			log.Warnf("%v", err)
 		}
 		log.Infof("Detected language: %s", detectedLang)
 	}
