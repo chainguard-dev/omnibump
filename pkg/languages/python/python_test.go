@@ -424,6 +424,72 @@ func TestParsePyprojectDeps_PDM(t *testing.T) {
 	assert.Equal(t, "41.0.0", names["cryptography"].Version)
 }
 
+// --- AnalyzeRemote ---
+
+func TestAnalyzeRemote_PyprojectTOML(t *testing.T) {
+	data, err := os.ReadFile("testdata/hatch-pyproject/pyproject.toml")
+	require.NoError(t, err)
+
+	a := &python.Analyzer{}
+	result, err := a.AnalyzeRemote(nil, map[string][]byte{
+		"pyproject.toml": data,
+	})
+	require.NoError(t, err)
+	require.Len(t, result.FileAnalyses, 1)
+
+	analysis := result.FileAnalyses[0]
+	assert.Equal(t, "pyproject.toml", analysis.FilePath)
+	assert.Equal(t, "python", analysis.Analysis.Language)
+
+	// Should contain requests, cryptography, urllib3
+	assert.Contains(t, analysis.Analysis.Dependencies, "requests")
+	assert.Contains(t, analysis.Analysis.Dependencies, "cryptography")
+}
+
+func TestAnalyzeRemote_RequirementsTxt(t *testing.T) {
+	data, err := os.ReadFile("testdata/pip-requirements/requirements.txt")
+	require.NoError(t, err)
+
+	a := &python.Analyzer{}
+	result, err := a.AnalyzeRemote(nil, map[string][]byte{
+		"requirements.txt": data,
+	})
+	require.NoError(t, err)
+	require.Len(t, result.FileAnalyses, 1)
+
+	analysis := result.FileAnalyses[0]
+	assert.Equal(t, "requirements.txt", analysis.FilePath)
+	assert.Contains(t, analysis.Analysis.Dependencies, "requests")
+}
+
+func TestAnalyzeRemote_Priority(t *testing.T) {
+	// When both pyproject.toml and requirements.txt are present,
+	// pyproject.toml should win (higher priority)
+	pyproject, err := os.ReadFile("testdata/hatch-pyproject/pyproject.toml")
+	require.NoError(t, err)
+	reqs, err := os.ReadFile("testdata/pip-requirements/requirements.txt")
+	require.NoError(t, err)
+
+	a := &python.Analyzer{}
+	result, err := a.AnalyzeRemote(nil, map[string][]byte{
+		"pyproject.toml":   pyproject,
+		"requirements.txt": reqs,
+	})
+	require.NoError(t, err)
+	require.Len(t, result.FileAnalyses, 1)
+	// Should use pyproject.toml, not requirements.txt
+	assert.Equal(t, "pyproject.toml", result.FileAnalyses[0].FilePath)
+}
+
+func TestAnalyzeRemote_NoManifests(t *testing.T) {
+	a := &python.Analyzer{}
+	result, err := a.AnalyzeRemote(nil, map[string][]byte{
+		"README.md": []byte("# hello"),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.FileAnalyses)
+}
+
 // --- UpdateRequirement with real CVE scenarios ---
 
 func TestUpdateRequirement_CVE2023_32681_RequestsAuthBypass(t *testing.T) {

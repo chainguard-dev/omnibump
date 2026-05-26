@@ -20,6 +20,7 @@ import (
 	"github.com/chainguard-dev/omnibump/pkg/languages/golang"
 	"github.com/chainguard-dev/omnibump/pkg/languages/java"
 	"github.com/chainguard-dev/omnibump/pkg/languages/php"
+	"github.com/chainguard-dev/omnibump/pkg/languages/python"
 	"github.com/chainguard-dev/omnibump/pkg/languages/rust"
 	"github.com/ghodss/yaml"
 	"github.com/spf13/cobra"
@@ -134,6 +135,8 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		projectAnalyzer = &golang.GolangAnalyzer{}
 	case "rust":
 		projectAnalyzer = &rust.RustAnalyzer{}
+	case "python":
+		projectAnalyzer = &python.Analyzer{}
 	case "php":
 		// Get the PHP language and detect build tool
 		phpLang := &php.PHP{}
