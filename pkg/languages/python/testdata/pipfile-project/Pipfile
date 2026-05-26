@@ -1,0 +1,19 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+requests = "==2.31.0"
+cryptography = ">=41.0.0"
+urllib3 = "~=2.0.7"
+click = "*"
+pydantic = {version = ">=2.0.0", extras = ["dotenv"]}
+
+[dev-packages]
+pytest = "==7.4.0"
+black = ">=23.0.0"
+mypy = "*"
+
+[requires]
+python_version = "3.11"
