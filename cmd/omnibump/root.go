@@ -22,6 +22,7 @@ import (
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/java"   // Register Java (Maven, Gradle, etc.)
 	"github.com/chainguard-dev/omnibump/pkg/languages/java/maven"
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/php"  // Register PHP (Composer, etc.)
+	_ "github.com/chainguard-dev/omnibump/pkg/languages/ruby" // Register Ruby
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/rust" // Register Rust
 	charmlog "github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
@@ -77,7 +78,7 @@ func New() *cobra.Command {
 
 	// Add root command flags
 	f := cmd.Flags()
-	f.StringVarP(&flags.language, "language", "l", "auto", "language to use (auto, java, go, rust, or deprecated: maven)")
+	f.StringVarP(&flags.language, "language", "l", "auto", "language to use (auto, java, go, ruby, rust, or deprecated: maven)")
 	f.StringVar(&flags.depsFile, "deps", "", "dependencies file (deps.yaml, or legacy names)")
 	f.StringVar(&flags.propertiesFile, "properties", "", "properties file (properties.yaml)")
 	f.StringVar(&flags.packages, "packages", "", "inline package list (space-separated)")

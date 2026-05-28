@@ -20,6 +20,7 @@ import (
 	"github.com/chainguard-dev/omnibump/pkg/languages/golang"
 	"github.com/chainguard-dev/omnibump/pkg/languages/java"
 	"github.com/chainguard-dev/omnibump/pkg/languages/php"
+	"github.com/chainguard-dev/omnibump/pkg/languages/ruby"
 	"github.com/chainguard-dev/omnibump/pkg/languages/rust"
 	"github.com/ghodss/yaml"
 	"github.com/spf13/cobra"
@@ -77,7 +78,7 @@ Examples:
 	}
 
 	f := cmd.Flags()
-	f.StringVarP(&analyzeF.language, "language", "l", "auto", "language to analyze (auto, java, go, rust, or deprecated: maven)")
+	f.StringVarP(&analyzeF.language, "language", "l", "auto", "language to analyze (auto, java, go, ruby, rust, or deprecated: maven)")
 	f.StringVar(&analyzeF.outputFormat, "output", "text", "output format (text, json, yaml)")
 	f.StringVar(&analyzeF.depsFile, "deps", "", "dependencies file to analyze strategy for")
 	f.StringVar(&analyzeF.packages, "packages", "", "inline package list to analyze")
@@ -136,6 +137,8 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		}
 	case "go":
 		projectAnalyzer = &golang.GolangAnalyzer{}
+	case "ruby":
+		projectAnalyzer = &ruby.RubyAnalyzer{}
 	case "rust":
 		projectAnalyzer = &rust.RustAnalyzer{}
 	case "php":
