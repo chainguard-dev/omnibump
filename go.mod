@@ -4,6 +4,7 @@ go 1.25.7
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/aquasecurity/go-pep440-version v0.0.1
 	github.com/chainguard-dev/clog v1.8.0
 	github.com/chainguard-dev/gopom v0.0.0-20250828200639-b1a78ac4b263
 	github.com/charmbracelet/log v1.0.0
@@ -21,6 +22,7 @@ require (
 )
 
 require (
+	github.com/aquasecurity/go-version v0.0.1 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/charmbracelet/colorprofile v0.2.3-0.20250311203215-f60798e515dc // indirect
 	github.com/charmbracelet/lipgloss v1.1.0 // indirect
@@ -46,6 +48,7 @@ require (
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.31.0 // indirect
 	golang.org/x/tools/go/packages/packagestest v0.1.1-deprecated // indirect
+	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
 	gopkg.in/check.v1 v1.0.0-20180628173108-788fd7840127 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

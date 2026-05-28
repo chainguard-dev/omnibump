@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "example-rs"
+version = "0.1.0"
+dependencies = [
+    "requests>=2.28.0",
+    "cryptography>=39.0.1",
+]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
