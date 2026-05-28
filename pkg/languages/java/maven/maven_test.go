@@ -7,9 +7,11 @@ package maven
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/chainguard-dev/gopom"
@@ -897,6 +899,594 @@ func TestMaven_Update_DefaultFallback(t *testing.T) {
 		}
 	}
 	t.Error("dependency com.example:artifact not found in updated POM (DefaultFallback)")
+}
+
+func TestMaven_Update_ExplicitPropertyDefinedInParent(t *testing.T) {
+	tmpDir := t.TempDir()
+	parentPom := filepath.Join(tmpDir, "pom.xml")
+	moduleDir := filepath.Join(tmpDir, "module")
+	modulePom := filepath.Join(moduleDir, "pom.xml")
+
+	writeFile(t, parentPom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>parent</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+  <properties>
+    <netty.version>4.1.90.Final</netty.version>
+  </properties>
+</project>`)
+	writeFile(t, modulePom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>module</artifactId>
+  <dependencies>
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-codec-http</artifactId>
+      <version>${netty.version}</version>
+    </dependency>
+  </dependencies>
+</project>`)
+
+	m := &Maven{}
+	cfg := &languages.UpdateConfig{
+		RootDir: moduleDir,
+		Properties: map[string]string{
+			"netty.version": "4.1.94.Final",
+		},
+	}
+
+	if err := m.Update(context.Background(), cfg); err != nil {
+		t.Fatalf("Maven.Update() failed: %v", err)
+	}
+	if err := m.Validate(context.Background(), cfg); err != nil {
+		t.Fatalf("Maven.Validate() failed: %v", err)
+	}
+
+	parent, err := ParsePom(parentPom)
+	if err != nil {
+		t.Fatalf("ParsePom(parent) failed: %v", err)
+	}
+	if got := parent.Properties.Entries["netty.version"]; got != "4.1.94.Final" {
+		t.Errorf("parent netty.version = %q, want 4.1.94.Final", got)
+	}
+
+	module, err := ParsePom(modulePom)
+	if err != nil {
+		t.Fatalf("ParsePom(module) failed: %v", err)
+	}
+	if module.Properties != nil {
+		if _, exists := module.Properties.Entries["netty.version"]; exists {
+			t.Error("module POM should not get a shadowing netty.version property")
+		}
+	}
+}
+
+func TestMaven_Update_DependencyPropertyDefinedInParent(t *testing.T) {
+	tmpDir := t.TempDir()
+	parentPom := filepath.Join(tmpDir, "pom.xml")
+	moduleDir := filepath.Join(tmpDir, "module")
+	modulePom := filepath.Join(moduleDir, "pom.xml")
+
+	writeFile(t, parentPom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>parent</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+  <properties>
+    <netty.version>4.1.90.Final</netty.version>
+    <jackson.version>2.14.0</jackson.version>
+  </properties>
+</project>`)
+	writeFile(t, modulePom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>module</artifactId>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.netty</groupId>
+        <artifactId>netty-codec</artifactId>
+        <version>${netty.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.netty</groupId>
+        <artifactId>netty-codec-http</artifactId>
+        <version>${netty.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-core</artifactId>
+        <version>${jackson.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`)
+
+	cfg := &languages.UpdateConfig{
+		RootDir: moduleDir,
+		Dependencies: []languages.Dependency{
+			{Name: "io.netty:netty-codec", Version: "4.1.94.Final"},
+			{Name: "io.netty:netty-codec-http", Version: "4.1.94.Final"},
+			{Name: "com.fasterxml.jackson.core:jackson-core", Version: "2.15.0"},
+		},
+	}
+
+	m := &Maven{}
+	if err := m.Update(context.Background(), cfg); err != nil {
+		t.Fatalf("Maven.Update() failed: %v", err)
+	}
+	if err := m.Validate(context.Background(), cfg); err != nil {
+		t.Fatalf("Maven.Validate() failed: %v", err)
+	}
+
+	parent, err := ParsePom(parentPom)
+	if err != nil {
+		t.Fatalf("ParsePom(parent) failed: %v", err)
+	}
+	if got := parent.Properties.Entries["netty.version"]; got != "4.1.94.Final" {
+		t.Errorf("parent netty.version = %q, want 4.1.94.Final", got)
+	}
+	if got := parent.Properties.Entries["jackson.version"]; got != "2.15.0" {
+		t.Errorf("parent jackson.version = %q, want 2.15.0", got)
+	}
+
+	module, err := ParsePom(modulePom)
+	if err != nil {
+		t.Fatalf("ParsePom(module) failed: %v", err)
+	}
+	if module.Properties != nil {
+		if _, exists := module.Properties.Entries["netty.version"]; exists {
+			t.Error("module POM should not get a shadowing netty.version property")
+		}
+		if _, exists := module.Properties.Entries["jackson.version"]; exists {
+			t.Error("module POM should not get a shadowing jackson.version property")
+		}
+	}
+	for _, dep := range *module.DependencyManagement.Dependencies {
+		switch dep.ArtifactID {
+		case "netty-codec", "netty-codec-http":
+			if dep.Version != "${netty.version}" {
+				t.Errorf("%s version = %q, want ${netty.version}", dep.ArtifactID, dep.Version)
+			}
+		case "jackson-core":
+			if dep.Version != "${jackson.version}" {
+				t.Errorf("jackson-core version = %q, want ${jackson.version}", dep.Version)
+			}
+		}
+	}
+}
+
+func TestMaven_Update_DependencyPropertyMissingInPomAndParentErrors(t *testing.T) {
+	tmpDir := t.TempDir()
+	moduleDir := filepath.Join(tmpDir, "module")
+
+	writeFile(t, filepath.Join(tmpDir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>parent</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+</project>`)
+	writeFile(t, filepath.Join(moduleDir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>module</artifactId>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.netty</groupId>
+        <artifactId>netty-codec</artifactId>
+        <version>${missing.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`)
+
+	m := &Maven{}
+	cfg := &languages.UpdateConfig{
+		RootDir: moduleDir,
+		Dependencies: []languages.Dependency{
+			{Name: "io.netty:netty-codec", Version: "4.1.94.Final"},
+		},
+	}
+
+	err := m.Update(context.Background(), cfg)
+	if !errors.Is(err, ErrPropertyNotFound) {
+		t.Fatalf("Maven.Update() error = %v, want ErrPropertyNotFound", err)
+	}
+}
+
+func TestMaven_Update_PropertiesSplitBetweenCurrentAndParent(t *testing.T) {
+	tmpDir := t.TempDir()
+	parentPom := filepath.Join(tmpDir, "pom.xml")
+	moduleDir := filepath.Join(tmpDir, "module")
+	modulePom := filepath.Join(moduleDir, "pom.xml")
+
+	writeFile(t, parentPom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>parent</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+  <properties>
+    <parent.version>1.0.0</parent.version>
+    <parent.extra.version>1.0.1</parent.extra.version>
+  </properties>
+</project>`)
+	writeFile(t, modulePom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>module</artifactId>
+  <properties>
+    <module.version>2.0.0</module.version>
+    <module.extra.version>2.0.1</module.extra.version>
+  </properties>
+</project>`)
+
+	cfg := &languages.UpdateConfig{
+		RootDir: moduleDir,
+		Properties: map[string]string{
+			"parent.version":       "1.1.0",
+			"parent.extra.version": "1.1.1",
+			"module.version":       "2.1.0",
+			"module.extra.version": "2.1.1",
+		},
+	}
+
+	m := &Maven{}
+	if err := m.Update(context.Background(), cfg); err != nil {
+		t.Fatalf("Maven.Update() failed: %v", err)
+	}
+	if err := m.Validate(context.Background(), cfg); err != nil {
+		t.Fatalf("Maven.Validate() failed: %v", err)
+	}
+
+	parent, err := ParsePom(parentPom)
+	if err != nil {
+		t.Fatalf("ParsePom(parent) failed: %v", err)
+	}
+	if got := parent.Properties.Entries["parent.version"]; got != "1.1.0" {
+		t.Errorf("parent.version = %q, want 1.1.0", got)
+	}
+	if got := parent.Properties.Entries["parent.extra.version"]; got != "1.1.1" {
+		t.Errorf("parent.extra.version = %q, want 1.1.1", got)
+	}
+	if _, exists := parent.Properties.Entries["module.version"]; exists {
+		t.Error("parent POM should not get module.version")
+	}
+	if _, exists := parent.Properties.Entries["module.extra.version"]; exists {
+		t.Error("parent POM should not get module.extra.version")
+	}
+
+	module, err := ParsePom(modulePom)
+	if err != nil {
+		t.Fatalf("ParsePom(module) failed: %v", err)
+	}
+	if got := module.Properties.Entries["module.version"]; got != "2.1.0" {
+		t.Errorf("module.version = %q, want 2.1.0", got)
+	}
+	if got := module.Properties.Entries["module.extra.version"]; got != "2.1.1" {
+		t.Errorf("module.extra.version = %q, want 2.1.1", got)
+	}
+	if _, exists := module.Properties.Entries["parent.version"]; exists {
+		t.Error("module POM should not get parent.version")
+	}
+	if _, exists := module.Properties.Entries["parent.extra.version"]; exists {
+		t.Error("module POM should not get parent.extra.version")
+	}
+}
+
+func TestMaven_Update_PropertyDefinedInParentDirectoryRelativePath(t *testing.T) {
+	tmpDir := t.TempDir()
+	parentPom := filepath.Join(tmpDir, "parent", "pom.xml")
+	moduleDir := filepath.Join(tmpDir, "module")
+
+	writeFile(t, parentPom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>parent</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+  <properties>
+    <parent.version>1.0.0</parent.version>
+  </properties>
+</project>`)
+	writeFile(t, filepath.Join(moduleDir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent</artifactId>
+    <version>1.0.0</version>
+    <relativePath>../parent</relativePath>
+  </parent>
+  <artifactId>module</artifactId>
+</project>`)
+
+	cfg := &languages.UpdateConfig{
+		RootDir: moduleDir,
+		Properties: map[string]string{
+			"parent.version": "1.1.0",
+		},
+	}
+
+	m := &Maven{}
+	if err := m.Update(context.Background(), cfg); err != nil {
+		t.Fatalf("Maven.Update() failed: %v", err)
+	}
+
+	parent, err := ParsePom(parentPom)
+	if err != nil {
+		t.Fatalf("ParsePom(parent) failed: %v", err)
+	}
+	if got := parent.Properties.Entries["parent.version"]; got != "1.1.0" {
+		t.Errorf("parent.version = %q, want 1.1.0", got)
+	}
+}
+
+func TestMaven_Update_PropertyMissingInPomAndParentErrors(t *testing.T) {
+	tmpDir := t.TempDir()
+	moduleDir := filepath.Join(tmpDir, "module")
+
+	writeFile(t, filepath.Join(tmpDir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>parent</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+</project>`)
+	writeFile(t, filepath.Join(moduleDir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent</artifactId>
+    <version>1.0.0</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+  <artifactId>module</artifactId>
+</project>`)
+
+	m := &Maven{}
+	cfg := &languages.UpdateConfig{
+		RootDir: moduleDir,
+		Properties: map[string]string{
+			"missing.version": "1.2.3",
+		},
+	}
+
+	err := m.Update(context.Background(), cfg)
+	if !errors.Is(err, ErrPropertyNotFound) {
+		t.Fatalf("Maven.Update() error = %v, want ErrPropertyNotFound", err)
+	}
+}
+
+func TestResolvePropertyPomPath(t *testing.T) {
+	tests := []struct {
+		name        string
+		setup       func(t *testing.T, dir string) string
+		property    string
+		wantPath    func(dir string) string
+		wantErr     error
+		wantErrText string
+	}{
+		{
+			name: "property in current POM",
+			setup: func(t *testing.T, dir string) string {
+				pomPath := filepath.Join(dir, "pom.xml")
+				writeFile(t, pomPath, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>module</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <module.version>2.0.0</module.version>
+  </properties>
+</project>`)
+				return pomPath
+			},
+			property: "module.version",
+			wantPath: func(dir string) string {
+				return filepath.Join(dir, "pom.xml")
+			},
+		},
+		{
+			name: "property in parent POM with default relativePath",
+			setup: func(t *testing.T, dir string) string {
+				writeFile(t, filepath.Join(dir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>parent</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <parent.version>1.0.0</parent.version>
+  </properties>
+</project>`)
+				modulePom := filepath.Join(dir, "module", "pom.xml")
+				writeFile(t, modulePom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>module</artifactId>
+</project>`)
+				return modulePom
+			},
+			property: "parent.version",
+			wantPath: func(dir string) string {
+				return filepath.Join(dir, "pom.xml")
+			},
+		},
+		{
+			name: "property in parent POM with explicit relativePath",
+			setup: func(t *testing.T, dir string) string {
+				parentPom := filepath.Join(dir, "build", "parent.xml")
+				writeFile(t, parentPom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>parent</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <shared.version>3.0.0</shared.version>
+  </properties>
+</project>`)
+				modulePom := filepath.Join(dir, "module", "pom.xml")
+				writeFile(t, modulePom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent</artifactId>
+    <version>1.0.0</version>
+    <relativePath>../build/parent.xml</relativePath>
+  </parent>
+  <artifactId>module</artifactId>
+</project>`)
+				return modulePom
+			},
+			property: "shared.version",
+			wantPath: func(dir string) string {
+				return filepath.Join(dir, "build", "parent.xml")
+			},
+		},
+		{
+			name: "property in parent POM with directory relativePath",
+			setup: func(t *testing.T, dir string) string {
+				parentPom := filepath.Join(dir, "parent", "pom.xml")
+				writeFile(t, parentPom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>parent</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <parent.dir.version>4.0.0</parent.dir.version>
+  </properties>
+</project>`)
+				modulePom := filepath.Join(dir, "module", "pom.xml")
+				writeFile(t, modulePom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent</artifactId>
+    <version>1.0.0</version>
+    <relativePath>../parent</relativePath>
+  </parent>
+  <artifactId>module</artifactId>
+</project>`)
+				return modulePom
+			},
+			property: "parent.dir.version",
+			wantPath: func(dir string) string {
+				return filepath.Join(dir, "parent", "pom.xml")
+			},
+		},
+		{
+			name: "property missing without parent",
+			setup: func(t *testing.T, dir string) string {
+				pomPath := filepath.Join(dir, "pom.xml")
+				writeFile(t, pomPath, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>module</artifactId>
+  <version>1.0.0</version>
+</project>`)
+				return pomPath
+			},
+			property:    "missing.version",
+			wantErr:     ErrPropertyNotFound,
+			wantErrText: "no parent POM is configured",
+		},
+		{
+			name: "property missing in current and parent",
+			setup: func(t *testing.T, dir string) string {
+				writeFile(t, filepath.Join(dir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>parent</artifactId>
+  <version>1.0.0</version>
+</project>`)
+				modulePom := filepath.Join(dir, "module", "pom.xml")
+				writeFile(t, modulePom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>module</artifactId>
+</project>`)
+				return modulePom
+			},
+			property:    "missing.version",
+			wantErr:     ErrPropertyNotFound,
+			wantErrText: "or parent POM",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			pomPath := tt.setup(t, dir)
+
+			got, err := resolvePropertyPomPath(context.Background(), pomPath, tt.property)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("resolvePropertyPomPath() error = %v, want %v", err, tt.wantErr)
+				}
+				if tt.wantErrText != "" && !strings.Contains(err.Error(), tt.wantErrText) {
+					t.Fatalf("resolvePropertyPomPath() error = %q, want to contain %q", err, tt.wantErrText)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolvePropertyPomPath() error = %v", err)
+			}
+			if want := tt.wantPath(dir); got != want {
+				t.Errorf("resolvePropertyPomPath() = %q, want %q", got, want)
+			}
+		})
+	}
 }
 
 func TestIsMavenPom_Valid(t *testing.T) {
