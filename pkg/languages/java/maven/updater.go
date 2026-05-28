@@ -35,6 +35,10 @@ var (
 	// ErrPropertyNotFound is returned when a property patch cannot be applied to
 	// the current POM or its local parent POM.
 	ErrPropertyNotFound = errors.New("property not found")
+
+	// ErrVersionConflict is returned when two updates try to set different
+	// versions for the same dependency or property-backed dependency set.
+	ErrVersionConflict = errors.New("conflicting version update detected")
 )
 
 // Default scope and type for a dependency.
@@ -99,7 +103,7 @@ func dependencyPropertyUpdates(ctx context.Context, pomPath string, patches []Pa
 	// matchedPatches are removed from the direct dependency patch list because
 	// they will be applied through propertyUpdates instead.
 	matchedPatches := make(map[Patch]bool)
-	// Multiple dependencies can share one property; keep the first value chosen.
+	// Multiple dependencies can share one property; all requested values must agree.
 	propertyValues := make(map[string]string)
 	var propertyUpdates []pomPropertyUpdate
 
@@ -127,10 +131,18 @@ func dependencyPropertyUpdates(ctx context.Context, pomPath string, patches []Pa
 				// This patch is handled by updating the referenced property.
 				matchedPatches[patch] = true
 				// Explicit property updates are appended by Maven.Update below.
-				if _, explicit := explicitProperties[propertyName]; explicit {
+				if explicitValue, explicit := explicitProperties[propertyName]; explicit {
+					if patch.Version != "" && explicitValue != patch.Version {
+						return nil, nil, fmt.Errorf("%w: dependency %s:%s requests %s but property %s is explicitly set to %s",
+							ErrVersionConflict, patch.GroupID, patch.ArtifactID, patch.Version, propertyName, explicitValue)
+					}
 					continue
 				}
 				if propertyValue, alreadySet := propertyValues[propertyName]; alreadySet {
+					if propertyValue != patch.Version {
+						return nil, nil, fmt.Errorf("%w: dependencies using property %s request both %s and %s",
+							ErrVersionConflict, propertyName, propertyValue, patch.Version)
+					}
 					clog.InfoContextf(ctx, "Patching %s:%s via property %s to %s (property already updated)",
 						patch.GroupID, patch.ArtifactID, dep.Version, propertyValue)
 					continue

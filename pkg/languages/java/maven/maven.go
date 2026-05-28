@@ -372,7 +372,11 @@ func applyPrecedenceRules(ctx context.Context, pomPath string, deps []languages.
 		// Check if this dependency uses a property
 		if depInfo, exists := analysis.Dependencies[depKey]; exists && depInfo.UsesProperty {
 			// Check if the property is being updated
-			if _, propertyBeingUpdated := properties[depInfo.PropertyName]; propertyBeingUpdated {
+			if propertyValue, propertyBeingUpdated := properties[depInfo.PropertyName]; propertyBeingUpdated {
+				if dep.Version != "" && propertyValue != dep.Version {
+					return nil, fmt.Errorf("%w: dependency %s requests %s but property %s is explicitly set to %s",
+						ErrVersionConflict, depKey, dep.Version, depInfo.PropertyName, propertyValue)
+				}
 				log.Infof("Skipping direct patch for %s (property %s takes precedence)", depKey, depInfo.PropertyName)
 				continue // Skip this dependency, property wins
 			}
@@ -391,6 +395,7 @@ func applyPrecedenceRules(ctx context.Context, pomPath string, deps []languages.
 // convertDependenciesToPatches converts unified dependencies to Maven-specific patches.
 func convertDependenciesToPatches(deps []languages.Dependency) ([]Patch, error) {
 	patches := make([]Patch, 0, len(deps))
+	requestedVersions := make(map[string]string)
 
 	for _, dep := range deps {
 		patch := Patch{
@@ -426,6 +431,15 @@ func convertDependenciesToPatches(deps []languages.Dependency) ([]Patch, error) 
 		if patch.GroupID == "" || patch.ArtifactID == "" {
 			return nil, fmt.Errorf("%w: groupId=%q, artifactId=%q, version=%q (dependency name=%q)",
 				ErrMissingRequiredFields, patch.GroupID, patch.ArtifactID, patch.Version, dep.Name)
+		}
+
+		if patch.Version != "" {
+			depKey := fmt.Sprintf("%s:%s", patch.GroupID, patch.ArtifactID)
+			if requestedVersion, exists := requestedVersions[depKey]; exists && requestedVersion != patch.Version {
+				return nil, fmt.Errorf("%w: dependency %s requests both %s and %s",
+					ErrVersionConflict, depKey, requestedVersion, patch.Version)
+			}
+			requestedVersions[depKey] = patch.Version
 		}
 
 		patches = append(patches, patch)

@@ -1072,6 +1072,153 @@ func TestMaven_Update_DependencyPropertyDefinedInParent(t *testing.T) {
 	}
 }
 
+func TestMaven_Update_DependencySharedPropertyConflictErrors(t *testing.T) {
+	tmpDir := t.TempDir()
+	moduleDir := filepath.Join(tmpDir, "module")
+
+	writeFile(t, filepath.Join(tmpDir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>parent</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+  <properties>
+    <netty.version>4.1.90.Final</netty.version>
+  </properties>
+</project>`)
+	writeFile(t, filepath.Join(moduleDir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>module</artifactId>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.netty</groupId>
+        <artifactId>netty-codec</artifactId>
+        <version>${netty.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.netty</groupId>
+        <artifactId>netty-codec-http</artifactId>
+        <version>${netty.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`)
+
+	m := &Maven{}
+	cfg := &languages.UpdateConfig{
+		RootDir: moduleDir,
+		Dependencies: []languages.Dependency{
+			{Name: "io.netty:netty-codec", Version: "4.1.130.Final"},
+			{Name: "io.netty:netty-codec-http", Version: "4.1.133.Final"},
+		},
+	}
+
+	err := m.Update(context.Background(), cfg)
+	if !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("Maven.Update() error = %v, want ErrVersionConflict", err)
+	}
+	if !strings.Contains(err.Error(), "netty.version") {
+		t.Fatalf("Maven.Update() error = %q, want to mention netty.version", err)
+	}
+}
+
+func TestMaven_Update_DirectDependencyVersionConflictErrors(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	writeFile(t, filepath.Join(tmpDir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>module</artifactId>
+  <version>1.0.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>library</artifactId>
+      <version>1.0.0</version>
+    </dependency>
+  </dependencies>
+</project>`)
+
+	m := &Maven{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "com.example:library", Version: "1.1.0"},
+			{Name: "com.example:library", Version: "1.2.0"},
+		},
+	}
+
+	err := m.Update(context.Background(), cfg)
+	if !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("Maven.Update() error = %v, want ErrVersionConflict", err)
+	}
+	if !strings.Contains(err.Error(), "com.example:library") {
+		t.Fatalf("Maven.Update() error = %q, want to mention com.example:library", err)
+	}
+}
+
+func TestMaven_Update_ExplicitPropertyConflictErrors(t *testing.T) {
+	tmpDir := t.TempDir()
+	moduleDir := filepath.Join(tmpDir, "module")
+
+	writeFile(t, filepath.Join(tmpDir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>parent</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+  <properties>
+    <log4j.version>2.25.3</log4j.version>
+  </properties>
+</project>`)
+	writeFile(t, filepath.Join(moduleDir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>module</artifactId>
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.logging.log4j</groupId>
+      <artifactId>log4j-core</artifactId>
+      <version>${log4j.version}</version>
+    </dependency>
+  </dependencies>
+</project>`)
+
+	m := &Maven{}
+	cfg := &languages.UpdateConfig{
+		RootDir: moduleDir,
+		Dependencies: []languages.Dependency{
+			{Name: "org.apache.logging.log4j:log4j-core", Version: "2.25.4"},
+		},
+		Properties: map[string]string{
+			"log4j.version": "2.25.3",
+		},
+	}
+
+	err := m.Update(context.Background(), cfg)
+	if !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("Maven.Update() error = %v, want ErrVersionConflict", err)
+	}
+	if !strings.Contains(err.Error(), "log4j.version") {
+		t.Fatalf("Maven.Update() error = %q, want to mention log4j.version", err)
+	}
+}
+
 func TestMaven_Update_DependencyPropertyMissingInPomAndParentErrors(t *testing.T) {
 	tmpDir := t.TempDir()
 	moduleDir := filepath.Join(tmpDir, "module")
