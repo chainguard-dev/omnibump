@@ -242,6 +242,9 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 		if updatePomPath == pomPath {
 			pomPatches = patches
 		}
+		if err := validatePathWithinRoot(cfg.RootDir, updatePomPath); err != nil {
+			return fmt.Errorf("refusing to update pom file %s: %w", updatePomPath, err)
+		}
 		// Convert this POM's grouped property updates into patch entries.
 		properties := make(map[string]string, len(groupedPropertyUpdates))
 		for _, propertyUpdate := range groupedPropertyUpdates {
@@ -260,6 +263,9 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	}
 
 	for updatedPomPath, updatedPom := range updatedPoms {
+		if err := validatePathWithinRoot(cfg.RootDir, updatedPomPath); err != nil {
+			return fmt.Errorf("refusing to write updated pom file %s: %w", updatedPomPath, err)
+		}
 		if err := os.WriteFile(updatedPomPath, updatedPom, 0o600); err != nil {
 			return fmt.Errorf("failed to write updated pom file %s: %w", updatedPomPath, err)
 		}

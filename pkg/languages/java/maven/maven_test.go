@@ -938,7 +938,8 @@ func TestMaven_Update_ExplicitPropertyDefinedInParent(t *testing.T) {
 
 	m := &Maven{}
 	cfg := &languages.UpdateConfig{
-		RootDir: moduleDir,
+		RootDir:      tmpDir,
+		ManifestFile: modulePom,
 		Properties: map[string]string{
 			"netty.version": "4.1.94.Final",
 		},
@@ -1019,7 +1020,8 @@ func TestMaven_Update_DependencyPropertyDefinedInParent(t *testing.T) {
 </project>`)
 
 	cfg := &languages.UpdateConfig{
-		RootDir: moduleDir,
+		RootDir:      tmpDir,
+		ManifestFile: modulePom,
 		Dependencies: []languages.Dependency{
 			{Name: "io.netty:netty-codec", Version: "4.1.94.Final"},
 			{Name: "io.netty:netty-codec-http", Version: "4.1.94.Final"},
@@ -1114,7 +1116,8 @@ func TestMaven_Update_DependencySharedPropertyConflictErrors(t *testing.T) {
 
 	m := &Maven{}
 	cfg := &languages.UpdateConfig{
-		RootDir: moduleDir,
+		RootDir:      tmpDir,
+		ManifestFile: filepath.Join(moduleDir, "pom.xml"),
 		Dependencies: []languages.Dependency{
 			{Name: "io.netty:netty-codec", Version: "4.1.130.Final"},
 			{Name: "io.netty:netty-codec-http", Version: "4.1.133.Final"},
@@ -1201,7 +1204,8 @@ func TestMaven_Update_ExplicitPropertyConflictErrors(t *testing.T) {
 
 	m := &Maven{}
 	cfg := &languages.UpdateConfig{
-		RootDir: moduleDir,
+		RootDir:      tmpDir,
+		ManifestFile: filepath.Join(moduleDir, "pom.xml"),
 		Dependencies: []languages.Dependency{
 			{Name: "org.apache.logging.log4j:log4j-core", Version: "2.25.4"},
 		},
@@ -1253,7 +1257,8 @@ func TestMaven_Update_DependencyPropertyMissingInPomAndParentErrors(t *testing.T
 
 	m := &Maven{}
 	cfg := &languages.UpdateConfig{
-		RootDir: moduleDir,
+		RootDir:      tmpDir,
+		ManifestFile: filepath.Join(moduleDir, "pom.xml"),
 		Dependencies: []languages.Dependency{
 			{Name: "io.netty:netty-codec", Version: "4.1.94.Final"},
 		},
@@ -1299,7 +1304,8 @@ func TestMaven_Update_PropertiesSplitBetweenCurrentAndParent(t *testing.T) {
 </project>`)
 
 	cfg := &languages.UpdateConfig{
-		RootDir: moduleDir,
+		RootDir:      tmpDir,
+		ManifestFile: modulePom,
 		Properties: map[string]string{
 			"parent.version":       "1.1.0",
 			"parent.extra.version": "1.1.1",
@@ -1380,7 +1386,8 @@ func TestMaven_Update_PropertyDefinedInParentDirectoryRelativePath(t *testing.T)
 </project>`)
 
 	cfg := &languages.UpdateConfig{
-		RootDir: moduleDir,
+		RootDir:      tmpDir,
+		ManifestFile: filepath.Join(moduleDir, "pom.xml"),
 		Properties: map[string]string{
 			"parent.version": "1.1.0",
 		},
@@ -1426,7 +1433,8 @@ func TestMaven_Update_PropertyMissingInPomAndParentErrors(t *testing.T) {
 
 	m := &Maven{}
 	cfg := &languages.UpdateConfig{
-		RootDir: moduleDir,
+		RootDir:      tmpDir,
+		ManifestFile: filepath.Join(moduleDir, "pom.xml"),
 		Properties: map[string]string{
 			"missing.version": "1.2.3",
 		},
@@ -1435,6 +1443,179 @@ func TestMaven_Update_PropertyMissingInPomAndParentErrors(t *testing.T) {
 	err := m.Update(context.Background(), cfg)
 	if !errors.Is(err, ErrPropertyNotFound) {
 		t.Fatalf("Maven.Update() error = %v, want ErrPropertyNotFound", err)
+	}
+}
+
+func TestMaven_Update_RejectsParentRelativePathOutsideProjectRoot(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectRoot := filepath.Join(tmpDir, "root")
+	moduleDir := filepath.Join(projectRoot, "module")
+	modulePom := filepath.Join(moduleDir, "pom.xml")
+	outsidePom := filepath.Join(tmpDir, "outside", "pom.xml")
+
+	writeFile(t, filepath.Join(projectRoot, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>root</artifactId>
+  <version>1.0.0</version>
+</project>`)
+	writeFile(t, outsidePom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>outside-parent</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <outside.version>1.0.0</outside.version>
+  </properties>
+</project>`)
+	writeFile(t, modulePom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>outside-parent</artifactId>
+    <version>1.0.0</version>
+    <relativePath>../../outside/pom.xml</relativePath>
+  </parent>
+  <artifactId>module</artifactId>
+</project>`)
+
+	m := &Maven{}
+	cfg := &languages.UpdateConfig{
+		RootDir:      projectRoot,
+		ManifestFile: modulePom,
+		Properties: map[string]string{
+			"outside.version": "2.0.0",
+		},
+	}
+
+	err := m.Update(context.Background(), cfg)
+	if !errors.Is(err, ErrUnsafePomPath) {
+		t.Fatalf("Maven.Update() error = %v, want ErrUnsafePomPath", err)
+	}
+
+	outside, err := ParsePom(outsidePom)
+	if err != nil {
+		t.Fatalf("ParsePom(outside) failed: %v", err)
+	}
+	if got := outside.Properties.Entries["outside.version"]; got != "1.0.0" {
+		t.Errorf("outside.version = %q, want unchanged value 1.0.0", got)
+	}
+}
+
+func TestMaven_Update_RejectsAbsoluteParentPathOutsideProjectRoot(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectRoot := filepath.Join(tmpDir, "root")
+	modulePom := filepath.Join(projectRoot, "module", "pom.xml")
+	outsidePom := filepath.Join(tmpDir, "outside", "pom.xml")
+
+	writeFile(t, filepath.Join(projectRoot, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>root</artifactId>
+  <version>1.0.0</version>
+</project>`)
+	writeFile(t, outsidePom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>outside-parent</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <outside.version>1.0.0</outside.version>
+  </properties>
+</project>`)
+	writeFile(t, modulePom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>outside-parent</artifactId>
+    <version>1.0.0</version>
+    <relativePath>`+outsidePom+`</relativePath>
+  </parent>
+  <artifactId>module</artifactId>
+</project>`)
+
+	m := &Maven{}
+	cfg := &languages.UpdateConfig{
+		RootDir:      projectRoot,
+		ManifestFile: modulePom,
+		Properties: map[string]string{
+			"outside.version": "2.0.0",
+		},
+	}
+
+	err := m.Update(context.Background(), cfg)
+	if !errors.Is(err, ErrUnsafePomPath) {
+		t.Fatalf("Maven.Update() error = %v, want ErrUnsafePomPath", err)
+	}
+
+	outside, err := ParsePom(outsidePom)
+	if err != nil {
+		t.Fatalf("ParsePom(outside) failed: %v", err)
+	}
+	if got := outside.Properties.Entries["outside.version"]; got != "1.0.0" {
+		t.Errorf("outside.version = %q, want unchanged value 1.0.0", got)
+	}
+}
+
+func TestMaven_Update_RejectsManifestFileOutsideProjectRoot(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectRoot := filepath.Join(tmpDir, "root")
+	outsidePom := filepath.Join(tmpDir, "outside", "pom.xml")
+
+	writeFile(t, filepath.Join(projectRoot, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>root</artifactId>
+  <version>1.0.0</version>
+</project>`)
+	writeFile(t, outsidePom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>outside</artifactId>
+  <version>1.0.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>library</artifactId>
+      <version>1.0.0</version>
+    </dependency>
+  </dependencies>
+</project>`)
+
+	m := &Maven{}
+	cfg := &languages.UpdateConfig{
+		RootDir:      projectRoot,
+		ManifestFile: outsidePom,
+		Dependencies: []languages.Dependency{
+			{
+				Version: "2.0.0",
+				Metadata: map[string]any{
+					"groupId":    "com.example",
+					"artifactId": "library",
+				},
+			},
+		},
+	}
+
+	err := m.Update(context.Background(), cfg)
+	if !errors.Is(err, ErrUnsafePomPath) {
+		t.Fatalf("Maven.Update() error = %v, want ErrUnsafePomPath", err)
+	}
+
+	outside, err := ParsePom(outsidePom)
+	if err != nil {
+		t.Fatalf("ParsePom(outside) failed: %v", err)
+	}
+	if got := (*outside.Dependencies)[0].Version; got != "1.0.0" {
+		t.Errorf("outside dependency version = %q, want unchanged value 1.0.0", got)
 	}
 }
 
@@ -1633,6 +1814,40 @@ func TestResolvePropertyPomPath(t *testing.T) {
 				t.Errorf("resolvePropertyPomPath() = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+func TestValidatePathWithinRoot(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	insidePom := filepath.Join(root, "module", "pom.xml")
+	outsidePom := filepath.Join(dir, "outside", "pom.xml")
+	writeFile(t, insidePom, "<project></project>")
+	writeFile(t, outsidePom, "<project></project>")
+
+	if err := validatePathWithinRoot(root, insidePom); err != nil {
+		t.Fatalf("validatePathWithinRoot() inside path error = %v", err)
+	}
+	if err := validatePathWithinRoot(root, outsidePom); !errors.Is(err, ErrUnsafePomPath) {
+		t.Fatalf("validatePathWithinRoot() outside path error = %v, want ErrUnsafePomPath", err)
+	}
+}
+
+func TestValidatePathWithinRootRejectsSymlinkEscape(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	outsidePom := filepath.Join(dir, "outside", "pom.xml")
+	linkPom := filepath.Join(root, "linked-pom.xml")
+	writeFile(t, outsidePom, "<project></project>")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", root, err)
+	}
+	if err := os.Symlink(outsidePom, linkPom); err != nil {
+		t.Fatalf("Symlink(%s, %s): %v", outsidePom, linkPom, err)
+	}
+
+	if err := validatePathWithinRoot(root, linkPom); !errors.Is(err, ErrUnsafePomPath) {
+		t.Fatalf("validatePathWithinRoot() symlink escape error = %v, want ErrUnsafePomPath", err)
 	}
 }
 
