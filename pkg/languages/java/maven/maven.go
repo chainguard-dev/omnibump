@@ -53,8 +53,12 @@ var (
 	ErrNoPOMsFound = errors.New("no Maven POM files found")
 )
 
-// DefaultManifestFile is the conventional Maven POM filename.
-const DefaultManifestFile = "pom.xml"
+const (
+	// DefaultManifestFile is the conventional Maven POM filename.
+	DefaultManifestFile = "pom.xml"
+
+	mavenLanguageName = "maven"
+)
 
 // Maven implements the BuildTool interface for Maven projects.
 type Maven struct{}
@@ -91,7 +95,7 @@ func IsMavenPom(path string) (bool, error) {
 
 // Name returns the build tool identifier.
 func (m *Maven) Name() string {
-	return "maven"
+	return mavenLanguageName
 }
 
 // Detect checks if a Maven project is present in the directory.
