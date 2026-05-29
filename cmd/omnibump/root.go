@@ -38,6 +38,7 @@ type rootFlags struct {
 	rootDir        string
 	manifestFile   string
 	tidy           bool
+	tidyCompat     string
 	showDiff       bool
 	dryRun         bool
 	logLevel       string
@@ -84,6 +85,7 @@ func New() *cobra.Command {
 	f.StringVar(&flags.replaces, "replaces", "", "inline replace list (space-separated, format: oldpkg=newpkg@version)")
 	f.StringVar(&flags.properties, "props", "", "inline properties list (space-separated)")
 	f.StringVar(&flags.rootDir, "dir", ".", "project root directory")
+	f.StringVar(&flags.tidyCompat, "tidy-compat", "", "set the go version for which the tidied go.mod and go.sum files should be compatible")
 	f.BoolVar(&flags.tidy, "tidy", false, "run tidy command after update")
 	f.BoolVar(&flags.showDiff, "show-diff", false, "show diff of changes")
 	f.BoolVar(&flags.dryRun, "dry-run", false, "simulate update without making changes")
@@ -346,6 +348,9 @@ func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but requir
 	updateCfg.ShowDiff = flags.showDiff
 	updateCfg.DryRun = flags.dryRun
 	updateCfg.ManifestFile = flags.manifestFile
+	if flags.tidyCompat != "" {
+		updateCfg.Options["tidy-compat"] = flags.tidyCompat
+	}
 
 	// Perform update
 	if err := lang.Update(ctx, updateCfg); err != nil {
