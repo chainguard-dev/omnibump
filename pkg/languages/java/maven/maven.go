@@ -342,7 +342,7 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 				continue
 			}
 		}
-		log.Errorf("Property not found: %s", propName)
+		return fmt.Errorf("%w: property %s not found", ErrPropertyNotFound, propName)
 	}
 
 	log.Infof("Validation completed successfully")

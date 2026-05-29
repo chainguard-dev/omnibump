@@ -901,6 +901,33 @@ func TestMaven_Update_DefaultFallback(t *testing.T) {
 	t.Error("dependency com.example:artifact not found in updated POM (DefaultFallback)")
 }
 
+func TestMaven_Validate_ReturnsErrorWhenPropertyMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeFile(t, filepath.Join(tmpDir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>test-project</artifactId>
+  <version>1.0.0</version>
+</project>`)
+
+	m := &Maven{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Properties: map[string]string{
+			"missing.version": "1.2.3",
+		},
+	}
+
+	err := m.Validate(context.Background(), cfg)
+	if !errors.Is(err, ErrPropertyNotFound) {
+		t.Fatalf("Maven.Validate() error = %v, want ErrPropertyNotFound", err)
+	}
+	if !strings.Contains(err.Error(), "missing.version") {
+		t.Fatalf("Maven.Validate() error = %q, want to contain missing property name", err)
+	}
+}
+
 func TestMaven_Update_ExplicitPropertyDefinedInParent(t *testing.T) {
 	tmpDir := t.TempDir()
 	parentPom := filepath.Join(tmpDir, "pom.xml")

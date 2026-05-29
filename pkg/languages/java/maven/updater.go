@@ -106,7 +106,7 @@ func dependencyPropertyUpdates(ctx context.Context, pomPath string, patches []Pa
 
 	// matchedPatches are removed from the direct dependency patch list because
 	// they will be applied through propertyUpdates instead.
-	matchedPatches := make(map[Patch]bool)
+	matchedPatches := make(map[Patch]struct{})
 	// Multiple dependencies can share one property; all requested values must agree.
 	propertyValues := make(map[string]string)
 	var propertyUpdates []pomPropertyUpdate
@@ -133,7 +133,7 @@ func dependencyPropertyUpdates(ctx context.Context, pomPath string, patches []Pa
 					continue
 				}
 				// This patch is handled by updating the referenced property.
-				matchedPatches[patch] = true
+				matchedPatches[patch] = struct{}{}
 				// Explicit property updates are appended by Maven.Update below.
 				if explicitValue, explicit := explicitProperties[propertyName]; explicit {
 					if patch.Version != "" && explicitValue != patch.Version {
@@ -172,7 +172,7 @@ func dependencyPropertyUpdates(ctx context.Context, pomPath string, patches []Pa
 	// Return only direct dependency patches; property-backed patches moved above.
 	remainingPatches := make([]Patch, 0, len(patches)-len(matchedPatches))
 	for _, patch := range patches {
-		if !matchedPatches[patch] {
+		if _, matched := matchedPatches[patch]; !matched {
 			remainingPatches = append(remainingPatches, patch)
 		}
 	}
