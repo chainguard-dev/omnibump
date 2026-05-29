@@ -33,7 +33,7 @@ var (
 	ErrInvalidPropertyFormat = errors.New("invalid properties format")
 
 	// ErrPropertyNotFound is returned when a property patch cannot be applied to
-	// the current POM or its local parent POM.
+	// the current POM or its local parent POM chain.
 	ErrPropertyNotFound = errors.New("property not found")
 
 	// ErrUnsafePomPath is returned when an update would write outside the
@@ -341,30 +341,43 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 
 // resolvePropertyPomPath returns the current or parent POM file that defines property.
 func resolvePropertyPomPath(ctx context.Context, pomPath, property string) (string, error) {
-	project, err := ParsePom(pomPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse POM: %w", err)
-	}
-	if projectHasProperty(project, property) {
-		clog.InfoContextf(ctx, "Property %s found in %s", property, pomPath)
-		return pomPath, nil
-	}
+	currentPath := pomPath
+	visited := make(map[string]struct{})
+	checkedParent := false
 
-	parentPath, hasParent := parentPomPath(pomPath, project)
-	if !hasParent {
-		return "", fmt.Errorf("%w: property %s not found in %s and no parent POM is configured", ErrPropertyNotFound, property, pomPath)
-	}
+	for {
+		pathKey, err := pomPathKey(currentPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve POM path %s while resolving property %s: %w", currentPath, property, err)
+		}
+		if _, seen := visited[pathKey]; seen {
+			return "", fmt.Errorf("%w: property %s not found in parent POM chain; cycle detected at %s", ErrPropertyNotFound, property, currentPath)
+		}
+		visited[pathKey] = struct{}{}
 
-	parentProject, err := ParsePom(parentPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse parent POM %s while resolving property %s: %w", parentPath, property, err)
-	}
-	if !projectHasProperty(parentProject, property) {
-		return "", fmt.Errorf("%w: property %s not found in %s or parent POM %s", ErrPropertyNotFound, property, pomPath, parentPath)
-	}
+		project, err := ParsePom(currentPath)
+		if err != nil {
+			if currentPath == pomPath {
+				return "", fmt.Errorf("failed to parse POM: %w", err)
+			}
+			return "", fmt.Errorf("failed to parse parent POM %s while resolving property %s: %w", currentPath, property, err)
+		}
+		if projectHasProperty(project, property) {
+			clog.InfoContextf(ctx, "Property %s found in %s", property, currentPath)
+			return currentPath, nil
+		}
 
-	clog.InfoContextf(ctx, "Property %s found in %s", property, parentPath)
-	return parentPath, nil
+		parentPath, hasParent := parentPomPath(currentPath, project)
+		if !hasParent {
+			if !checkedParent {
+				return "", fmt.Errorf("%w: property %s not found in %s and no parent POM is configured", ErrPropertyNotFound, property, pomPath)
+			}
+			return "", fmt.Errorf("%w: property %s not found in %s or parent POM chain", ErrPropertyNotFound, property, pomPath)
+		}
+
+		checkedParent = true
+		currentPath = parentPath
+	}
 }
 
 func parentPomPath(pomPath string, project *gopom.Project) (string, bool) {
@@ -430,6 +443,14 @@ func pathIsWithinRoot(rootAbs, pathAbs string) (bool, error) {
 	return true, nil
 }
 
+func pomPathKey(path string) (string, error) {
+	pathAbs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(pathAbs), nil
+}
+
 // projectHasProperty reports whether the parsed POM defines name in <properties>.
 func projectHasProperty(project *gopom.Project, name string) bool {
 	if project == nil || project.Properties == nil || project.Properties.Entries == nil {
@@ -441,22 +462,42 @@ func projectHasProperty(project *gopom.Project, name string) bool {
 
 func pomProperties(ctx context.Context, pomPath string, project *gopom.Project) *gopom.Properties {
 	properties := make(map[string]string)
+	projects := make([]*gopom.Project, 0)
+	currentPath := pomPath
+	currentProject := project
+	visited := make(map[string]struct{})
 
-	parentPath, hasParent := parentPomPath(pomPath, project)
-	if hasParent {
+	for currentProject != nil {
+		pathKey, err := pomPathKey(currentPath)
+		if err != nil {
+			clog.FromContext(ctx).Debugf("failed to resolve POM path %s while collecting properties: %v", currentPath, err)
+			break
+		}
+		if _, seen := visited[pathKey]; seen {
+			clog.FromContext(ctx).Debugf("detected parent POM cycle at %s while collecting properties", currentPath)
+			break
+		}
+		visited[pathKey] = struct{}{}
+		projects = append(projects, currentProject)
+
+		parentPath, hasParent := parentPomPath(currentPath, currentProject)
+		if !hasParent {
+			break
+		}
 		parentProject, err := ParsePom(parentPath)
 		if err != nil {
 			clog.FromContext(ctx).Debugf("failed to parse parent POM %s while collecting properties: %v", parentPath, err)
-		} else if parentProject.Properties != nil {
-			for k, v := range parentProject.Properties.Entries {
-				properties[k] = v
-			}
+			break
 		}
+		currentPath = parentPath
+		currentProject = parentProject
 	}
 
-	if project != nil && project.Properties != nil {
-		for k, v := range project.Properties.Entries {
-			properties[k] = v
+	for i := len(projects) - 1; i >= 0; i-- {
+		if projects[i].Properties != nil {
+			for k, v := range projects[i].Properties.Entries {
+				properties[k] = v
+			}
 		}
 	}
 	if len(properties) == 0 {

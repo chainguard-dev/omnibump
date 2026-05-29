@@ -1074,6 +1074,104 @@ func TestMaven_Update_DependencyPropertyDefinedInParent(t *testing.T) {
 	}
 }
 
+func TestMaven_Update_DependencyPropertyDefinedInGrandparent(t *testing.T) {
+	tmpDir := t.TempDir()
+	rootPom := filepath.Join(tmpDir, "pom.xml")
+	parentPom := filepath.Join(tmpDir, "module-parent", "pom.xml")
+	modulePom := filepath.Join(tmpDir, "module", "pom.xml")
+
+	writeFile(t, rootPom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>root-parent</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+  <properties>
+    <netty.version>4.1.90.Final</netty.version>
+  </properties>
+</project>`)
+	writeFile(t, parentPom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>root-parent</artifactId>
+    <version>1.0.0</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+  <artifactId>module-parent</artifactId>
+  <packaging>pom</packaging>
+</project>`)
+	writeFile(t, modulePom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>module-parent</artifactId>
+    <version>1.0.0</version>
+    <relativePath>../module-parent/pom.xml</relativePath>
+  </parent>
+  <artifactId>module</artifactId>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.netty</groupId>
+        <artifactId>netty-codec</artifactId>
+        <version>${netty.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`)
+
+	cfg := &languages.UpdateConfig{
+		RootDir:      tmpDir,
+		ManifestFile: modulePom,
+		Dependencies: []languages.Dependency{
+			{Name: "io.netty:netty-codec", Version: "4.1.94.Final"},
+		},
+	}
+
+	m := &Maven{}
+	if err := m.Update(context.Background(), cfg); err != nil {
+		t.Fatalf("Maven.Update() failed: %v", err)
+	}
+	if err := m.Validate(context.Background(), cfg); err != nil {
+		t.Fatalf("Maven.Validate() failed: %v", err)
+	}
+
+	root, err := ParsePom(rootPom)
+	if err != nil {
+		t.Fatalf("ParsePom(root) failed: %v", err)
+	}
+	if got := root.Properties.Entries["netty.version"]; got != "4.1.94.Final" {
+		t.Errorf("root netty.version = %q, want 4.1.94.Final", got)
+	}
+
+	parent, err := ParsePom(parentPom)
+	if err != nil {
+		t.Fatalf("ParsePom(parent) failed: %v", err)
+	}
+	if parent.Properties != nil {
+		if _, exists := parent.Properties.Entries["netty.version"]; exists {
+			t.Error("parent POM should not get a shadowing netty.version property")
+		}
+	}
+
+	module, err := ParsePom(modulePom)
+	if err != nil {
+		t.Fatalf("ParsePom(module) failed: %v", err)
+	}
+	if module.Properties != nil {
+		if _, exists := module.Properties.Entries["netty.version"]; exists {
+			t.Error("module POM should not get a shadowing netty.version property")
+		}
+	}
+	if got := (*module.DependencyManagement.Dependencies)[0].Version; got != "${netty.version}" {
+		t.Errorf("module dependency version = %q, want ${netty.version}", got)
+	}
+}
+
 func TestMaven_Update_DependencySharedPropertyConflictErrors(t *testing.T) {
 	tmpDir := t.TempDir()
 	moduleDir := filepath.Join(tmpDir, "module")
@@ -1745,6 +1843,39 @@ func TestResolvePropertyPomPath(t *testing.T) {
 			wantPath: func(dir string) string {
 				return filepath.Join(dir, "parent", "pom.xml")
 			},
+		},
+		{
+			name: "property missing with parent POM cycle",
+			setup: func(t *testing.T, dir string) string {
+				parentPom := filepath.Join(dir, "parent", "pom.xml")
+				modulePom := filepath.Join(dir, "module", "pom.xml")
+				writeFile(t, parentPom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>module</artifactId>
+    <version>1.0.0</version>
+    <relativePath>../module/pom.xml</relativePath>
+  </parent>
+  <artifactId>parent</artifactId>
+</project>`)
+				writeFile(t, modulePom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent</artifactId>
+    <version>1.0.0</version>
+    <relativePath>../parent/pom.xml</relativePath>
+  </parent>
+  <artifactId>module</artifactId>
+</project>`)
+				return modulePom
+			},
+			property:    "missing.version",
+			wantErr:     ErrPropertyNotFound,
+			wantErrText: "not found in parent POM chain",
 		},
 		{
 			name: "property missing without parent",
