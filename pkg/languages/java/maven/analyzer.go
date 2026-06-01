@@ -48,7 +48,7 @@ func (ma *MavenAnalyzer) Analyze(ctx context.Context, projectPath string) (*anal
 	}
 
 	result := &analyzer.AnalysisResult{
-		Language:      "maven",
+		Language:      mavenLanguageName,
 		Dependencies:  make(map[string]*analyzer.DependencyInfo),
 		Properties:    make(map[string]string),
 		PropertyUsage: make(map[string]int),
@@ -375,7 +375,7 @@ func (ma *MavenAnalyzer) analyzeAllPoms(ctx context.Context, rootDir string) (*a
 	}
 
 	result := &analyzer.AnalysisResult{
-		Language:      "maven",
+		Language:      mavenLanguageName,
 		Dependencies:  make(map[string]*analyzer.DependencyInfo),
 		Properties:    make(map[string]string),
 		PropertyUsage: make(map[string]int),

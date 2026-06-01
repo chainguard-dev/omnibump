@@ -34,8 +34,8 @@ var (
 	// ErrInvalidVersion is returned when a version string fails validation.
 	ErrInvalidVersion = errors.New("invalid version string")
 
-	// ErrPomNotFound is returned when pom.xml is not found.
-	ErrPomNotFound = errors.New("pom.xml not found")
+	// ErrPomNotFound is returned when pom file is not found.
+	ErrPomNotFound = errors.New("pom file not found")
 
 	// ErrPropertyValidationFailed is returned when property validation fails.
 	ErrPropertyValidationFailed = errors.New("property validation failed")
@@ -53,8 +53,12 @@ var (
 	ErrNoPOMsFound = errors.New("no Maven POM files found")
 )
 
-// DefaultManifestFile is the conventional Maven POM filename.
-const DefaultManifestFile = "pom.xml"
+const (
+	// DefaultManifestFile is the conventional Maven POM filename.
+	DefaultManifestFile = "pom.xml"
+
+	mavenLanguageName = "maven"
+)
 
 // Maven implements the BuildTool interface for Maven projects.
 type Maven struct{}
@@ -91,7 +95,7 @@ func IsMavenPom(path string) (bool, error) {
 
 // Name returns the build tool identifier.
 func (m *Maven) Name() string {
-	return "maven"
+	return mavenLanguageName
 }
 
 // Detect checks if a Maven project is present in the directory.
@@ -147,7 +151,7 @@ func depDisplayName(dep languages.Dependency) string {
 	return "<unknown>"
 }
 
-// pomFilePath returns the pom.xml path to use, honouring ManifestFile when set.
+// pomFilePath returns the pom.xml file path to use, honouring ManifestFile when set.
 func pomFilePath(cfg *languages.UpdateConfig) string {
 	if cfg.ManifestFile != "" {
 		return cfg.ManifestFile
@@ -184,7 +188,7 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 		}
 	}
 
-	// Find pom.xml
+	// Find pom file
 	pomPath := pomFilePath(cfg)
 	if _, err := os.Stat(pomPath); os.IsNotExist(err) {
 		return fmt.Errorf("%w in: %s", ErrPomNotFound, pomPath)
@@ -207,23 +211,74 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 		}
 	}
 
-	// Perform the update
-	updatedPom, err := UpdatePom(ctx, pomPath, patches, cfg.Properties)
+	// Dependency patches can target versions declared as ${property}. Resolve
+	// those first so the property update is sent to the POM that defines it.
+	patches, propertyUpdates, err := dependencyPropertyUpdates(ctx, pomPath, patches, cfg.Properties)
 	if err != nil {
-		return fmt.Errorf("failed to update pom.xml: %w", err)
+		return fmt.Errorf("failed to resolve dependency property updates: %w", err)
+	}
+
+	// Resolve each property to the POM file where it is actually defined.
+	for propName, propValue := range cfg.Properties {
+		propertyPomPath, err := resolvePropertyPomPath(ctx, pomPath, propName)
+		if err != nil {
+			return fmt.Errorf("failed to resolve file where property %s is set: %w", propName, err)
+		}
+		propertyUpdates = append(propertyUpdates, pomPropertyUpdate{
+			pomFile:       propertyPomPath,
+			propertyName:  propName,
+			propertyValue: propValue,
+		})
+	}
+
+	// Group property updates so each POM file is patched once.
+	propertiesByPom := make(map[string][]pomPropertyUpdate)
+	for _, propertyUpdate := range propertyUpdates {
+		propertiesByPom[propertyUpdate.pomFile] = append(propertiesByPom[propertyUpdate.pomFile], propertyUpdate)
+	}
+	if len(patches) > 0 && propertiesByPom[pomPath] == nil {
+		propertiesByPom[pomPath] = nil
+	}
+
+	updatedPoms := make(map[string][]byte)
+	for updatePomPath, groupedPropertyUpdates := range propertiesByPom {
+		var pomPatches []Patch
+		if updatePomPath == pomPath {
+			pomPatches = patches
+		}
+		if err := validatePathWithinRoot(cfg.RootDir, updatePomPath); err != nil {
+			return fmt.Errorf("refusing to update pom file %s: %w", updatePomPath, err)
+		}
+		// Convert this POM's grouped property updates into patch entries.
+		properties := make(map[string]string, len(groupedPropertyUpdates))
+		for _, propertyUpdate := range groupedPropertyUpdates {
+			properties[propertyUpdate.propertyName] = propertyUpdate.propertyValue
+		}
+		updatedPom, err := UpdatePom(ctx, updatePomPath, pomPatches, properties)
+		if err != nil {
+			return fmt.Errorf("failed to update pom file %s: %w", updatePomPath, err)
+		}
+		updatedPoms[updatePomPath] = updatedPom
 	}
 
 	if cfg.DryRun {
-		clog.InfoContextf(ctx, "Dry run mode: not writing changes to %s", pomPath)
+		clog.InfoContextf(ctx, "Dry run mode: not writing Maven POM changes")
 		return nil
 	}
 
-	// Write updated POM back to file
-	if err := os.WriteFile(pomPath, updatedPom, 0o600); err != nil {
-		return fmt.Errorf("failed to write updated pom.xml: %w", err)
+	for updatedPomPath, updatedPom := range updatedPoms {
+		if err := validatePathWithinRoot(cfg.RootDir, updatedPomPath); err != nil {
+			return fmt.Errorf("refusing to write updated pom file %s: %w", updatedPomPath, err)
+		}
+		if err := os.WriteFile(updatedPomPath, updatedPom, 0o600); err != nil {
+			return fmt.Errorf("failed to write updated pom file %s: %w", updatedPomPath, err)
+		}
+		clog.InfoContextf(ctx, "Successfully updated %s", updatedPomPath)
 	}
 
-	clog.InfoContextf(ctx, "Successfully updated %s", pomPath)
+	if len(updatedPoms) == 0 {
+		clog.InfoContextf(ctx, "No Maven POM changes needed")
+	}
 
 	return nil
 }
@@ -237,8 +292,9 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 	// Parse the updated POM
 	project, err := ParsePom(pomPath)
 	if err != nil {
-		return fmt.Errorf("failed to parse updated pom.xml: %w", err)
+		return fmt.Errorf("failed to parse updated pom file %s: %w", pomPath, err)
 	}
+	properties := pomProperties(ctx, pomPath, project)
 
 	// Validate dependencies
 	for _, dep := range cfg.Dependencies {
@@ -257,7 +313,7 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 		if project.Dependencies != nil {
 			for _, pomDep := range *project.Dependencies {
 				key := fmt.Sprintf("%s:%s", pomDep.GroupID, pomDep.ArtifactID)
-				if key == searchKey && resolveVersion(pomDep.Version, project.Properties) == dep.Version {
+				if key == searchKey && resolveVersion(pomDep.Version, properties) == dep.Version {
 					found = true
 					break
 				}
@@ -268,7 +324,7 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 		if !found && project.DependencyManagement != nil && project.DependencyManagement.Dependencies != nil {
 			for _, pomDep := range *project.DependencyManagement.Dependencies {
 				key := fmt.Sprintf("%s:%s", pomDep.GroupID, pomDep.ArtifactID)
-				if key == searchKey && resolveVersion(pomDep.Version, project.Properties) == dep.Version {
+				if key == searchKey && resolveVersion(pomDep.Version, properties) == dep.Version {
 					found = true
 					break
 				}
@@ -281,16 +337,16 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 	}
 
 	// Validate properties
-	if project.Properties != nil {
-		for propName, expectedValue := range cfg.Properties {
-			if actualValue, exists := project.Properties.Entries[propName]; exists {
+	for propName, expectedValue := range cfg.Properties {
+		if properties != nil {
+			if actualValue, exists := properties.Entries[propName]; exists {
 				if actualValue != expectedValue {
 					return fmt.Errorf("%w: property %s has value %s, expected %s", ErrPropertyValidationFailed, propName, actualValue, expectedValue)
 				}
-			} else {
-				log.Warnf("Property not found: %s", propName)
+				continue
 			}
 		}
+		return fmt.Errorf("%w: property %s not found", ErrPropertyNotFound, propName)
 	}
 
 	log.Infof("Validation completed successfully")
@@ -326,7 +382,11 @@ func applyPrecedenceRules(ctx context.Context, pomPath string, deps []languages.
 		// Check if this dependency uses a property
 		if depInfo, exists := analysis.Dependencies[depKey]; exists && depInfo.UsesProperty {
 			// Check if the property is being updated
-			if _, propertyBeingUpdated := properties[depInfo.PropertyName]; propertyBeingUpdated {
+			if propertyValue, propertyBeingUpdated := properties[depInfo.PropertyName]; propertyBeingUpdated {
+				if dep.Version != "" && propertyValue != dep.Version {
+					return nil, fmt.Errorf("%w: dependency %s requests %s but property %s is explicitly set to %s",
+						ErrVersionConflict, depKey, dep.Version, depInfo.PropertyName, propertyValue)
+				}
 				log.Infof("Skipping direct patch for %s (property %s takes precedence)", depKey, depInfo.PropertyName)
 				continue // Skip this dependency, property wins
 			}
@@ -345,6 +405,7 @@ func applyPrecedenceRules(ctx context.Context, pomPath string, deps []languages.
 // convertDependenciesToPatches converts unified dependencies to Maven-specific patches.
 func convertDependenciesToPatches(deps []languages.Dependency) ([]Patch, error) {
 	patches := make([]Patch, 0, len(deps))
+	requestedVersions := make(map[string]string)
 
 	for _, dep := range deps {
 		patch := Patch{
@@ -380,6 +441,15 @@ func convertDependenciesToPatches(deps []languages.Dependency) ([]Patch, error) 
 		if patch.GroupID == "" || patch.ArtifactID == "" {
 			return nil, fmt.Errorf("%w: groupId=%q, artifactId=%q, version=%q (dependency name=%q)",
 				ErrMissingRequiredFields, patch.GroupID, patch.ArtifactID, patch.Version, dep.Name)
+		}
+
+		if patch.Version != "" {
+			depKey := fmt.Sprintf("%s:%s", patch.GroupID, patch.ArtifactID)
+			if requestedVersion, exists := requestedVersions[depKey]; exists && requestedVersion != patch.Version {
+				return nil, fmt.Errorf("%w: dependency %s requests both %s and %s",
+					ErrVersionConflict, depKey, requestedVersion, patch.Version)
+			}
+			requestedVersions[depKey] = patch.Version
 		}
 
 		patches = append(patches, patch)
