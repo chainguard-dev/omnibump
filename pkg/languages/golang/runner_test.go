@@ -14,7 +14,49 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
+
+// fakeCmd implements commander; it records the invocation it was built with
+// and returns the stubbed output/error when CombinedOutput is called.
+type fakeCmd struct {
+	dir, name string
+	args      []string
+	out       []byte
+	err       error
+}
+
+func (f *fakeCmd) CombinedOutput() ([]byte, error) { return f.out, f.err }
+
+// fakeRunner captures every command built via commandContext and produces a
+// fakeCmd. Stub responses per-command by populating responses keyed on the
+// joined "name arg1 arg2 ..." string.
+type fakeRunner struct {
+	calls     []fakeCmd
+	responses map[string]struct {
+		out []byte
+		err error
+	}
+}
+
+func (r *fakeRunner) factory(_ context.Context, dir, name string, args ...string) commander {
+	key := strings.Join(append([]string{name}, args...), " ")
+	resp := r.responses[key]
+	cmd := fakeCmd{dir: dir, name: name, args: args, out: resp.out, err: resp.err}
+	r.calls = append(r.calls, cmd)
+	return &cmd
+}
+
+// withFakeRunner swaps commandContext for the duration of a test.
+func withFakeRunner(t *testing.T) *fakeRunner {
+	t.Helper()
+	r := &fakeRunner{}
+	orig := commandContext
+	commandContext = r.factory
+	t.Cleanup(func() { commandContext = orig })
+	return r
+}
 
 func TestGoWork(t *testing.T) {
 	// Skip if go command is not available
@@ -321,6 +363,86 @@ github.com/google/uuid v1.3.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+
 			}
 		})
 	})
+}
+
+func TestGoTidy_Integration(t *testing.T) {
+	// Skip if go command is not available
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go command not found, skipping test")
+	}
+
+	ctx := context.Background()
+
+	t.Run("GoModTidy", func(t *testing.T) {
+		testCases := []struct {
+			name   string
+			compat string
+			error  bool
+		}{
+			{
+				name:   "mod tidy w/o compat",
+				compat: "",
+				error:  true,
+			},
+			{
+				name:   "mod tidy w/ compat",
+				compat: "1.17",
+				error:  false,
+			},
+		}
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				tmpDir := t.TempDir()
+				copyFile(t, "testdata/tidy-compat/go.mod", tmpDir)
+				copyFile(t, "testdata/tidy-compat/main.go", tmpDir)
+
+				_, err := GoModTidy(ctx, tmpDir, "", tc.compat)
+				// require.NoError(t, err)
+				assert.Equal(t, err != nil, tc.error)
+
+				// Check if go.sum is created (only on success)
+				cmd := exec.CommandContext(ctx, "ls", "-la", "go.sum")
+				cmd.Dir = tmpDir
+				output, err := cmd.Output()
+
+				if tc.error {
+					assert.Error(t, err)
+				} else {
+					assert.NoError(t, err)
+					assert.Contains(t, string(output), "go.sum")
+				}
+			})
+		}
+	})
+}
+
+func TestGoTidy_Unit(t *testing.T) {
+	tests := []struct {
+		name       string
+		tidyCompat string
+		expected   string
+	}{
+		{name: "valid tidy w/o compat", tidyCompat: "", expected: "go mod tidy"},
+		{name: "valid tidy w/ compat", tidyCompat: "1.20", expected: "go mod tidy -compat 1.20"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := withFakeRunner(t)
+			if _, err := GoModTidy(context.Background(), "/some/modroot", "", tt.tidyCompat); err != nil {
+				t.Fatalf("GoModTidy returned error: %v", err)
+			}
+			if len(r.calls) != 1 {
+				t.Fatalf("expected 1 command, got %d", len(r.calls))
+			}
+			got := r.calls[0]
+			command := got.name + " " + strings.Join(got.args, " ")
+
+			if tt.expected != command {
+				t.Errorf("command: got %q, want %q", tt.expected, command)
+			}
+		})
+	}
 }
 
 // TestValidateModulePath tests module path validation against injection attacks.
