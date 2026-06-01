@@ -7,6 +7,8 @@ package config
 
 import (
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 // TestParseInlineReplaces tests parsing inline replace specifications.
@@ -56,22 +58,11 @@ func TestParseInlineReplaces(t *testing.T) {
 				t.Errorf("ParseInlineReplaces() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-
-			if len(got) != len(tt.want) {
-				t.Errorf("ParseInlineReplaces() got %d replaces, want %d", len(got), len(tt.want))
+			if tt.wantErr {
 				return
 			}
-
-			for i := range got {
-				if got[i].OldName != tt.want[i].OldName {
-					t.Errorf("ParseInlineReplaces() replace[%d].OldName = %v, want %v", i, got[i].OldName, tt.want[i].OldName)
-				}
-				if got[i].Name != tt.want[i].Name {
-					t.Errorf("ParseInlineReplaces() replace[%d].Name = %v, want %v", i, got[i].Name, tt.want[i].Name)
-				}
-				if got[i].Version != tt.want[i].Version {
-					t.Errorf("ParseInlineReplaces() replace[%d].Version = %v, want %v", i, got[i].Version, tt.want[i].Version)
-				}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("ParseInlineReplaces() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
@@ -152,19 +143,11 @@ func TestParseInlineProperties(t *testing.T) {
 				t.Errorf("ParseInlineProperties() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-
-			if len(got) != len(tt.want) {
-				t.Errorf("ParseInlineProperties() got %d properties, want %d", len(got), len(tt.want))
+			if tt.wantErr {
 				return
 			}
-
-			for i := range got {
-				if got[i].Property != tt.want[i].Property {
-					t.Errorf("ParseInlineProperties() property[%d].Property = %v, want %v", i, got[i].Property, tt.want[i].Property)
-				}
-				if got[i].Value != tt.want[i].Value {
-					t.Errorf("ParseInlineProperties() property[%d].Value = %v, want %v", i, got[i].Value, tt.want[i].Value)
-				}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("ParseInlineProperties() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
@@ -172,21 +155,103 @@ func TestParseInlineProperties(t *testing.T) {
 
 // TestParseInlineProperties_Whitespace tests handling of extra whitespace.
 func TestParseInlineProperties_Whitespace(t *testing.T) {
-	input := "  java.version=17   spring.version=3.0.0  "
-	got, err := ParseInlineProperties(input)
+	got, err := ParseInlineProperties("  java.version=17   spring.version=3.0.0  ")
 	if err != nil {
-		t.Fatalf("ParseInlineProperties() unexpected error: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(got) != 2 {
-		t.Errorf("ParseInlineProperties() got %d properties, want 2", len(got))
+	want := []Property{
+		{Property: "java.version", Value: "17"},
+		{Property: "spring.version", Value: "3.0.0"},
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("ParseInlineProperties() mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParseInlinePackages(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []Package
+	}{
+		{
+			name:  "js bare selector",
+			input: "simple-git=3.36.0",
+			want:  []Package{{Name: "simple-git", Version: "3.36.0"}},
+		},
+		{
+			name:  "js quoted selector",
+			input: `"simple-git"=3.36.0`,
+			want:  []Package{{Name: "simple-git", Version: "3.36.0"}},
+		},
+		{
+			name:  "js scoped name",
+			input: `"@isaacs/brace-expansion"=5.0.1`,
+			want:  []Package{{Name: "@isaacs/brace-expansion", Version: "5.0.1"}},
+		},
+		{
+			name:  "js ranged selector",
+			input: `"undici@^6"=6.24.0`,
+			want:  []Package{{Name: "undici@^6", Version: "6.24.0"}},
+		},
+		{
+			name:  "js multiple entries one line",
+			input: `"undici@^6"=6.24.0 "undici@^7"=7.24.0`,
+			want: []Package{
+				{Name: "undici@^6", Version: "6.24.0"},
+				{Name: "undici@^7", Version: "7.24.0"},
+			},
+		},
+		{
+			name: "js multi-line with comments",
+			input: "\"fast-xml-parser\"=5.5.7              # GHSA-37qj-frw5-hhjh\n" +
+				"# this line is a comment and should be skipped\n" +
+				"\"simple-git\"=3.36.0                  # GHSA-hffm-xvc3-vprc\n",
+			want: []Package{
+				{Name: "fast-xml-parser", Version: "5.5.7"},
+				{Name: "simple-git", Version: "3.36.0"},
+			},
+		},
+		{
+			name:  "go module path",
+			input: "golang.org/x/sys@v0.21.0",
+			want:  []Package{{Name: "golang.org/x/sys", Version: "v0.21.0"}},
+		},
+		{
+			name:  "maven coordinates",
+			input: "io.netty@netty-codec-http@4.1.94.Final",
+			want:  []Package{{GroupID: "io.netty", ArtifactID: "netty-codec-http", Version: "4.1.94.Final"}},
+		},
 	}
 
-	if got[0].Property != "java.version" || got[0].Value != "17" {
-		t.Errorf("ParseInlineProperties() property[0] = %v=%v, want java.version=17", got[0].Property, got[0].Value)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseInlinePackages(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("ParseInlinePackages mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestParseInlinePackages_RejectsMalformed(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"empty selector", "=1.0.0"},
+		{"empty version", "foo="},
 	}
 
-	if got[1].Property != "spring.version" || got[1].Value != "3.0.0" {
-		t.Errorf("ParseInlineProperties() property[1] = %v=%v, want spring.version=3.0.0", got[1].Property, got[1].Value)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ParseInlinePackages(tt.input); err == nil {
+				t.Errorf("expected error for %q, got nil", tt.input)
+			}
+		})
 	}
 }

@@ -8,7 +8,7 @@
 
 ## Features
 
-- **Multi-Language Support**: Go, Rust, and Java (Maven, Gradle)
+- **Multi-Language Support**: Go, Rust, Java (Maven, Gradle), and JavaScript (pnpm, yarn, npm, bun)
 - **Automatic Detection**: Identifies project language automatically
 - **Unified Configuration**: Single configuration format across all languages
 - **Property-Based Updates**: Smart property management for Maven
@@ -27,6 +27,11 @@
 | Rust | Cargo | `Cargo.lock`, `Cargo.toml` |
 | Java | Maven | `pom.xml` |
 | Java | Gradle | `build.gradle`, `build.gradle.kts` |
+| JavaScript | pnpm | `package.json`, `pnpm-lock.yaml` |
+| JavaScript | yarn | `package.json`, `yarn.lock` |
+| JavaScript | npm | `package.json`, `package-lock.json` |
+| JavaScript | bun | `package.json`, `bun.lock`, `bun.lockb` |
+
 
 ## Installation
 

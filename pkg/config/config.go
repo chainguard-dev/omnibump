@@ -16,6 +16,8 @@ import (
 	"strings"
 
 	"github.com/chainguard-dev/clog"
+	"github.com/chainguard-dev/omnibump/pkg/languages"
+	"github.com/chainguard-dev/omnibump/pkg/languages/js"
 	"github.com/ghodss/yaml"
 )
 
@@ -34,14 +36,30 @@ var (
 	// ErrConflictingLanguage is returned when merging configs with different language specs.
 	ErrConflictingLanguage = errors.New("conflicting language specifications")
 
+	// ErrConflictingManager is returned when merging configs with
+	// different manager lists.
+	ErrConflictingManager = errors.New("conflicting manager specifications")
+
 	// ErrInvalidPackageFormat is returned when a package string has invalid format.
 	ErrInvalidPackageFormat = errors.New("invalid package format")
 )
 
 // Config represents the unified configuration for omnibump.
 type Config struct {
-	// Language specifies the language ecosystem (auto, maven, go, rust)
+	// Language specifies the language ecosystem (auto, maven, go, rust, js)
 	Language string `json:"language,omitempty" yaml:"language,omitempty"`
+
+	// Manager names the build tool(s) within a language where the
+	// language alone is ambiguous. Currently used by JS to choose between
+	// pnpm/yarn/npm/bun.
+	//
+	// In YAML this may be a scalar or a sequence: `manager: pnpm` is
+	// equivalent to `manager: [pnpm]`. A sequence is meaningful when a
+	// single package.json needs overrides written under more than one
+	// manager's field (for example, pnpm reads both .pnpm.overrides and
+	// .resolutions, so a project mid-migration may want both kept in
+	// sync).
+	Manager js.Managers `json:"manager,omitempty" yaml:"manager,omitempty"`
 
 	// Packages lists dependencies to update
 	Packages []Package `json:"packages,omitempty" yaml:"packages,omitempty"`
@@ -58,6 +76,11 @@ type Package struct {
 	// Common fields
 	Name    string `json:"name,omitempty" yaml:"name,omitempty"`
 	Version string `json:"version,omitempty" yaml:"version,omitempty"`
+
+	// Reason is a free-form note (typically a CVE/GHSA list) recorded
+	// in build logs alongside the update. It is not written to any
+	// manifest file.
+	Reason string `json:"reason,omitempty" yaml:"reason,omitempty"`
 
 	// Maven-specific
 	GroupID    string `json:"groupId,omitempty" yaml:"groupId,omitempty"`
@@ -159,6 +182,13 @@ func LoadMultipleConfigs(ctx context.Context, paths []string) (*Config, error) {
 				return nil, fmt.Errorf("%w: %s vs %s", ErrConflictingLanguage, merged.Language, cfg.Language)
 			}
 			merged.Language = cfg.Language
+		}
+
+		if len(cfg.Manager) > 0 {
+			if len(merged.Manager) > 0 && !slices.Equal(merged.Manager, cfg.Manager) {
+				return nil, fmt.Errorf("%w: %v vs %v", ErrConflictingManager, merged.Manager, cfg.Manager)
+			}
+			merged.Manager = cfg.Manager
 		}
 	}
 
@@ -277,16 +307,94 @@ func loadReplacesFile(data []byte) (*Config, error) {
 	return &cfg, nil
 }
 
+// ToUpdateConfig projects this Config into the UpdateConfig consumed by
+// languages.Language.
+func (c *Config) ToUpdateConfig() *languages.UpdateConfig {
+	uc := &languages.UpdateConfig{
+		Dependencies: make([]languages.Dependency, 0, len(c.Packages)+len(c.Replaces)),
+		Properties:   make(map[string]string, len(c.Properties)),
+		Options:      make(map[string]any),
+	}
+
+	for _, pkg := range c.Packages {
+		dep := languages.Dependency{
+			Name:     pkg.Name,
+			Version:  pkg.Version,
+			Scope:    pkg.Scope,
+			Type:     pkg.Type,
+			Metadata: make(map[string]any),
+		}
+
+		if pkg.GroupID != "" {
+			dep.Metadata["groupId"] = pkg.GroupID
+		}
+		if pkg.ArtifactID != "" {
+			dep.Metadata["artifactId"] = pkg.ArtifactID
+		}
+		if pkg.Reason != "" {
+			dep.Metadata["reason"] = pkg.Reason
+		}
+
+		uc.Dependencies = append(uc.Dependencies, dep)
+	}
+
+	for _, prop := range c.Properties {
+		uc.Properties[prop.Property] = prop.Value
+	}
+
+	for _, repl := range c.Replaces {
+		uc.Dependencies = append(uc.Dependencies, languages.Dependency{
+			OldName: repl.OldName,
+			Name:    repl.Name,
+			Version: repl.Version,
+			Replace: true,
+		})
+	}
+
+	if len(c.Manager) > 0 {
+		uc.Options["manager"] = []js.Manager(c.Manager)
+	}
+
+	return uc
+}
+
 // ParseInlinePackages parses inline package specifications from command line.
-// Format: "name@version" or "groupId@artifactId@version" (Maven).
+//
+// Three input shapes are accepted:
+//
+//   - Go/Rust:  name@version
+//   - Maven:    groupId@artifactId@version[@scope[@type]]
+//   - JS:       selector=version (use this form when the selector contains
+//     '@' or '/', e.g. "@scope/name"=1.0.0 or "undici@^6"=6.24.0)
+//
+// The input may span multiple lines and include shell-style line comments
+// introduced by '#'. Each non-empty line is tokenised on whitespace; the
+// JS form is identified by the presence of '=' in a token, in which case
+// the token is split on its last '=' with the left-hand side optionally
+// surrounded by double quotes.
 func ParseInlinePackages(packagesStr string) ([]Package, error) {
-	if packagesStr == "" {
+	if strings.TrimSpace(packagesStr) == "" {
 		return nil, nil
 	}
 
 	var packages []Package
-	for pkgStr := range strings.FieldsSeq(packagesStr) {
+	for pkgStr := range strings.FieldsSeq(stripLineComments(packagesStr)) {
 		if pkgStr == "" {
+			continue
+		}
+
+		// JS form: selector=version. Match this first so that selectors
+		// containing '@' (scoped names, version ranges) parse cleanly.
+		if eq := strings.LastIndexByte(pkgStr, '='); eq >= 0 {
+			selector := strings.Trim(pkgStr[:eq], `"`)
+			version := strings.Trim(pkgStr[eq+1:], `"`)
+			if selector == "" || version == "" {
+				return nil, fmt.Errorf("%w: %s (expected selector=version)", ErrInvalidPackageFormat, pkgStr)
+			}
+			packages = append(packages, Package{
+				Name:    selector,
+				Version: version,
+			})
 			continue
 		}
 
@@ -325,11 +433,43 @@ func ParseInlinePackages(packagesStr string) ([]Package, error) {
 				Type:       parts[4],
 			})
 		default:
-			return nil, fmt.Errorf("%w: %s (expected name@version or groupId@artifactId@version)", ErrInvalidPackageFormat, pkgStr)
+			return nil, fmt.Errorf("%w: %s (expected name@version, groupId@artifactId@version, or selector=version)", ErrInvalidPackageFormat, pkgStr)
 		}
 	}
 
 	return packages, nil
+}
+
+// stripLineComments removes '#'-prefixed trailing comments from each line
+// in s and returns the lines rejoined with single spaces. Empty lines
+// (including lines that are entirely a comment) are dropped. This lets
+// callers pass multi-line YAML literal blocks with inline GHSA/CVE notes,
+// e.g.
+//
+//	"fast-xml-parser"=5.5.7  # GHSA-37qj-frw5-hhjh
+//	"simple-git"=3.36.0      # GHSA-hffm-xvc3-vprc
+func stripLineComments(s string) string {
+	if !strings.ContainsAny(s, "\n#") {
+		return s
+	}
+
+	var b strings.Builder
+	first := true
+	for line := range strings.SplitSeq(s, "\n") {
+		if hash := strings.IndexByte(line, '#'); hash >= 0 {
+			line = line[:hash]
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !first {
+			b.WriteByte(' ')
+		}
+		b.WriteString(line)
+		first = false
+	}
+	return b.String()
 }
 
 // ParseInlineReplaces parses inline replace specifications from command line.

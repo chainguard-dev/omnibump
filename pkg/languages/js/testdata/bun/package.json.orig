@@ -1,0 +1,9 @@
+{
+  "name": "example-bun-project",
+  "version": "0.5.0",
+  "description": "Fixture for omnibump JS updater (bun).",
+  "private": true,
+  "dependencies": {
+    "drizzle-orm": "^0.30.0"
+  }
+}

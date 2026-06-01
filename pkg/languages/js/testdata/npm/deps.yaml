@@ -1,0 +1,6 @@
+language: js
+manager: npm
+packages:
+  - name: tar
+    version: "7.5.11"
+    reason: CVE-2026-31802

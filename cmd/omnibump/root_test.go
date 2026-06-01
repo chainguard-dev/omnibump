@@ -212,7 +212,7 @@ func TestConvertToUpdateConfig_WithManifestFile(t *testing.T) {
 	flags.manifestFile = "/some/path/custom-pom.xml"
 
 	cfg := &config.Config{}
-	updateCfg := convertToUpdateConfig(cfg)
+	updateCfg := cfg.ToUpdateConfig()
 	updateCfg.ManifestFile = flags.manifestFile
 
 	if updateCfg.ManifestFile != "/some/path/custom-pom.xml" {
@@ -228,7 +228,7 @@ func TestConvertToUpdateConfig_WithoutManifestFile(t *testing.T) {
 	flags.manifestFile = ""
 
 	cfg := &config.Config{}
-	updateCfg := convertToUpdateConfig(cfg)
+	updateCfg := cfg.ToUpdateConfig()
 	updateCfg.ManifestFile = flags.manifestFile
 
 	if updateCfg.ManifestFile != "" {
@@ -248,7 +248,7 @@ func TestConvertToUpdateConfig_WithProperties(t *testing.T) {
 		},
 	}
 
-	updateCfg := convertToUpdateConfig(cfg)
+	updateCfg := cfg.ToUpdateConfig()
 
 	if len(updateCfg.Dependencies) != 1 {
 		t.Errorf("expected 1 dependency, got %d", len(updateCfg.Dependencies))
