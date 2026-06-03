@@ -152,6 +152,14 @@ func dependencyPropertyUpdates(ctx context.Context, pomPath string, patches []Pa
 					continue
 				}
 
+				// project.version is a Maven built-in that mirrors the project's own <version>
+				// tag; skip with an informational message instead of failing.
+				if propertyName == "project.version" {
+					clog.InfoContextf(ctx, "Skipping %s:%s: uses ${project.version} which is the project's own version tag, not a configurable property",
+						patch.GroupID, patch.ArtifactID)
+					continue
+				}
+
 				// Reuse the existing resolver so current-vs-parent ownership stays consistent.
 				propertyPomPath, err := resolvePropertyPomPath(ctx, pomPath, propertyName)
 				if err != nil {

@@ -1395,6 +1395,39 @@ func TestMaven_Update_DependencyPropertyMissingInPomAndParentErrors(t *testing.T
 	}
 }
 
+func TestMaven_Update_DependencyWithProjectVersionSkipsGracefully(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	writeFile(t, filepath.Join(tmpDir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>parent</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>internal-lib</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+  </dependencies>
+</project>`)
+
+	m := &Maven{}
+	cfg := &languages.UpdateConfig{
+		RootDir:      tmpDir,
+		ManifestFile: filepath.Join(tmpDir, "pom.xml"),
+		Dependencies: []languages.Dependency{
+			{Name: "com.example:internal-lib", Version: "2.0.0"},
+		},
+	}
+
+	if err := m.Update(context.Background(), cfg); err != nil {
+		t.Fatalf("Maven.Update() error = %v, want nil", err)
+	}
+}
+
 func TestMaven_Update_PropertiesSplitBetweenCurrentAndParent(t *testing.T) {
 	tmpDir := t.TempDir()
 	parentPom := filepath.Join(tmpDir, "pom.xml")
