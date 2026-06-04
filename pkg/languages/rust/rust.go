@@ -16,6 +16,7 @@ import (
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
+	"github.com/google/go-cmp/cmp"
 )
 
 var (
@@ -106,10 +107,22 @@ func (r *Rust) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 		return nil
 	}
 
+	var originalContent []byte
+	if cfg.ShowDiff {
+		originalContent, _ = os.ReadFile(cargoLockPath) //nolint:gosec // cargoLockPath built from cfg.RootDir + constant filename
+	}
+
 	// Perform the update
 	err = DoUpdate(ctx, packages, cargoPackages, updateCfg)
 	if err != nil {
 		return fmt.Errorf("failed to update Cargo packages: %w", err)
+	}
+
+	if cfg.ShowDiff && originalContent != nil {
+		newContent, _ := os.ReadFile(cargoLockPath) //nolint:gosec // cargoLockPath built from cfg.RootDir + constant filename
+		if diff := cmp.Diff(string(originalContent), string(newContent)); diff != "" {
+			log.Infof("Diff for %s:\n%s", cargoLockPath, diff)
+		}
 	}
 
 	log.Infof("Successfully updated Cargo packages")

@@ -14,6 +14,7 @@ import (
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
+	"github.com/google/go-cmp/cmp"
 )
 
 // PackageJSON is the canonical manifest filename for JavaScript projects.
@@ -105,8 +106,20 @@ func (j *JS) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 		return nil
 	}
 
+	var originalContent []byte
+	if cfg.ShowDiff {
+		originalContent, _ = os.ReadFile(pkgPath) //nolint:gosec // pkgPath validated by os.Stat above
+	}
+
 	if err := ApplyOverrides(pkgPath, managers, overrides); err != nil {
 		return fmt.Errorf("apply overrides: %w", err)
+	}
+
+	if cfg.ShowDiff && originalContent != nil {
+		newContent, _ := os.ReadFile(pkgPath) //nolint:gosec // pkgPath validated by os.Stat above
+		if diff := cmp.Diff(string(originalContent), string(newContent)); diff != "" {
+			log.Infof("Diff for %s:\n%s", pkgPath, diff)
+		}
 	}
 
 	log.Infof("Successfully applied overrides to %s", pkgPath)

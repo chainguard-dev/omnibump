@@ -9,10 +9,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 	"github.com/chainguard-dev/omnibump/pkg/languages/php/composer"
+	"github.com/google/go-cmp/cmp"
 )
 
 // ErrNoBuildToolFound indicates no supported PHP build tool was detected.
@@ -80,8 +83,33 @@ func (p *PHP) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 
 	log.Infof("Detected PHP build tool: %s", p.buildTool.Name())
 
+	// Snapshot manifest files for --show-diff.
+	var snapshots map[string][]byte
+	if cfg.ShowDiff {
+		snapshots = make(map[string][]byte)
+		for _, name := range p.buildTool.GetManifestFiles() {
+			path := filepath.Join(cfg.RootDir, name)
+			if data, err := os.ReadFile(path); err == nil { //nolint:gosec // path built from cfg.RootDir + known manifest filenames
+				snapshots[path] = data
+			}
+		}
+	}
+
 	// Delegate to the build tool
-	return p.buildTool.Update(ctx, cfg)
+	if err := p.buildTool.Update(ctx, cfg); err != nil {
+		return err
+	}
+
+	if cfg.ShowDiff && snapshots != nil {
+		for path, original := range snapshots {
+			newContent, _ := os.ReadFile(path) //nolint:gosec // path built from cfg.RootDir + known manifest filenames
+			if diff := cmp.Diff(string(original), string(newContent)); diff != "" {
+				log.Infof("Diff for %s:\n%s", path, diff)
+			}
+		}
+	}
+
+	return nil
 }
 
 // Validate checks if the updates were applied successfully.
