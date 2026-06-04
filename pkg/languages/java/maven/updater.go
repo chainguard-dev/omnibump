@@ -91,8 +91,8 @@ type pomPropertyUpdate struct {
 }
 
 // dependencyPropertyUpdates moves property-backed dependency patches onto the
-// POM that defines the property.
-func dependencyPropertyUpdates(ctx context.Context, pomPath string, patches []Patch, explicitProperties map[string]string) ([]Patch, []pomPropertyUpdate, error) {
+// POM that defines the property. rootDir bounds the parent chain traversal.
+func dependencyPropertyUpdates(ctx context.Context, pomPath string, patches []Patch, explicitProperties map[string]string, rootDir string) ([]Patch, []pomPropertyUpdate, error) {
 	if len(patches) == 0 {
 		return patches, nil, nil
 	}
@@ -161,7 +161,7 @@ func dependencyPropertyUpdates(ctx context.Context, pomPath string, patches []Pa
 				}
 
 				// Reuse the existing resolver so current-vs-parent ownership stays consistent.
-				propertyPomPath, err := resolvePropertyPomPath(ctx, pomPath, propertyName)
+				propertyPomPath, err := resolvePropertyPomPath(ctx, pomPath, propertyName, rootDir)
 				if err != nil {
 					return nil, nil, fmt.Errorf("failed to resolve file where property %s is set: %w", propertyName, err)
 				}
@@ -348,7 +348,8 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 }
 
 // resolvePropertyPomPath returns the current or parent POM file that defines property.
-func resolvePropertyPomPath(ctx context.Context, pomPath, property string) (string, error) {
+// rootDir is the project root boundary: traversal stops if the next parent would escape it.
+func resolvePropertyPomPath(ctx context.Context, pomPath, property, rootDir string) (string, error) {
 	currentPath := pomPath
 	visited := make(map[string]struct{})
 	checkedParent := false
@@ -381,6 +382,11 @@ func resolvePropertyPomPath(ctx context.Context, pomPath, property string) (stri
 				return "", fmt.Errorf("%w: property %s not found in %s and no parent POM is configured", ErrPropertyNotFound, property, pomPath)
 			}
 			return "", fmt.Errorf("%w: property %s not found in %s or parent POM chain", ErrPropertyNotFound, property, pomPath)
+		}
+
+		// Stop traversal if the next parent escapes the project root boundary.
+		if err := validatePathWithinRoot(rootDir, parentPath); err != nil {
+			return "", err
 		}
 
 		checkedParent = true

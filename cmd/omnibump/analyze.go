@@ -242,8 +242,13 @@ func outputText(analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy) 
 		fmt.Println("---------------")
 		for prop, count := range analysis.PropertyUsage {
 			currentValue := analysis.Properties[prop]
+			source := analysis.PropertySources[prop]
+			suffix := ""
+			if source != "" {
+				suffix = fmt.Sprintf(" [manifest: %s]", source)
+			}
 			if currentValue != "" {
-				fmt.Printf("  %s = %s (used by %d dependencies)\n", prop, currentValue, count)
+				fmt.Printf("  %s = %s (used by %d dependencies)%s\n", prop, currentValue, count, suffix)
 			} else {
 				fmt.Printf("  %s (used by %d dependencies) - NOT DEFINED\n", prop, count)
 			}
@@ -416,6 +421,9 @@ func printPropertyUpdates(analysis *analyzer.AnalysisResult, strategy *analyzer.
 	fmt.Println("Property Updates:")
 	fmt.Println("-----------------")
 	for prop, version := range strategy.PropertyUpdates {
+		if source := analysis.PropertySources[prop]; source != "" {
+			fmt.Printf("  manifest: %s\n", source)
+		}
 		currentValue := analysis.Properties[prop]
 		if currentValue != "" {
 			fmt.Printf("  %s: %s -> %s\n", prop, currentValue, version)

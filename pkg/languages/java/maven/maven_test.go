@@ -1988,7 +1988,7 @@ func TestResolvePropertyPomPath(t *testing.T) {
 			dir := t.TempDir()
 			pomPath := tt.setup(t, dir)
 
-			got, err := resolvePropertyPomPath(context.Background(), pomPath, tt.property)
+			got, err := resolvePropertyPomPath(t.Context(), pomPath, tt.property, dir)
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {
 					t.Fatalf("resolvePropertyPomPath() error = %v, want %v", err, tt.wantErr)

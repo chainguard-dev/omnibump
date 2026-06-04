@@ -213,14 +213,14 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 
 	// Dependency patches can target versions declared as ${property}. Resolve
 	// those first so the property update is sent to the POM that defines it.
-	patches, propertyUpdates, err := dependencyPropertyUpdates(ctx, pomPath, patches, cfg.Properties)
+	patches, propertyUpdates, err := dependencyPropertyUpdates(ctx, pomPath, patches, cfg.Properties, cfg.RootDir)
 	if err != nil {
 		return fmt.Errorf("failed to resolve dependency property updates: %w", err)
 	}
 
 	// Resolve each property to the POM file where it is actually defined.
 	for propName, propValue := range cfg.Properties {
-		propertyPomPath, err := resolvePropertyPomPath(ctx, pomPath, propName)
+		propertyPomPath, err := resolvePropertyPomPath(ctx, pomPath, propName, cfg.RootDir)
 		if err != nil {
 			return fmt.Errorf("failed to resolve file where property %s is set: %w", propName, err)
 		}

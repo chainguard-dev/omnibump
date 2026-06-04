@@ -681,3 +681,313 @@ func TestConvertDependenciesToPatches(t *testing.T) {
 		})
 	}
 }
+
+// pomWithParentAndProp returns a parent POM that declares netty.version.
+func pomWithParentAndProp() string {
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>parent</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+  <properties>
+    <netty.version>4.1.100.Final</netty.version>
+  </properties>
+</project>`
+}
+
+// pomWithRelativeParent returns a POM that points at a parent via <relativePath>.
+func pomWithRelativeParent(relativePath string) string {
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent</artifactId>
+    <version>1.0.0</version>
+    <relativePath>` + relativePath + `</relativePath>
+  </parent>
+  <groupId>com.example</groupId>
+  <artifactId>child</artifactId>
+  <version>1.0.0</version>
+</project>`
+}
+
+// TestAnalyze_PropertySources_SinglePom checks that properties defined in the
+// analysed pom.xml itself are attributed to that file.
+func TestAnalyze_PropertySources_SinglePom(t *testing.T) {
+	dir := t.TempDir()
+	pomContent := `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>test</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <netty.version>4.1.100.Final</netty.version>
+  </properties>
+</project>`
+	pomPath := filepath.Join(dir, "pom.xml")
+	writeFile(t, pomPath, pomContent)
+
+	ma := &MavenAnalyzer{}
+	result, err := ma.Analyze(t.Context(), pomPath)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+
+	if src := result.PropertySources["netty.version"]; src != "pom.xml" {
+		t.Errorf("PropertySources[netty.version] = %q, want %q", src, "pom.xml")
+	}
+}
+
+// TestAnalyze_PropertySources_DirectoryAnalysis checks that analyzeAllPoms
+// attributes each property to the POM file that declares it.
+func TestAnalyze_PropertySources_DirectoryAnalysis(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId><artifactId>root</artifactId><version>1.0.0</version>
+  <properties><root.prop>1.0</root.prop></properties>
+</project>`)
+	writeFile(t, filepath.Join(dir, "module-a", "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId><artifactId>module-a</artifactId><version>1.0.0</version>
+  <properties><module.prop>2.0</module.prop></properties>
+</project>`)
+
+	ma := &MavenAnalyzer{}
+	result, err := ma.Analyze(t.Context(), dir)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+
+	if src := result.PropertySources["root.prop"]; src != "pom.xml" {
+		t.Errorf("PropertySources[root.prop] = %q, want %q", src, "pom.xml")
+	}
+	if src := result.PropertySources["module.prop"]; src != filepath.Join("module-a", "pom.xml") {
+		t.Errorf("PropertySources[module.prop] = %q, want %q", src, filepath.Join("module-a", "pom.xml"))
+	}
+}
+
+// TestAnalyze_PropertySources_ParentPom checks that a property declared in a
+// parent POM referenced via <parent><relativePath> is found and attributed correctly.
+// The parent must be within the analyzed directory (the project boundary).
+func TestAnalyze_PropertySources_ParentPom(t *testing.T) {
+	root := t.TempDir()
+	// Project layout: root/pom.xml has a <parent> pointing at root/config/pom.xml.
+	// Both are within root, so the boundary check passes.
+	parentPom := filepath.Join(root, "config", "pom.xml")
+	childPom := filepath.Join(root, "pom.xml")
+
+	writeFile(t, parentPom, pomWithParentAndProp())
+	writeFile(t, childPom, pomWithRelativeParent("config/pom.xml"))
+
+	ma := &MavenAnalyzer{}
+	result, err := ma.Analyze(t.Context(), childPom)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+
+	if v := result.Properties["netty.version"]; v != "4.1.100.Final" {
+		t.Errorf("Properties[netty.version] = %q, want 4.1.100.Final", v)
+	}
+	if src := result.PropertySources["netty.version"]; src != filepath.Join("config", "pom.xml") {
+		t.Errorf("PropertySources[netty.version] = %q, want %q", src, filepath.Join("config", "pom.xml"))
+	}
+}
+
+// TestAnalyze_PropertySources_ParentPom_Directory checks the same for
+// directory-mode analysis (analyzeAllPoms path). Analyzing the project root
+// allows finding properties in any POM within that root.
+func TestAnalyze_PropertySources_ParentPom_Directory(t *testing.T) {
+	root := t.TempDir()
+	parentPom := filepath.Join(root, "pom.xml")
+	childPom := filepath.Join(root, "lib", "pom.xml")
+
+	writeFile(t, parentPom, pomWithParentAndProp())
+	// Child POM references a dep via the property so PropertyUsage is populated.
+	writeFile(t, childPom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent</artifactId>
+    <version>1.0.0</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+  <groupId>com.example</groupId>
+  <artifactId>child</artifactId>
+  <version>1.0.0</version>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.netty</groupId>
+        <artifactId>netty-all</artifactId>
+        <version>${netty.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`)
+
+	// Analyze the whole project root so root/pom.xml is within the boundary.
+	ma := &MavenAnalyzer{}
+	result, err := ma.Analyze(t.Context(), root)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+
+	if v := result.Properties["netty.version"]; v != "4.1.100.Final" {
+		t.Errorf("Properties[netty.version] = %q, want 4.1.100.Final", v)
+	}
+	if src := result.PropertySources["netty.version"]; src != "pom.xml" {
+		t.Errorf("PropertySources[netty.version] = %q, want %q", src, "pom.xml")
+	}
+}
+
+// TestMergeProperty verifies first-definition-wins and no double-assignment.
+func TestMergeProperty(t *testing.T) {
+	result := &analyzer.AnalysisResult{
+		Properties:      make(map[string]string),
+		PropertySources: make(map[string]string),
+	}
+
+	if !mergeProperty(t.Context(), result, "k", "v1", "a.xml") {
+		t.Error("first merge should return true (newly added)")
+	}
+	if result.Properties["k"] != "v1" || result.PropertySources["k"] != "a.xml" {
+		t.Errorf("property not set correctly after first merge")
+	}
+
+	// Same value — no warning, returns false.
+	if mergeProperty(t.Context(), result, "k", "v1", "b.xml") {
+		t.Error("merge of same value should return false (already present)")
+	}
+	if result.PropertySources["k"] != "a.xml" {
+		t.Error("source should not change when property already present")
+	}
+
+	// Different value — conflict warning, still returns false, source unchanged.
+	if mergeProperty(t.Context(), result, "k", "v2", "c.xml") {
+		t.Error("conflicting merge should return false (already present)")
+	}
+	if result.Properties["k"] != "v1" {
+		t.Error("conflicting value should not overwrite existing")
+	}
+}
+
+// TestResolveUnknownProperties_ParentChain verifies that properties missing
+// from the scanned files are found by following <parent><relativePath>.
+func TestResolveUnknownProperties_ParentChain(t *testing.T) {
+	root := t.TempDir()
+	parentPom := filepath.Join(root, "pom.xml")
+	childPom := filepath.Join(root, "lib", "pom.xml")
+
+	writeFile(t, parentPom, pomWithParentAndProp())
+	writeFile(t, childPom, pomWithRelativeParent("../pom.xml"))
+
+	usage := map[string]int{"netty.version": 1, "already.found": 1}
+	known := map[string]string{"already.found": "1.0"} // pre-filled, should be skipped
+
+	results := resolveUnknownProperties(t.Context(), usage, known, childPom, root)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	pf := results[0]
+	if v := pf.Properties["netty.version"]; v != "4.1.100.Final" {
+		t.Errorf("Properties[netty.version] = %q, want 4.1.100.Final", v)
+	}
+	if pf.PomFile != "pom.xml" {
+		t.Errorf("PomFile = %q, want %q", pf.PomFile, "../pom.xml")
+	}
+}
+
+// TestResolveUnknownProperties_NotFound verifies that a property absent from
+// the entire parent chain returns no results (not an error).
+func TestResolveUnknownProperties_NotFound(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "pom.xml"), minimalPOM)
+
+	usage := map[string]int{"does.not.exist": 1}
+	results := resolveUnknownProperties(t.Context(), usage, nil, filepath.Join(dir, "pom.xml"), dir)
+
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for unknown property, got %d", len(results))
+	}
+}
+
+// pomWithPropertyDep returns a POM whose dependencyManagement uses a property reference,
+// ensuring PropertyUsage is populated during analysis.
+func pomWithPropertyDep(groupID, artifactID, propName string) string {
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>child</artifactId>
+  <version>1.0.0</version>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>` + groupID + `</groupId>
+        <artifactId>` + artifactID + `</artifactId>
+        <version>${` + propName + `}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`
+}
+
+// TestAnalyze_DirFlag_FindsPropertiesInRoot tests the behaviour of the --dir flag:
+// when the user passes --dir <projectRoot>, the analyzer uses that directory as both
+// the project path and the traversal boundary, so properties in any POM within the
+// root (including parent POMs referenced via <relativePath>) are resolved.
+func TestAnalyze_DirFlag_FindsPropertiesInRoot(t *testing.T) {
+	root := t.TempDir()
+	// root/pom.xml declares the property.
+	writeFile(t, filepath.Join(root, "pom.xml"), pomWithParentAndProp())
+	// root/lib/pom.xml references the property via a dep and points at the parent.
+	writeFile(t, filepath.Join(root, "lib", "pom.xml"), pomWithPropertyDep("io.netty", "netty-all", "netty.version"))
+
+	// Simulate: omnibump analyze --dir <root>
+	// --dir sets the project path, which is both what gets analyzed and the boundary.
+	ma := &MavenAnalyzer{}
+	result, err := ma.Analyze(t.Context(), root)
+	if err != nil {
+		t.Fatalf("Analyze(root): %v", err)
+	}
+
+	if v := result.Properties["netty.version"]; v != "4.1.100.Final" {
+		t.Errorf("Properties[netty.version] = %q, want 4.1.100.Final", v)
+	}
+	if src := result.PropertySources["netty.version"]; src != "pom.xml" {
+		t.Errorf("PropertySources[netty.version] = %q, want pom.xml", src)
+	}
+}
+
+// TestAnalyze_NoDirFlag_DoesNotReadOutsideBoundary tests the default behaviour:
+// when --dir is not set (i.e. the user analyzes a subdirectory directly), properties
+// declared in parent POMs above that directory are blocked by the boundary check.
+// The user must widen the boundary with --dir to reach them.
+func TestAnalyze_NoDirFlag_DoesNotReadOutsideBoundary(t *testing.T) {
+	root := t.TempDir()
+	// root/pom.xml declares the property — above the analyzed subdirectory.
+	writeFile(t, filepath.Join(root, "pom.xml"), pomWithParentAndProp())
+	// root/lib/pom.xml is the only POM inside the analyzed boundary.
+	writeFile(t, filepath.Join(root, "lib", "pom.xml"), pomWithPropertyDep("io.netty", "netty-all", "netty.version"))
+
+	// Simulate: omnibump analyze root/lib  (no --dir flag → boundary = root/lib)
+	// root/pom.xml is outside root/lib, so it must not be read.
+	ma := &MavenAnalyzer{}
+	result, err := ma.Analyze(t.Context(), filepath.Join(root, "lib"))
+	if err != nil {
+		t.Fatalf("Analyze(lib): %v", err)
+	}
+
+	if _, found := result.Properties["netty.version"]; found {
+		t.Error("property from parent POM above the boundary should not be visible; use --dir to widen scope")
+	}
+}

@@ -61,6 +61,11 @@ type AnalysisResult struct {
 	// Properties maps property names to their current values
 	Properties map[string]string
 
+	// PropertySources maps property names to the manifest file that declares them,
+	// expressed as a path relative to the analyzed project root (e.g. "pom.xml",
+	// "build/config/pom.xml"). Only populated for language ecosystems that support it.
+	PropertySources map[string]string
+
 	// PropertyUsage tracks how many dependencies use each property
 	PropertyUsage map[string]int
 

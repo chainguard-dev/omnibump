@@ -25,6 +25,15 @@ import (
 //nolint:revive // Explicit name preferred for clarity
 type MavenAnalyzer struct{}
 
+// pomFileProperties holds the properties declared in a single POM file.
+type pomFileProperties struct {
+	// PomFile is the path to the POM file (absolute when returned by searchForProperties,
+	// relative to the analysis root when returned by resolveUnknownProperties).
+	PomFile string
+	// Properties maps property names to their current values for this file.
+	Properties map[string]string
+}
+
 // Analyze performs dependency analysis on a Maven project.
 func (ma *MavenAnalyzer) Analyze(ctx context.Context, projectPath string) (*analyzer.AnalysisResult, error) {
 	log := clog.FromContext(ctx)
@@ -47,16 +56,23 @@ func (ma *MavenAnalyzer) Analyze(ctx context.Context, projectPath string) (*anal
 		return nil, fmt.Errorf("failed to parse POM file: %w", err)
 	}
 
+	baseDir := filepath.Dir(absPath)
+
 	result := &analyzer.AnalysisResult{
-		Language:      mavenLanguageName,
-		Dependencies:  make(map[string]*analyzer.DependencyInfo),
-		Properties:    make(map[string]string),
-		PropertyUsage: make(map[string]int),
-		Metadata:      make(map[string]any),
+		Language:        mavenLanguageName,
+		Dependencies:    make(map[string]*analyzer.DependencyInfo),
+		Properties:      make(map[string]string),
+		PropertySources: make(map[string]string),
+		PropertyUsage:   make(map[string]int),
+		Metadata:        make(map[string]any),
 	}
 
-	// Extract properties
+	// Extract properties from the target POM and record their source file.
 	result.Properties = extractPropertiesFromProject(project)
+	propertySource := filepath.Base(absPath)
+	for k := range result.Properties {
+		result.PropertySources[k] = propertySource
+	}
 
 	// Analyze regular dependencies
 	if project.Dependencies != nil {
@@ -75,15 +91,28 @@ func (ma *MavenAnalyzer) Analyze(ctx context.Context, projectPath string) (*anal
 	log.Infof("Analysis complete: found %d dependencies, %d using properties",
 		len(result.Dependencies), countPropertiesUsage(result))
 
-	// Search for additional properties in project tree
-	additionalProps := searchForProperties(ctx, filepath.Dir(absPath), absPath)
-	log.Debugf("Property search found %d additional properties", len(additionalProps))
+	// Search for additional properties in project tree and record their source files.
+	// baseDir bounds the upward walk so we do not read outside the analyzed project.
+	additionalPomFiles := searchForProperties(ctx, filepath.Dir(absPath), absPath, baseDir)
+	log.Debugf("Property search found properties in %d nearby POMs", len(additionalPomFiles))
 
-	// Merge additional properties
-	for k, v := range additionalProps {
-		if _, exists := result.Properties[k]; !exists {
-			result.Properties[k] = v
-			log.Infof("Found property %s = %s in nearby POM", k, v)
+	// Merge additional properties; first definition wins.
+	for _, pf := range additionalPomFiles {
+		for k, v := range pf.Properties {
+			if mergeProperty(ctx, result, k, v, relPath(baseDir, pf.PomFile)) {
+				log.Infof("Found property %s = %s in nearby POM", k, v)
+			}
+		}
+	}
+
+	// For any property referenced by dependencies but still not found, follow the
+	// <parent><relativePath> chain using the same resolver the updater uses — so
+	// the analyzer and updater always agree on where a property lives.
+	for _, pf := range resolveUnknownProperties(ctx, result.PropertyUsage, result.Properties, absPath, baseDir) {
+		for propName, value := range pf.Properties {
+			result.Properties[propName] = value
+			result.PropertySources[propName] = pf.PomFile
+			log.Infof("Found property %s = %s in parent POM %s", propName, value, pf.PomFile)
 		}
 	}
 
@@ -248,45 +277,111 @@ func getAffectedDependencies(analysis *analyzer.AnalysisResult, propertyName str
 }
 
 // searchForProperties recursively searches for properties in the Maven project tree.
-func searchForProperties(ctx context.Context, startDir string, excludePath string) map[string]string {
+// Returns one entry per POM file that declares at least one property, each carrying
+// the file's absolute path and its full property map. rootDir bounds the upward walk.
+func searchForProperties(ctx context.Context, startDir, excludePath, rootDir string) []pomFileProperties {
 	log := clog.FromContext(ctx)
-	properties := make(map[string]string)
+	var results []pomFileProperties
 
-	projectRoot := findProjectRoot(startDir)
+	projectRoot := findProjectRoot(startDir, rootDir)
 	log.Debugf("Starting property search from project root: %s", projectRoot)
 
 	pomFilesChecked := 0
 	for _, path := range walkXMLFiles(projectRoot) {
-		if absPath, _ := filepath.Abs(path); absPath == excludePath {
+		absPath, _ := filepath.Abs(path)
+		if absPath == excludePath {
 			continue
 		}
 		project, err := gopom.Parse(path)
 		if err != nil {
 			continue
 		}
-		pomFilesChecked++
-		for k, v := range extractPropertiesFromProject(project) {
-			if _, exists := properties[k]; !exists {
-				properties[k] = v
-			}
+		props := extractPropertiesFromProject(project)
+		if len(props) == 0 {
+			continue
 		}
+		pomFilesChecked++
+		results = append(results, pomFileProperties{PomFile: absPath, Properties: props})
 	}
 
 	if log.Enabled(context.Background(), slog.LevelDebug) {
-		log.Debugf("Property search checked %d POMs, found %d properties", pomFilesChecked, len(properties))
+		log.Debugf("Property search checked %d POMs, found properties in %d", pomFilesChecked, len(results))
 	}
 
-	return properties
+	return results
 }
 
-// findProjectRoot finds the root of the Maven project.
-func findProjectRoot(startDir string) string {
+// relPath returns filePath relative to baseDir, falling back to the absolute
+// path if the relative form cannot be computed.
+func relPath(baseDir, filePath string) string {
+	rel, err := filepath.Rel(baseDir, filePath)
+	if err != nil {
+		return filePath
+	}
+	return rel
+}
+
+// mergeProperty adds key→value/sourceFile to result if key is not already present.
+// When the key already exists with a different value, a warning is logged and the
+// existing definition is kept. Returns true when the property was newly added.
+func mergeProperty(ctx context.Context, result *analyzer.AnalysisResult, key, value, sourceFile string) bool {
+	if existing, exists := result.Properties[key]; exists {
+		if existing != value {
+			clog.WarnContextf(ctx, "Property %s is defined with different values in %s (%s) and %s (%s); keeping first definition",
+				key, result.PropertySources[key], existing, sourceFile, value)
+		}
+		return false
+	}
+	result.Properties[key] = value
+	result.PropertySources[key] = sourceFile
+	return true
+}
+
+// resolveUnknownProperties looks up every property in usage that is not already
+// in known, following the <parent><relativePath> chain from startPom. Returns
+// one pomFileProperties per resolved property (PomFile relative to baseDir).
+// Individual lookup failures are logged at debug level and skipped.
+func resolveUnknownProperties(ctx context.Context, usage map[string]int, known map[string]string, startPom, baseDir string) []pomFileProperties {
+	var results []pomFileProperties
+	for propName := range usage {
+		if _, found := known[propName]; found {
+			continue
+		}
+		ownerPath, err := resolvePropertyPomPath(ctx, startPom, propName, baseDir)
+		if err != nil {
+			clog.FromContext(ctx).Debugf("Property %s not found in parent chain: %v", propName, err)
+			continue
+		}
+		ownerProject, err := ParsePom(ownerPath)
+		if err != nil {
+			clog.FromContext(ctx).Debugf("Could not parse parent POM %s for property %s: %v", ownerPath, propName, err)
+			continue
+		}
+		// resolvePropertyPomPath guarantees the property exists in ownerPath via
+		// projectHasProperty, so Properties is non-nil and the key is present.
+		results = append(results, pomFileProperties{
+			PomFile:    relPath(baseDir, ownerPath),
+			Properties: map[string]string{propName: ownerProject.Properties.Entries[propName]},
+		})
+	}
+	return results
+}
+
+// findProjectRoot finds the root of the Maven project by walking up the directory
+// tree as long as each parent contains a pom.xml. The walk stops when it would
+// escape rootDir, preventing reads outside the project boundary.
+func findProjectRoot(startDir, rootDir string) string {
 	current := startDir
 	projectRoot := startDir
 
 	for {
 		parent := filepath.Dir(current)
 		if parent == current {
+			break
+		}
+
+		// Stop climbing if the parent escapes the project root boundary.
+		if err := validatePathWithinRoot(rootDir, parent); err != nil {
 			break
 		}
 
@@ -375,11 +470,12 @@ func (ma *MavenAnalyzer) analyzeAllPoms(ctx context.Context, rootDir string) (*a
 	}
 
 	result := &analyzer.AnalysisResult{
-		Language:      mavenLanguageName,
-		Dependencies:  make(map[string]*analyzer.DependencyInfo),
-		Properties:    make(map[string]string),
-		PropertyUsage: make(map[string]int),
-		Metadata:      make(map[string]any),
+		Language:        mavenLanguageName,
+		Dependencies:    make(map[string]*analyzer.DependencyInfo),
+		Properties:      make(map[string]string),
+		PropertySources: make(map[string]string),
+		PropertyUsage:   make(map[string]int),
+		Metadata:        make(map[string]any),
 	}
 
 	for _, pomPath := range pomPaths {
@@ -390,9 +486,7 @@ func (ma *MavenAnalyzer) analyzeAllPoms(ctx context.Context, rootDir string) (*a
 			continue
 		}
 		for k, v := range extractPropertiesFromProject(project) {
-			if _, exists := result.Properties[k]; !exists {
-				result.Properties[k] = v
-			}
+			mergeProperty(ctx, result, k, v, relPath(rootDir, pomPath))
 		}
 		if project.Dependencies != nil {
 			for _, dep := range *project.Dependencies {
@@ -408,6 +502,19 @@ func (ma *MavenAnalyzer) analyzeAllPoms(ctx context.Context, rootDir string) (*a
 
 	log.Infof("Analysis complete: found %d Maven POMs, %d dependencies, %d using properties",
 		len(pomPaths), len(result.Dependencies), countPropertiesUsage(result))
+
+	// For any property referenced by dependencies but not found in the scanned
+	// POMs, follow the <parent><relativePath> chain from the root pom.xml using
+	// the same resolver the updater uses. This surfaces properties in parent POMs
+	// outside the project tree (e.g. ../pom.xml).
+	rootPom := filepath.Join(rootDir, DefaultManifestFile)
+	for _, pf := range resolveUnknownProperties(ctx, result.PropertyUsage, result.Properties, rootPom, rootDir) {
+		for propName, value := range pf.Properties {
+			result.Properties[propName] = value
+			result.PropertySources[propName] = pf.PomFile
+			log.Infof("Found property %s = %s in parent POM %s", propName, value, pf.PomFile)
+		}
+	}
 
 	return result, nil
 }
