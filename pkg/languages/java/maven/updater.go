@@ -312,6 +312,7 @@ func resolveBOMVersion(ctx context.Context, project *gopom.Project, groupID, art
 	if m2repo == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
+			clog.DebugContextf(ctx, "Unable to resolve user home directory for Maven cache lookup, skipping BOM check: %v", err)
 			return "", nil
 		}
 		m2repo = filepath.Join(home, ".m2", "repository")
