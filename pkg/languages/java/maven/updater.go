@@ -191,28 +191,30 @@ func dependencyPropertyUpdates(ctx context.Context, pomPath string, patches []Pa
 }
 
 // UpdatePom updates a POM file with the given patches and properties.
-// Returns the marshaled XML content of the updated POM.
-func UpdatePom(ctx context.Context, pomPath string, patches []Patch, properties map[string]string) ([]byte, error) {
+// Returns the marshaled XML content of the updated POM and whether changes were made.
+func UpdatePom(ctx context.Context, pomPath string, patches []Patch, properties map[string]string) ([]byte, bool, error) {
 	// Parse the POM
 	project, err := ParsePom(pomPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse POM: %w", err)
+		return nil, false, fmt.Errorf("failed to parse POM: %w", err)
 	}
 
 	// Apply patches
-	project, err = PatchProject(ctx, project, patches, properties)
+	project, changed, err := PatchProject(ctx, project, patches, properties)
 	if err != nil {
-		return nil, fmt.Errorf("failed to patch project: %w", err)
+		return nil, false, fmt.Errorf("failed to patch project: %w", err)
 	}
 
 	// Marshal back to XML
 	xmlBytes, err := project.Marshal()
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal POM: %w", err)
+		return nil, false, fmt.Errorf("failed to marshal POM: %w", err)
 	}
 
-	clog.InfoContextf(ctx, "Successfully updated POM file")
-	return xmlBytes, nil
+	if changed {
+		clog.InfoContextf(ctx, "Successfully updated POM file")
+	}
+	return xmlBytes, changed, nil
 }
 
 // isPropertyReference checks if a version string is a Maven property reference.
@@ -372,6 +374,52 @@ func resolveBOMVersion(ctx context.Context, project *gopom.Project, groupID, art
 	return "", nil
 }
 
+func bomImportWouldDowngrade(ctx context.Context, project *gopom.Project, groupID, artifactID, version string) bool {
+	if project == nil || groupID == "" || artifactID == "" || version == "" {
+		return false
+	}
+
+	m2repo := os.Getenv("M2_REPO")
+	if m2repo == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return false
+		}
+		m2repo = filepath.Join(home, ".m2", "repository")
+	}
+
+	mavenRepoURL := os.Getenv("MAVEN_REPO_URL")
+	if mavenRepoURL == "" {
+		mavenRepoURL = "https://repo1.maven.org/maven2"
+	}
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	bomProject := fetchBOMProject(ctx, httpClient, m2repo, mavenRepoURL, groupID, artifactID, version, make(map[string]*gopom.Project))
+	if bomProject == nil || bomProject.DependencyManagement == nil || bomProject.DependencyManagement.Dependencies == nil {
+		return false
+	}
+
+	for _, bomDep := range *bomProject.DependencyManagement.Dependencies {
+		candidateGroupID := resolveVersion(bomDep.GroupID, bomProject.Properties)
+		candidateArtifactID := resolveVersion(bomDep.ArtifactID, bomProject.Properties)
+		candidateVersion := resolveVersion(bomDep.Version, bomProject.Properties)
+		if candidateGroupID == "" || candidateArtifactID == "" || candidateVersion == "" || isPropertyReference(candidateVersion) {
+			continue
+		}
+
+		existingVersion, err := resolveBOMVersion(ctx, project, candidateGroupID, candidateArtifactID)
+		if err != nil {
+			continue
+		}
+		if existingVersion != "" && mavenVersionIsNewer(existingVersion, candidateVersion) {
+			clog.WarnContextf(ctx, "BOM import %s:%s @ %s would downgrade %s:%s from BOM-managed %s to %s",
+				groupID, artifactID, version, candidateGroupID, candidateArtifactID, existingVersion, candidateVersion)
+			return true
+		}
+	}
+
+	return false
+}
+
 func fetchBOMProject(
 	ctx context.Context,
 	httpClient *http.Client,
@@ -456,9 +504,10 @@ func fetchBOMProject(
 // so it is later added to DependencyManagement without a <version> element.
 // When a dependency version is a property reference (e.g. ${log4j2.version}),
 // the property is automatically added to propertyPatches so it gets updated.
-func applyPatchesToDeps(ctx context.Context, deps *[]gopom.Dependency, patches []Patch, missingDeps map[Patch]Patch, propertyPatches map[string]string) {
+func applyPatchesToDeps(ctx context.Context, deps *[]gopom.Dependency, patches []Patch, missingDeps map[Patch]Patch, propertyPatches map[string]string) bool {
+	changed := false
 	if deps == nil {
-		return
+		return changed
 	}
 	for i, dep := range *deps {
 		clog.DebugContextf(ctx, "Checking dependency: %s:%s @ %s", dep.GroupID, dep.ArtifactID, dep.Version)
@@ -496,23 +545,28 @@ func applyPatchesToDeps(ctx context.Context, deps *[]gopom.Dependency, patches [
 			}
 			clog.InfoContextf(ctx, "Patching %s:%s from %s to %s (scope: %s)",
 				patch.GroupID, patch.ArtifactID, dep.Version, patch.Version, patch.Scope)
-			(*deps)[i].Version = patch.Version
+			if (*deps)[i].Version != patch.Version {
+				(*deps)[i].Version = patch.Version
+				changed = true
+			}
 			delete(missingDeps, patch)
 		}
 	}
+	return changed
 }
 
 // PatchProject applies dependency and property patches to a parsed pom.xml.
 // project is a gopom.Project — a Go struct that mirrors the Maven POM XML
 // schema and can be round-tripped back to XML via project.Marshal().
-func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, propertyPatches map[string]string) (*gopom.Project, error) {
+func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, propertyPatches map[string]string) (*gopom.Project, bool, error) {
 	if propertyPatches == nil {
 		propertyPatches = make(map[string]string)
 	}
 
 	if project == nil {
-		return nil, ErrProjectNil
+		return nil, false, ErrProjectNil
 	}
+	changed := false
 
 	// Track dependencies that weren't found (will be added to DependencyManagement)
 	missingDeps := make(map[Patch]Patch)
@@ -521,9 +575,9 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 		missingDeps[p] = p
 	}
 
-	applyPatchesToDeps(ctx, project.Dependencies, patches, missingDeps, propertyPatches)
+	changed = applyPatchesToDeps(ctx, project.Dependencies, patches, missingDeps, propertyPatches) || changed
 	if project.DependencyManagement != nil {
-		applyPatchesToDeps(ctx, project.DependencyManagement.Dependencies, patches, missingDeps, propertyPatches)
+		changed = applyPatchesToDeps(ctx, project.DependencyManagement.Dependencies, patches, missingDeps, propertyPatches) || changed
 	}
 
 	// Add missing dependencies to DependencyManagement
@@ -537,6 +591,13 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 		}
 
 		for _, md := range missingDeps {
+			if md.Type == "pom" && (md.Scope == "import" || md.Scope == "") {
+				if bomImportWouldDowngrade(ctx, project, md.GroupID, md.ArtifactID, md.Version) {
+					clog.WarnContextf(ctx, "Package %s:%s @ %s: adding this BOM import would downgrade artifacts already managed at newer versions, skipping",
+						md.GroupID, md.ArtifactID, md.Version)
+					continue
+				}
+			}
 			if md.Version != "" {
 				bomVersion, err := resolveBOMVersion(ctx, project, md.GroupID, md.ArtifactID)
 				if err != nil {
@@ -557,18 +618,19 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 				Scope:      md.Scope,
 				Type:       md.Type,
 			})
+			changed = true
 		}
 	}
 
 	// Update properties
 	if len(propertyPatches) == 0 {
-		return project, nil
+		return project, changed, nil
 	}
 
 	// Initialize properties if nil
 	if project.Properties == nil {
 		project.Properties = &gopom.Properties{Entries: propertyPatches}
-		return project, nil
+		return project, true, nil
 	}
 
 	// Update existing properties
@@ -580,12 +642,15 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 					k, val, v)
 				continue
 			}
-			clog.InfoContextf(ctx, "Updating property: %s from %s to %s", k, val, v)
-			project.Properties.Entries[k] = v
+			if val != v {
+				clog.InfoContextf(ctx, "Updating property: %s from %s to %s", k, val, v)
+				project.Properties.Entries[k] = v
+				changed = true
+			}
 		}
 	}
 
-	return project, nil
+	return project, changed, nil
 }
 
 // resolvePropertyPomPath returns the current or parent POM file that defines property.

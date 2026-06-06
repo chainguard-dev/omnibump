@@ -8,7 +8,6 @@ SPDX-License-Identifier: Apache-2.0
 package maven
 
 import (
-	"bytes"
 	"context"
 	"encoding/xml"
 	"errors"
@@ -255,9 +254,13 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 		for _, propertyUpdate := range groupedPropertyUpdates {
 			properties[propertyUpdate.propertyName] = propertyUpdate.propertyValue
 		}
-		updatedPom, err := UpdatePom(ctx, updatePomPath, pomPatches, properties)
+		updatedPom, changed, err := UpdatePom(ctx, updatePomPath, pomPatches, properties)
 		if err != nil {
 			return fmt.Errorf("failed to update pom file %s: %w", updatePomPath, err)
+		}
+		if !changed {
+			clog.InfoContextf(ctx, "No changes needed for %s", updatePomPath)
+			continue
 		}
 		updatedPoms[updatePomPath] = updatedPom
 	}
@@ -267,24 +270,17 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 		return nil
 	}
 
-	changesMade := false
 	for updatedPomPath, updatedPom := range updatedPoms {
 		if err := validatePathWithinRoot(cfg.RootDir, updatedPomPath); err != nil {
 			return fmt.Errorf("refusing to write updated pom file %s: %w", updatedPomPath, err)
 		}
-		originalContent, readErr := os.ReadFile(updatedPomPath)
-		if readErr == nil && bytes.Equal(originalContent, updatedPom) {
-			clog.InfoContextf(ctx, "No changes needed for %s", updatedPomPath)
-			continue
-		}
 		if err := os.WriteFile(updatedPomPath, updatedPom, 0o600); err != nil {
 			return fmt.Errorf("failed to write updated pom file %s: %w", updatedPomPath, err)
 		}
-		changesMade = true
 		clog.InfoContextf(ctx, "Successfully updated %s", updatedPomPath)
 	}
 
-	if len(updatedPoms) == 0 || !changesMade {
+	if len(updatedPoms) == 0 {
 		clog.InfoContextf(ctx, "No Maven POM changes needed")
 	}
 

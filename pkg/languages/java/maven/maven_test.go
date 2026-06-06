@@ -112,7 +112,7 @@ func TestSimplePoms(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			in := tc.in
-			got, err := PatchProject(context.Background(), in, tc.patches, tc.props)
+			got, _, err := PatchProject(context.Background(), in, tc.patches, tc.props)
 			if err != nil {
 				t.Errorf("%s: Failed to patch %+v: %v", tc.name, tc.in, err)
 			}
@@ -173,7 +173,7 @@ func TestPatchesFromPomFiles(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := PatchProject(context.Background(), parsedPom, tc.patches, tc.props)
+			got, _, err := PatchProject(context.Background(), parsedPom, tc.patches, tc.props)
 			if err != nil {
 				t.Errorf("%s: Failed to patch %s: %v", tc.name, tc.in, err)
 			}
@@ -262,7 +262,7 @@ func TestNilPointerDereferenceDependenciesRegression(t *testing.T) {
 	}
 
 	// This should not panic
-	_, err = PatchProject(context.Background(), project, patches, nil)
+	_, _, err = PatchProject(context.Background(), project, patches, nil)
 	if err != nil {
 		t.Errorf("PatchProject failed: %v", err)
 	}
@@ -1672,6 +1672,23 @@ func TestMaven_Update_SkipsBOMDowngrade(t *testing.T) {
     </dependencies>
   </dependencyManagement>
 </project>`)
+	writeFile(t, filepath.Join(m2repo, "io", "opentelemetry", "opentelemetry-bom", "1.44.0", "opentelemetry-bom-1.44.0.pom"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>io.opentelemetry</groupId>
+  <artifactId>opentelemetry-bom</artifactId>
+  <version>1.44.0</version>
+  <packaging>pom</packaging>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-api</artifactId>
+        <version>1.44.0</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`)
 
 	writeProjectPom := func(dir string) {
 		writeFile(t, filepath.Join(dir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
@@ -1767,6 +1784,37 @@ func TestMaven_Update_SkipsBOMDowngrade(t *testing.T) {
 			t.Fatalf("opentelemetry-api version = %q, want 1.58.0", version)
 		}
 	})
+
+	t.Run("skips bom import that would downgrade transitively", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		writeProjectPom(tmpDir)
+
+		m := &Maven{}
+		cfg := &languages.UpdateConfig{
+			RootDir: tmpDir,
+			Dependencies: []languages.Dependency{{
+				Name:    "io.opentelemetry:opentelemetry-bom",
+				Version: "1.44.0",
+				Type:    "pom",
+				Scope:   "import",
+				Metadata: map[string]any{
+					"groupId":    "io.opentelemetry",
+					"artifactId": "opentelemetry-bom",
+				},
+			}},
+		}
+		if err := m.Update(context.Background(), cfg); err != nil {
+			t.Fatalf("Update() unexpected error: %v", err)
+		}
+
+		project, err := ParsePom(filepath.Join(tmpDir, "pom.xml"))
+		if err != nil {
+			t.Fatalf("ParsePom() error: %v", err)
+		}
+		if _, found := findManagedVersion(project, "io.opentelemetry", "opentelemetry-bom"); found {
+			t.Fatal("opentelemetry-bom should not be added when it would downgrade existing BOM-managed artifacts")
+		}
+	})
 }
 
 func TestMaven_Update_SkipsDowngrade(t *testing.T) {
@@ -1836,7 +1884,7 @@ func TestMaven_Update_NoWriteWhenNothingChanges(t *testing.T) {
 </project>`)
 
 	// Normalize once so no-op updates should remain byte-for-byte identical.
-	normalizedPom, err := UpdatePom(context.Background(), pomPath, nil, nil)
+	normalizedPom, _, err := UpdatePom(context.Background(), pomPath, nil, nil)
 	if err != nil {
 		t.Fatalf("UpdatePom(normalize) error: %v", err)
 	}
