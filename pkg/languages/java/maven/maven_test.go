@@ -930,6 +930,67 @@ func TestMaven_Validate_ReturnsErrorWhenPropertyMissing(t *testing.T) {
 	}
 }
 
+func TestMaven_Validate_SuppressesWarningWhenBOMCoversRequest(t *testing.T) {
+	tmpDir := t.TempDir()
+	m2repo := t.TempDir()
+	t.Setenv("M2_REPO", m2repo)
+
+	writeFile(t, filepath.Join(tmpDir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>test-project</artifactId>
+  <version>1.0.0</version>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.example</groupId>
+        <artifactId>test-bom</artifactId>
+        <version>1.0.0</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`)
+
+	bomPomPath := filepath.Join(m2repo, "com", "example", "test-bom", "1.0.0", "test-bom-1.0.0.pom")
+	writeFile(t, bomPomPath, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>test-bom</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-api</artifactId>
+        <version>1.57.0</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`)
+
+	m := &Maven{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{{
+			Name:    "io.opentelemetry:opentelemetry-api",
+			Version: "1.44.0",
+			Metadata: map[string]any{
+				"groupId":    "io.opentelemetry",
+				"artifactId": "opentelemetry-api",
+			},
+		}},
+	}
+
+	if err := m.Validate(context.Background(), cfg); err != nil {
+		t.Fatalf("Validate() unexpected error: %v", err)
+	}
+}
+
 func TestMaven_Update_ExplicitPropertyDefinedInParent(t *testing.T) {
 	tmpDir := t.TempDir()
 	parentPom := filepath.Join(tmpDir, "pom.xml")
@@ -1754,6 +1815,65 @@ func TestMaven_Update_SkipsDowngrade(t *testing.T) {
 		}
 	}
 	t.Error("dependency not found in updated POM")
+}
+
+func TestMaven_Update_NoWriteWhenNothingChanges(t *testing.T) {
+	tmpDir := t.TempDir()
+	pomPath := filepath.Join(tmpDir, "pom.xml")
+	writeFile(t, pomPath, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>test-project</artifactId>
+  <version>1.0.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>artifact</artifactId>
+      <version>2.0.0</version>
+    </dependency>
+  </dependencies>
+</project>`)
+
+	// Normalize once so no-op updates should remain byte-for-byte identical.
+	normalizedPom, err := UpdatePom(context.Background(), pomPath, nil, nil)
+	if err != nil {
+		t.Fatalf("UpdatePom(normalize) error: %v", err)
+	}
+	if err := os.WriteFile(pomPath, normalizedPom, 0o600); err != nil {
+		t.Fatalf("WriteFile(normalized) error: %v", err)
+	}
+
+	before, err := os.ReadFile(pomPath)
+	if err != nil {
+		t.Fatalf("ReadFile(before) error: %v", err)
+	}
+
+	m := &Maven{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{{
+			Name:    "com.example:artifact",
+			Version: "1.0.0",
+			Metadata: map[string]any{
+				"groupId":    "com.example",
+				"artifactId": "artifact",
+			},
+		}},
+	}
+
+	if err := m.Update(context.Background(), cfg); err != nil {
+		t.Fatalf("Update() unexpected error: %v", err)
+	}
+
+	after, err := os.ReadFile(pomPath)
+	if err != nil {
+		t.Fatalf("ReadFile(after) error: %v", err)
+	}
+
+	if string(before) != string(after) {
+		t.Fatal("pom.xml content changed unexpectedly")
+	}
 }
 
 func TestMaven_Update_SkipsPropertyDowngrade(t *testing.T) {

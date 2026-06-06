@@ -8,6 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 package maven
 
 import (
+	"bytes"
 	"context"
 	"encoding/xml"
 	"errors"
@@ -266,17 +267,24 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 		return nil
 	}
 
+	changesMade := false
 	for updatedPomPath, updatedPom := range updatedPoms {
 		if err := validatePathWithinRoot(cfg.RootDir, updatedPomPath); err != nil {
 			return fmt.Errorf("refusing to write updated pom file %s: %w", updatedPomPath, err)
 		}
+		originalContent, readErr := os.ReadFile(updatedPomPath)
+		if readErr == nil && bytes.Equal(originalContent, updatedPom) {
+			clog.InfoContextf(ctx, "No changes needed for %s", updatedPomPath)
+			continue
+		}
 		if err := os.WriteFile(updatedPomPath, updatedPom, 0o600); err != nil {
 			return fmt.Errorf("failed to write updated pom file %s: %w", updatedPomPath, err)
 		}
+		changesMade = true
 		clog.InfoContextf(ctx, "Successfully updated %s", updatedPomPath)
 	}
 
-	if len(updatedPoms) == 0 {
+	if len(updatedPoms) == 0 || !changesMade {
 		clog.InfoContextf(ctx, "No Maven POM changes needed")
 	}
 
@@ -328,6 +336,14 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 					found = true
 					break
 				}
+			}
+		}
+
+		if !found && dep.Version != "" {
+			bomVersion, err := resolveBOMVersion(ctx, project, extractGroupID(dep), extractArtifactID(dep))
+			if err == nil && bomVersion != "" && !mavenVersionIsNewer(dep.Version, bomVersion) {
+				clog.DebugContextf(ctx, "Dependency %s not explicitly set: covered by BOM at %s (requested %s)", searchKey, bomVersion, dep.Version)
+				found = true
 			}
 		}
 

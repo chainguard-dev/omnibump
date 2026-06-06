@@ -297,7 +297,7 @@ func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but requir
 		}
 	}
 
-	log.Infof("Update completed successfully")
+	log.Infof("Update completed")
 	return nil
 }
 
