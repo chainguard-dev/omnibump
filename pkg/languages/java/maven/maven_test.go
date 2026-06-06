@@ -1328,6 +1328,274 @@ func TestMavenVersionIsNewer(t *testing.T) {
 	}
 }
 
+func TestResolveBOMVersion(t *testing.T) {
+	ctx := context.Background()
+	const (
+		targetGroupID    = "io.opentelemetry"
+		targetArtifactID = "opentelemetry-api"
+	)
+
+	bomPath := func(m2repo, groupID, artifactID, version string) string {
+		groupPath := strings.ReplaceAll(groupID, ".", string(filepath.Separator))
+		return filepath.Join(m2repo, groupPath, artifactID, version, artifactID+"-"+version+".pom")
+	}
+
+	projectWithBOMImport := func(groupID, artifactID, version string) *gopom.Project {
+		deps := []gopom.Dependency{{
+			GroupID:    groupID,
+			ArtifactID: artifactID,
+			Version:    version,
+			Type:       "pom",
+			Scope:      "import",
+		}}
+		return &gopom.Project{
+			DependencyManagement: &gopom.DependencyManagement{Dependencies: &deps},
+		}
+	}
+
+	t.Run("BOM not in cache", func(t *testing.T) {
+		t.Setenv("M2_REPO", t.TempDir())
+		project := projectWithBOMImport("com.example", "test-bom", "1.0.0")
+
+		got, err := resolveBOMVersion(ctx, project, targetGroupID, targetArtifactID)
+		if err != nil {
+			t.Fatalf("resolveBOMVersion() error = %v", err)
+		}
+		if got != "" {
+			t.Fatalf("resolveBOMVersion() = %q, want empty", got)
+		}
+	})
+
+	t.Run("BOM in cache dependency found", func(t *testing.T) {
+		m2repo := t.TempDir()
+		t.Setenv("M2_REPO", m2repo)
+		project := projectWithBOMImport("com.example", "test-bom", "1.0.0")
+
+		writeFile(t, bomPath(m2repo, "com.example", "test-bom", "1.0.0"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>test-bom</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-api</artifactId>
+        <version>1.57.0</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`)
+
+		got, err := resolveBOMVersion(ctx, project, targetGroupID, targetArtifactID)
+		if err != nil {
+			t.Fatalf("resolveBOMVersion() error = %v", err)
+		}
+		if got != "1.57.0" {
+			t.Fatalf("resolveBOMVersion() = %q, want 1.57.0", got)
+		}
+	})
+
+	t.Run("BOM in cache dependency property resolved", func(t *testing.T) {
+		m2repo := t.TempDir()
+		t.Setenv("M2_REPO", m2repo)
+		project := projectWithBOMImport("com.example", "test-bom", "1.0.1")
+
+		writeFile(t, bomPath(m2repo, "com.example", "test-bom", "1.0.1"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>test-bom</artifactId>
+  <version>1.0.1</version>
+  <packaging>pom</packaging>
+  <properties>
+    <otel.version>1.57.1</otel.version>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-api</artifactId>
+        <version>${otel.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`)
+
+		got, err := resolveBOMVersion(ctx, project, targetGroupID, targetArtifactID)
+		if err != nil {
+			t.Fatalf("resolveBOMVersion() error = %v", err)
+		}
+		if got != "1.57.1" {
+			t.Fatalf("resolveBOMVersion() = %q, want 1.57.1", got)
+		}
+	})
+
+	t.Run("BOM in cache dependency not found", func(t *testing.T) {
+		m2repo := t.TempDir()
+		t.Setenv("M2_REPO", m2repo)
+		project := projectWithBOMImport("com.example", "test-bom", "1.0.2")
+
+		writeFile(t, bomPath(m2repo, "com.example", "test-bom", "1.0.2"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>test-bom</artifactId>
+  <version>1.0.2</version>
+  <packaging>pom</packaging>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-context</artifactId>
+        <version>1.57.0</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`)
+
+		got, err := resolveBOMVersion(ctx, project, targetGroupID, targetArtifactID)
+		if err != nil {
+			t.Fatalf("resolveBOMVersion() error = %v", err)
+		}
+		if got != "" {
+			t.Fatalf("resolveBOMVersion() = %q, want empty", got)
+		}
+	})
+
+	t.Run("project has no BOM imports", func(t *testing.T) {
+		project := &gopom.Project{}
+		got, err := resolveBOMVersion(ctx, project, targetGroupID, targetArtifactID)
+		if err != nil {
+			t.Fatalf("resolveBOMVersion() error = %v", err)
+		}
+		if got != "" {
+			t.Fatalf("resolveBOMVersion() = %q, want empty", got)
+		}
+	})
+}
+
+func TestMaven_Update_SkipsBOMDowngrade(t *testing.T) {
+	m2repo := t.TempDir()
+	t.Setenv("M2_REPO", m2repo)
+
+	bomPath := filepath.Join(m2repo, "com", "example", "test-bom", "1.0.0", "test-bom-1.0.0.pom")
+	writeFile(t, bomPath, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>test-bom</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.opentelemetry</groupId>
+        <artifactId>opentelemetry-api</artifactId>
+        <version>1.57.0</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`)
+
+	writeProjectPom := func(dir string) {
+		writeFile(t, filepath.Join(dir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>test-project</artifactId>
+  <version>1.0.0</version>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.example</groupId>
+        <artifactId>test-bom</artifactId>
+        <version>1.0.0</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`)
+	}
+
+	findManagedVersion := func(project *gopom.Project, groupID, artifactID string) (string, bool) {
+		if project.DependencyManagement == nil || project.DependencyManagement.Dependencies == nil {
+			return "", false
+		}
+		for _, dep := range *project.DependencyManagement.Dependencies {
+			if dep.GroupID == groupID && dep.ArtifactID == artifactID {
+				return dep.Version, true
+			}
+		}
+		return "", false
+	}
+
+	t.Run("skips downgrade", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		writeProjectPom(tmpDir)
+
+		m := &Maven{}
+		cfg := &languages.UpdateConfig{
+			RootDir: tmpDir,
+			Dependencies: []languages.Dependency{{
+				Name:    "io.opentelemetry:opentelemetry-api",
+				Version: "1.44.0",
+				Metadata: map[string]any{
+					"groupId":    "io.opentelemetry",
+					"artifactId": "opentelemetry-api",
+				},
+			}},
+		}
+		if err := m.Update(context.Background(), cfg); err != nil {
+			t.Fatalf("Update() unexpected error: %v", err)
+		}
+
+		project, err := ParsePom(filepath.Join(tmpDir, "pom.xml"))
+		if err != nil {
+			t.Fatalf("ParsePom() error: %v", err)
+		}
+		if _, found := findManagedVersion(project, "io.opentelemetry", "opentelemetry-api"); found {
+			t.Fatal("opentelemetry-api should not be added when BOM manages a newer version")
+		}
+	})
+
+	t.Run("adds upgrade", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		writeProjectPom(tmpDir)
+
+		m := &Maven{}
+		cfg := &languages.UpdateConfig{
+			RootDir: tmpDir,
+			Dependencies: []languages.Dependency{{
+				Name:    "io.opentelemetry:opentelemetry-api",
+				Version: "1.58.0",
+				Metadata: map[string]any{
+					"groupId":    "io.opentelemetry",
+					"artifactId": "opentelemetry-api",
+				},
+			}},
+		}
+		if err := m.Update(context.Background(), cfg); err != nil {
+			t.Fatalf("Update() unexpected error: %v", err)
+		}
+
+		project, err := ParsePom(filepath.Join(tmpDir, "pom.xml"))
+		if err != nil {
+			t.Fatalf("ParsePom() error: %v", err)
+		}
+		version, found := findManagedVersion(project, "io.opentelemetry", "opentelemetry-api")
+		if !found {
+			t.Fatal("opentelemetry-api should be added when requested version is newer than BOM-managed version")
+		}
+		if version != "1.58.0" {
+			t.Fatalf("opentelemetry-api version = %q, want 1.58.0", version)
+		}
+	})
+}
+
 func TestMaven_Update_SkipsDowngrade(t *testing.T) {
 	tmpDir := t.TempDir()
 	writeFile(t, filepath.Join(tmpDir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>

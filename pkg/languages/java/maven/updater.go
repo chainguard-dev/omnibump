@@ -298,6 +298,75 @@ func mavenVersionSegments(v string) []int {
 	return segments
 }
 
+// resolveBOMVersion looks up the managed version for groupID:artifactID from
+// BOM imports declared in this project's dependencyManagement.
+//
+// The lookup is best-effort: BOMs that are missing from local Maven cache are
+// skipped. Returns ("", nil) when no matching managed dependency is found.
+func resolveBOMVersion(ctx context.Context, project *gopom.Project, groupID, artifactID string) (string, error) {
+	if project == nil || project.DependencyManagement == nil || project.DependencyManagement.Dependencies == nil {
+		return "", nil
+	}
+
+	m2repo := os.Getenv("M2_REPO")
+	if m2repo == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", nil
+		}
+		m2repo = filepath.Join(home, ".m2", "repository")
+	}
+
+	for _, dep := range *project.DependencyManagement.Dependencies {
+		if dep.Type != "pom" || dep.Scope != "import" {
+			continue
+		}
+
+		bomGroupID := resolveVersion(dep.GroupID, project.Properties)
+		bomArtifactID := resolveVersion(dep.ArtifactID, project.Properties)
+		bomVersion := resolveVersion(dep.Version, project.Properties)
+		if isPropertyReference(bomGroupID) || isPropertyReference(bomArtifactID) || isPropertyReference(bomVersion) {
+			continue
+		}
+		if bomGroupID == "" || bomArtifactID == "" || bomVersion == "" {
+			continue
+		}
+
+		groupPath := strings.ReplaceAll(bomGroupID, ".", string(filepath.Separator))
+		bomPomPath := filepath.Join(m2repo, groupPath, bomArtifactID, bomVersion, bomArtifactID+"-"+bomVersion+".pom")
+
+		bomProject, err := ParsePom(bomPomPath)
+		if err != nil {
+			clog.DebugContextf(ctx, "BOM %s:%s:%s not found in local Maven cache (%s), skipping BOM check",
+				bomGroupID, bomArtifactID, bomVersion, bomPomPath)
+			continue
+		}
+
+		if bomProject.DependencyManagement == nil || bomProject.DependencyManagement.Dependencies == nil {
+			continue
+		}
+
+		for _, bomDep := range *bomProject.DependencyManagement.Dependencies {
+			resolvedGroupID := resolveVersion(bomDep.GroupID, bomProject.Properties)
+			resolvedArtifactID := resolveVersion(bomDep.ArtifactID, bomProject.Properties)
+			if resolvedGroupID != groupID || resolvedArtifactID != artifactID {
+				continue
+			}
+
+			version := resolveVersion(bomDep.Version, bomProject.Properties)
+			if isPropertyReference(version) || version == "" {
+				continue
+			}
+
+			clog.DebugContextf(ctx, "Found %s:%s @ %s in BOM %s:%s:%s",
+				groupID, artifactID, version, bomGroupID, bomArtifactID, bomVersion)
+			return version, nil
+		}
+	}
+
+	return "", nil
+}
+
 // PatchProject updates a gopom.Project with the given patches and properties.
 // applyPatchesToDeps applies patches to a dep slice in place, removing matched
 // entries from missingDeps. A nil deps slice is a no-op.
@@ -387,6 +456,18 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 		}
 
 		for _, md := range missingDeps {
+			if md.Version != "" {
+				bomVersion, err := resolveBOMVersion(ctx, project, md.GroupID, md.ArtifactID)
+				if err != nil {
+					clog.WarnContextf(ctx, "Package %s:%s: error checking BOM version: %v",
+						md.GroupID, md.ArtifactID, err)
+				} else if bomVersion != "" && mavenVersionIsNewer(bomVersion, md.Version) {
+					clog.WarnContextf(ctx, "Package %s:%s: BOM-managed version %s is newer than requested %s, skipping",
+						md.GroupID, md.ArtifactID, bomVersion, md.Version)
+					continue
+				}
+			}
+
 			clog.InfoContextf(ctx, "Adding missing dependency: %s:%s @ %s", md.GroupID, md.ArtifactID, md.Version)
 			*project.DependencyManagement.Dependencies = append(*project.DependencyManagement.Dependencies, gopom.Dependency{
 				GroupID:    md.GroupID,
