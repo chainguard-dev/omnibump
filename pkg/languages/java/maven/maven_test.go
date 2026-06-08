@@ -1952,7 +1952,7 @@ func TestResolvePropertyPomPath(t *testing.T) {
 			},
 			property:    "missing.version",
 			wantErr:     ErrPropertyNotFound,
-			wantErrText: "no parent POM is configured",
+			wantErrText: "or project tree",
 		},
 		{
 			name: "property missing in current and parent",
@@ -1979,7 +1979,52 @@ func TestResolvePropertyPomPath(t *testing.T) {
 			},
 			property:    "missing.version",
 			wantErr:     ErrPropertyNotFound,
-			wantErrText: "or parent POM",
+			wantErrText: "or parent POM chain or project tree",
+		},
+		{
+			name: "property in sibling module POM",
+			setup: func(t *testing.T, dir string) string {
+				// Root POM with no properties.
+				writeFile(t, filepath.Join(dir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>root</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+</project>`)
+				// Sibling module-a defines the property.
+				writeFile(t, filepath.Join(dir, "module-a", "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>root</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>module-a</artifactId>
+  <properties>
+    <sibling.version>5.0.0</sibling.version>
+  </properties>
+</project>`)
+				// Sibling module-b does NOT define the property.
+				moduleBPom := filepath.Join(dir, "module-b", "pom.xml")
+				writeFile(t, moduleBPom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>root</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>module-b</artifactId>
+</project>`)
+				return moduleBPom
+			},
+			property: "sibling.version",
+			wantPath: func(dir string) string {
+				return filepath.Join(dir, "module-a", "pom.xml")
+			},
 		},
 	}
 
