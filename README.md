@@ -249,7 +249,11 @@ See [Usage Examples](docs/usage-examples.md) for more Go-specific examples.
 
 ## Contributing
 
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+We are not accepting external contributions at this time.
+Omnibump is still in its early stages, and the codebase is evolving rapidly as we work through the first iterations and establish the project's direction and architecture.
+That said, we’d still love to hear your feedback.
+If you encounter a bug, have a feature request, or see an opportunity for improvement, please open an issue in this repository.
+We actively review issues and use them to help shape the project’s roadmap and prioritize future work.
 
 ## License
 
