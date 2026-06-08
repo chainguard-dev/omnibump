@@ -170,6 +170,50 @@ func TestDetectLanguage_NoMatch(t *testing.T) {
 	assert.Empty(t, lang)
 }
 
+func TestDetectLanguageFromPaths_Go(t *testing.T) {
+	withCleanRegistry(t)
+	Register(&stubLanguage{name: "go", manifests: []string{"go.mod", "go.sum"}})
+	Register(&stubLanguage{name: "java", manifests: []string{"pom.xml"}})
+
+	lang := DetectLanguageFromPaths([]string{"go.mod", "pkg/foo/bar.go"})
+	assert.Equal(t, "go", lang)
+}
+
+func TestDetectLanguageFromPaths_Java(t *testing.T) {
+	withCleanRegistry(t)
+	Register(&stubLanguage{name: "go", manifests: []string{"go.mod"}})
+	Register(&stubLanguage{name: "java", manifests: []string{"pom.xml"}})
+
+	lang := DetectLanguageFromPaths([]string{"data-plane/pom.xml", "data-plane/src/main/Foo.java"})
+	assert.Equal(t, "java", lang)
+}
+
+func TestDetectLanguageFromPaths_PrefersRootManifest(t *testing.T) {
+	withCleanRegistry(t)
+	// Both go.mod at root and pom.xml nested — Go wins because it has a root manifest.
+	Register(&stubLanguage{name: "go", manifests: []string{"go.mod"}})
+	Register(&stubLanguage{name: "java", manifests: []string{"pom.xml"}})
+
+	lang := DetectLanguageFromPaths([]string{"go.mod", "data-plane/pom.xml"})
+	assert.Equal(t, "go", lang)
+}
+
+func TestDetectLanguageFromPaths_Empty(t *testing.T) {
+	withCleanRegistry(t)
+	Register(&stubLanguage{name: "go", manifests: []string{"go.mod"}})
+
+	lang := DetectLanguageFromPaths([]string{})
+	assert.Equal(t, "", lang)
+}
+
+func TestDetectLanguageFromPaths_NoPaths(t *testing.T) {
+	withCleanRegistry(t)
+	Register(&stubLanguage{name: "go", manifests: []string{"go.mod"}})
+
+	lang := DetectLanguageFromPaths([]string{"src/main/Foo.java", "README.md"})
+	assert.Equal(t, "", lang)
+}
+
 func TestDetectLanguages_ReturnsSorted(t *testing.T) {
 	withCleanRegistry(t)
 
