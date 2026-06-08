@@ -382,6 +382,13 @@ func resolvePropertyPomPath(ctx context.Context, pomPath, property, rootDir stri
 			break
 		}
 
+		// A non-existent parent path just means the chain ended (e.g. the
+		// Maven default ../pom.xml when no parent is on disk). Treat it
+		// the same as !hasParent rather than as a boundary violation.
+		if _, err := os.Stat(parentPath); errors.Is(err, os.ErrNotExist) {
+			break
+		}
+
 		// Stop traversal if the next parent escapes the project root boundary.
 		if err := validatePathWithinRoot(rootDir, parentPath); err != nil {
 			boundaryErr = err
