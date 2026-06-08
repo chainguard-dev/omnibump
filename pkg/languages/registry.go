@@ -125,6 +125,49 @@ func hasRootManifest(dir string, lang Language) bool {
 	return false
 }
 
+// DetectLanguageFromPaths detects which language is present from a list of file paths
+// (e.g. paths returned by a remote file search). Mirrors the root-manifest preference
+// logic of DetectLanguage without requiring disk access.
+// Returns "" when no language is detected.
+func DetectLanguageFromPaths(paths []string) string {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	// Build a set of basenames and full paths for fast lookup.
+	pathSet := make(map[string]struct{}, len(paths))
+	baseSet := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		pathSet[p] = struct{}{}
+		baseSet[filepath.Base(p)] = struct{}{}
+	}
+
+	var rootMatches, anyMatches []string
+	for name, lang := range registry {
+		for _, mf := range lang.GetManifestFiles() {
+			// Root match: the manifest file appears at the top level.
+			if _, ok := pathSet[mf]; ok {
+				rootMatches = append(rootMatches, name)
+				break
+			}
+			// Any-depth match: the manifest basename appears anywhere.
+			if _, ok := baseSet[filepath.Base(mf)]; ok {
+				anyMatches = append(anyMatches, name)
+				break
+			}
+		}
+	}
+
+	candidates := rootMatches
+	if len(candidates) == 0 {
+		candidates = anyMatches
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	sort.Strings(candidates)
+	return candidates[0]
+}
+
 // DetectLanguages returns all languages detected in the given directory, sorted
 // alphabetically for deterministic output. Useful for multi-language projects.
 func DetectLanguages(ctx context.Context, dir string) ([]string, error) {
