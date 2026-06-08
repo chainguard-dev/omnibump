@@ -353,6 +353,7 @@ func resolvePropertyPomPath(ctx context.Context, pomPath, property, rootDir stri
 	currentPath := pomPath
 	visited := make(map[string]struct{})
 	checkedParent := false
+	var boundaryErr error // non-nil if parent chain was cut short by root boundary
 
 	for {
 		pathKey, err := pomPathKey(currentPath)
@@ -378,20 +379,52 @@ func resolvePropertyPomPath(ctx context.Context, pomPath, property, rootDir stri
 
 		parentPath, hasParent := parentPomPath(currentPath, project)
 		if !hasParent {
-			if !checkedParent {
-				return "", fmt.Errorf("%w: property %s not found in %s and no parent POM is configured", ErrPropertyNotFound, property, pomPath)
-			}
-			return "", fmt.Errorf("%w: property %s not found in %s or parent POM chain", ErrPropertyNotFound, property, pomPath)
+			break
 		}
 
 		// Stop traversal if the next parent escapes the project root boundary.
 		if err := validatePathWithinRoot(rootDir, parentPath); err != nil {
-			return "", err
+			boundaryErr = err
+			break
 		}
 
 		checkedParent = true
 		currentPath = parentPath
 	}
+
+	// Parent chain exhausted — fall back to scanning the project tree for a
+	// sibling module that defines the property.
+	projectRoot := findProjectRoot(filepath.Dir(pomPath), rootDir)
+	for _, candidate := range findMavenPoms(projectRoot) {
+		// Skip POMs we already checked via the parent chain.
+		candidateKey, err := pomPathKey(candidate)
+		if err != nil {
+			continue
+		}
+		if _, seen := visited[candidateKey]; seen {
+			continue
+		}
+		project, err := ParsePom(candidate)
+		if err != nil {
+			continue
+		}
+		if projectHasProperty(project, property) {
+			clog.InfoContextf(ctx, "Property %s found via project tree walk in %s", property, candidate)
+			return candidate, nil
+		}
+	}
+
+	// If the parent chain was stopped by a root boundary violation, surface
+	// that as the primary error — the property may exist outside the allowed
+	// tree and the caller needs to know.
+	if boundaryErr != nil {
+		return "", boundaryErr
+	}
+
+	if !checkedParent {
+		return "", fmt.Errorf("%w: property %s not found in %s or project tree", ErrPropertyNotFound, property, pomPath)
+	}
+	return "", fmt.Errorf("%w: property %s not found in %s or parent POM chain or project tree", ErrPropertyNotFound, property, pomPath)
 }
 
 func parentPomPath(pomPath string, project *gopom.Project) (string, bool) {
