@@ -2087,6 +2087,20 @@ func TestValidatePathWithinRootRejectsSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestValidatePathWithinRootNonExistentPath(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	writeFile(t, filepath.Join(root, "pom.xml"), "<project></project>")
+
+	// Path outside root that doesn't exist on disk. EvalSymlinks will fail
+	// with lstat; the function should still return ErrUnsafePomPath.
+	nonExistent := filepath.Join(dir, "pom.xml")
+
+	if err := validatePathWithinRoot(root, nonExistent); !errors.Is(err, ErrUnsafePomPath) {
+		t.Fatalf("validatePathWithinRoot() non-existent path error = %v, want ErrUnsafePomPath", err)
+	}
+}
+
 func TestIsMavenPom_Valid(t *testing.T) {
 	path := t.TempDir() + "/pom.xml"
 	content := `<?xml version="1.0" encoding="UTF-8"?><project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"></project>`
