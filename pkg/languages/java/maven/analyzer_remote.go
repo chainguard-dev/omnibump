@@ -21,8 +21,6 @@ import (
 // AnalyzeRemote performs dependency analysis on remotely-fetched Maven pom.xml files.
 // files is a map from relative path (e.g. "pom.xml", "parent/pom.xml") to file content.
 func (ma *MavenAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]byte) (*analyzer.RemoteAnalysisResult, error) {
-	log := clog.FromContext(ctx)
-
 	if len(files) == 0 {
 		return nil, fmt.Errorf("%w: no pom.xml files provided", ErrNoPOMsFound)
 	}
@@ -47,7 +45,7 @@ func (ma *MavenAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]b
 		content := files[path]
 		project, err := parseProjectFromBytes(content)
 		if err != nil {
-			log.Debugf("Skipping %s: %v", path, err)
+			clog.DebugContextf(ctx, "Skipping %s: %v", path, err)
 			continue
 		}
 		for k, v := range extractPropertiesFromProject(project) {
@@ -65,7 +63,7 @@ func (ma *MavenAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]b
 		}
 	}
 
-	log.Infof("Remote analysis: %d pom.xml files, %d dependencies, %d using properties",
+	clog.InfoContextf(ctx, "Remote analysis: %d pom.xml files, %d dependencies, %d using properties",
 		len(paths), len(result.Dependencies), countPropertiesUsage(result))
 
 	// For any property referenced by deps but not found in the provided files,
@@ -77,7 +75,7 @@ func (ma *MavenAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]b
 		if path, value, ok := resolvePropertyFromMap(files, "pom.xml", propName); ok {
 			result.Properties[propName] = value
 			result.PropertySources[propName] = path
-			log.Infof("Resolved property %s = %s from parent POM %s", propName, value, path)
+			clog.InfoContextf(ctx, "Resolved property %s = %s from parent POM %s", propName, value, path)
 		}
 	}
 

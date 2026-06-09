@@ -45,8 +45,8 @@ var (
 	// ErrInvalidGitHubURL is returned when a GitHub URL cannot be parsed.
 	ErrInvalidGitHubURL = errors.New("invalid GitHub URL format")
 
-	// ErrCodeSearchRateLimitExceeded is returned when all retry attempts are exhausted.
-	ErrCodeSearchRateLimitExceeded = errors.New("code search rate limit not resolved after retries")
+	// errCodeSearchRateLimitExceeded is returned when all retry attempts are exhausted.
+	errCodeSearchRateLimitExceeded = errors.New("code search rate limit not resolved after retries")
 
 	// ErrFileContentNil is returned when file content is unexpectedly nil.
 	ErrFileContentNil = errors.New("file content is nil")
@@ -189,7 +189,7 @@ func runAnalyzeRemote(cmd *cobra.Command, args []string) error {
 	}
 
 	// Search for manifest files with fallback
-	files, err := searchManifestFilesWithFallback(ctx, fetcher, repoRef, manifestPatterns, analyzeRemoteF.language)
+	files, err := searchManifestFilesWithFallback(ctx, fetcher, repoRef, manifestPatterns, lang)
 	if err != nil {
 		return err
 	}
@@ -540,7 +540,7 @@ func (c *githubClient) SearchFiles(ctx context.Context, owner, repo, pattern str
 		}
 		return paths, nil
 	}
-	return nil, ErrCodeSearchRateLimitExceeded
+	return nil, errCodeSearchRateLimitExceeded
 }
 
 // waitForRateLimit checks whether err is a rate-limit error and, if so, waits
