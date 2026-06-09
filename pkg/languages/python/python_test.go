@@ -425,6 +425,81 @@ func TestParsePyprojectDeps_PDM(t *testing.T) {
 	assert.Equal(t, "41.0.0", names["cryptography"].Version)
 }
 
+func TestParsePyprojectDeps_OptionalDependencies(t *testing.T) {
+	data := []byte(`[build-system]
+build-backend = "hatchling.build"
+
+[project]
+name = "myapp"
+dependencies = ["requests>=2.28.0"]
+
+[project.optional-dependencies]
+security = ["cryptography>=41.0.0", "pyopenssl>=23.0.0"]
+dev = ["pytest>=7.4.0"]
+`)
+	specs, err := python.ParsePyprojectDeps(data, python.BuildToolHatch)
+	require.NoError(t, err)
+
+	names := make(map[string]python.VersionSpec)
+	for _, s := range specs {
+		names[s.Package] = s
+	}
+
+	// Core dependency
+	assert.Equal(t, "2.28.0", names["requests"].Version)
+	// Optional dependencies should also be parsed
+	assert.Equal(t, "41.0.0", names["cryptography"].Version)
+	assert.Contains(t, names["cryptography"].RawLine, "[optional: security]")
+	assert.Equal(t, "23.0.0", names["pyopenssl"].Version)
+	assert.Equal(t, "7.4.0", names["pytest"].Version)
+	assert.Contains(t, names["pytest"].RawLine, "[optional: dev]")
+}
+
+func TestParsePyprojectDeps_DependencyGroups(t *testing.T) {
+	data := []byte(`[build-system]
+build-backend = "hatchling.build"
+
+[project]
+name = "myapp"
+dependencies = ["fastapi>=0.104.0"]
+
+[dependency-groups]
+dev = ["ruff>=0.9.3", "mypy>=1.15.0"]
+test = ["pytest>=8.3.5"]
+`)
+	specs, err := python.ParsePyprojectDeps(data, python.BuildToolHatch)
+	require.NoError(t, err)
+
+	names := make(map[string]python.VersionSpec)
+	for _, s := range specs {
+		names[s.Package] = s
+	}
+
+	// Core dependency
+	assert.Equal(t, "0.104.0", names["fastapi"].Version)
+	// Dependency group items
+	assert.Equal(t, "0.9.3", names["ruff"].Version)
+	assert.Contains(t, names["ruff"].RawLine, "[group: dev]")
+	assert.Equal(t, "8.3.5", names["pytest"].Version)
+	assert.Contains(t, names["pytest"].RawLine, "[group: test]")
+}
+
+func TestParsePyprojectDeps_DependencyGroups_IncludeGroupSkipped(t *testing.T) {
+	// PEP 735 include-group tables should be silently skipped
+	data := []byte(`[project]
+name = "myapp"
+dependencies = ["requests>=2.28.0"]
+
+[[dependency-groups.test]]
+include-group = "dev"
+`)
+	specs, err := python.ParsePyprojectDeps(data, python.BuildToolUnknown)
+	require.NoError(t, err)
+	// Should only have "requests" — the include-group table is skipped
+	require.Len(t, specs, 1)
+	assert.Equal(t, "requests", specs[0].Package)
+}
+
 // --- AnalyzeRemote ---
 
 func TestAnalyzeRemote_PyprojectTOML(t *testing.T) {

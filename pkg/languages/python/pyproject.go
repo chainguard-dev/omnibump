@@ -18,9 +18,11 @@ import (
 // pyprojectDoc represents the dependency-relevant sections of pyproject.toml.
 type pyprojectDoc struct {
 	Project struct {
-		Dependencies []string `toml:"dependencies"`
+		Dependencies         []string            `toml:"dependencies"`
+		OptionalDependencies map[string][]string `toml:"optional-dependencies"`
 	} `toml:"project"`
-	Tool struct {
+	DependencyGroups map[string][]any `toml:"dependency-groups"`
+	Tool             struct {
 		Poetry struct {
 			Dependencies map[string]any `toml:"dependencies"`
 		} `toml:"poetry"`
@@ -29,8 +31,10 @@ type pyprojectDoc struct {
 
 // ParsePyprojectDeps parses dependencies from pyproject.toml content.
 // For Poetry projects, it reads [tool.poetry.dependencies].
-// For all others (PEP 621 — hatch, maturin, setuptools, scikit-build-core, pdm, uv),
-// it reads [project].dependencies.
+// For all others (PEP 621), it reads [project].dependencies plus
+// [project.optional-dependencies] and [dependency-groups] (PEP 735).
+// Optional and group dependencies are included in the result with their
+// source annotated in RawLine for informational purposes.
 func ParsePyprojectDeps(data []byte, buildTool BuildTool) ([]VersionSpec, error) {
 	var doc pyprojectDoc
 	if err := toml.Unmarshal(data, &doc); err != nil {
@@ -40,7 +44,35 @@ func ParsePyprojectDeps(data []byte, buildTool BuildTool) ([]VersionSpec, error)
 	if buildTool == BuildToolPoetry {
 		return parsePoetryDeps(doc.Tool.Poetry.Dependencies), nil
 	}
-	return parsePEP621Deps(doc.Project.Dependencies), nil
+
+	specs := parsePEP621Deps(doc.Project.Dependencies)
+
+	// Parse [project.optional-dependencies] — same PEP 508 format per group.
+	for group, deps := range doc.Project.OptionalDependencies {
+		for _, dep := range deps {
+			if s := parsePEP508(strings.TrimSpace(dep)); s != nil {
+				s.RawLine = fmt.Sprintf("[optional: %s] %s", group, dep)
+				specs = append(specs, *s)
+			}
+		}
+	}
+
+	// Parse [dependency-groups] (PEP 735) — string items are PEP 508 specs,
+	// table items like {include-group = "..."} are skipped.
+	for group, items := range doc.DependencyGroups {
+		for _, item := range items {
+			dep, ok := item.(string)
+			if !ok {
+				continue // skip include-group tables
+			}
+			if s := parsePEP508(strings.TrimSpace(dep)); s != nil {
+				s.RawLine = fmt.Sprintf("[group: %s] %s", group, dep)
+				specs = append(specs, *s)
+			}
+		}
+	}
+
+	return specs, nil
 }
 
 // parsePEP621Deps parses the PEP 621 [project].dependencies list.
