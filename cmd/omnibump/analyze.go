@@ -21,6 +21,7 @@ import (
 	"github.com/chainguard-dev/omnibump/pkg/languages/java"
 	"github.com/chainguard-dev/omnibump/pkg/languages/js"
 	"github.com/chainguard-dev/omnibump/pkg/languages/php"
+	"github.com/chainguard-dev/omnibump/pkg/languages/python"
 	"github.com/chainguard-dev/omnibump/pkg/languages/rust"
 	"github.com/ghodss/yaml"
 	"github.com/spf13/cobra"
@@ -122,38 +123,9 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	}
 
 	// Get analyzer implementation
-	var projectAnalyzer analyzer.Analyzer
-	switch detectedLang {
-	case languageJava:
-		// Get the Java language and detect build tool
-		javaLang := &java.Java{}
-		buildTool, err := javaLang.GetBuildTool(ctx, projectPath)
-		if err != nil {
-			return fmt.Errorf("failed to detect Java build tool: %w", err)
-		}
-		projectAnalyzer = buildTool.GetAnalyzer()
-		if projectAnalyzer == nil {
-			return fmt.Errorf("%w for build tool: %s", ErrAnalyzerNotAvailable, buildTool.Name())
-		}
-	case "go":
-		projectAnalyzer = &golang.GolangAnalyzer{}
-	case "rust":
-		projectAnalyzer = &rust.RustAnalyzer{}
-	case "js":
-		projectAnalyzer = &js.JSAnalyzer{}
-	case "php":
-		// Get the PHP language and detect build tool
-		phpLang := &php.PHP{}
-		buildTool, err := phpLang.GetBuildTool(ctx, projectPath)
-		if err != nil {
-			return fmt.Errorf("failed to detect PHP build tool: %w", err)
-		}
-		projectAnalyzer = buildTool.GetAnalyzer()
-		if projectAnalyzer == nil {
-			return fmt.Errorf("%w for build tool: %s", ErrAnalyzerNotAvailable, buildTool.Name())
-		}
-	default:
-		return fmt.Errorf("%w for language: %s", ErrAnalysisNotImplemented, detectedLang)
+	projectAnalyzer, err := getAnalyzer(ctx, detectedLang, projectPath)
+	if err != nil {
+		return err
 	}
 
 	// Perform analysis
@@ -193,6 +165,44 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// getAnalyzer returns the appropriate analyzer for the detected language.
+func getAnalyzer(ctx context.Context, lang, projectPath string) (analyzer.Analyzer, error) {
+	switch lang {
+	case languageJava:
+		javaLang := &java.Java{}
+		buildTool, err := javaLang.GetBuildTool(ctx, projectPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to detect Java build tool: %w", err)
+		}
+		a := buildTool.GetAnalyzer()
+		if a == nil {
+			return nil, fmt.Errorf("%w for build tool: %s", ErrAnalyzerNotAvailable, buildTool.Name())
+		}
+		return a, nil
+	case "go":
+		return &golang.GolangAnalyzer{}, nil
+	case "rust":
+		return &rust.RustAnalyzer{}, nil
+	case "js":
+		return &js.JSAnalyzer{}, nil
+	case "python":
+		return &python.Analyzer{}, nil
+	case "php":
+		phpLang := &php.PHP{}
+		buildTool, err := phpLang.GetBuildTool(ctx, projectPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to detect PHP build tool: %w", err)
+		}
+		a := buildTool.GetAnalyzer()
+		if a == nil {
+			return nil, fmt.Errorf("%w for build tool: %s", ErrAnalyzerNotAvailable, buildTool.Name())
+		}
+		return a, nil
+	default:
+		return nil, fmt.Errorf("%w for language: %s", ErrAnalysisNotImplemented, lang)
+	}
 }
 
 func outputAnalysisResults(analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy, format string) error {
@@ -242,13 +252,8 @@ func outputText(analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy) 
 		fmt.Println("---------------")
 		for prop, count := range analysis.PropertyUsage {
 			currentValue := analysis.Properties[prop]
-			source := analysis.PropertySources[prop]
-			suffix := ""
-			if source != "" {
-				suffix = fmt.Sprintf(" [manifest: %s]", source)
-			}
 			if currentValue != "" {
-				fmt.Printf("  %s = %s (used by %d dependencies)%s\n", prop, currentValue, count, suffix)
+				fmt.Printf("  %s = %s (used by %d dependencies)\n", prop, currentValue, count)
 			} else {
 				fmt.Printf("  %s (used by %d dependencies) - NOT DEFINED\n", prop, count)
 			}
@@ -421,9 +426,6 @@ func printPropertyUpdates(analysis *analyzer.AnalysisResult, strategy *analyzer.
 	fmt.Println("Property Updates:")
 	fmt.Println("-----------------")
 	for prop, version := range strategy.PropertyUpdates {
-		if source := analysis.PropertySources[prop]; source != "" {
-			fmt.Printf("  manifest: %s\n", source)
-		}
 		currentValue := analysis.Properties[prop]
 		if currentValue != "" {
 			fmt.Printf("  %s: %s -> %s\n", prop, currentValue, version)
