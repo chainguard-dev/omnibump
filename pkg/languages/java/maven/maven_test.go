@@ -2026,6 +2026,52 @@ func TestResolvePropertyPomPath(t *testing.T) {
 				return filepath.Join(dir, "module-a", "pom.xml")
 			},
 		},
+		{
+			name: "non-existent parent POM falls through to sibling walk",
+			setup: func(t *testing.T, dir string) string {
+				// Root POM so findProjectRoot can discover the tree.
+				writeFile(t, filepath.Join(dir, "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>root</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+</project>`)
+				// Sibling module-a defines the property.
+				writeFile(t, filepath.Join(dir, "module-a", "pom.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>module-a</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <shared.version>2.0.0</shared.version>
+  </properties>
+</project>`)
+				// Module-b references a parent via relativePath that
+				// does not exist on disk. The resolver should treat
+				// this as "parent chain ended" and fall through to
+				// the sibling walk — not crash on EvalSymlinks.
+				moduleBPom := filepath.Join(dir, "module-b", "pom.xml")
+				writeFile(t, moduleBPom, `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent</artifactId>
+    <version>1.0.0</version>
+    <relativePath>../corporate-parent/pom.xml</relativePath>
+  </parent>
+  <artifactId>module-b</artifactId>
+</project>`)
+				return moduleBPom
+			},
+			property: "shared.version",
+			wantPath: func(dir string) string {
+				return filepath.Join(dir, "module-a", "pom.xml")
+			},
+		},
 	}
 
 	for _, tt := range tests {
