@@ -1,0 +1,15 @@
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[project]
+name = "pdm-example"
+version = "0.1.0"
+description = "Example PDM project for testing"
+requires-python = ">=3.9"
+dependencies = [
+    "httpx>=0.24.0",
+    "pydantic>=2.0.0",
+    "sqlalchemy>=2.0.0",
+    "cryptography>=41.0.0",
+]
