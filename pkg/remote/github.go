@@ -10,9 +10,14 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/chainguard-dev/clog"
 )
+
+// codeSearchDelay is the minimum pause between consecutive GitHub Code Search
+// API calls to stay well within the 10 req/min rate limit.
+const codeSearchDelay = 7 * time.Second
 
 // GitHubSearcher defines the minimal interface needed to search and fetch files from GitHub.
 // This allows omnibump to work with different GitHub client implementations.
@@ -23,6 +28,11 @@ type GitHubSearcher interface {
 
 	// GetFileContent fetches the content of a file at a specific ref.
 	GetFileContent(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
+
+	// ListFilePaths returns all file paths in a repository at the given ref using
+	// the Git Tree API (one request, not subject to Code Search rate limits).
+	// Useful for language detection before calling SearchFiles.
+	ListFilePaths(ctx context.Context, owner, repo, ref string) ([]string, error)
 }
 
 // GitHubFetcher implements RemoteFetcher using the GitHub API.
@@ -47,7 +57,20 @@ func (g *GitHubFetcher) SearchFiles(ctx context.Context, repo RepositoryRef, pat
 	log := clog.FromContext(ctx).With("owner", repo.Owner, "repo", repo.Repo, "ref", repo.Ref)
 	var allFiles []RemoteFile
 
-	for _, pattern := range patterns {
+	for i, pattern := range patterns {
+		// Throttle between Code Search calls to stay within the 10 req/min rate limit.
+		if i > 0 {
+			log.Infof("Throttling code search to avoid rate limits (%s between requests)...", codeSearchDelay)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(codeSearchDelay):
+			}
+		}
+
+		// GitHub Code Search matches on filename only; strip any path prefix so that
+		// patterns like "gradle/libs.versions.toml" become "libs.versions.toml".
+		pattern = filepath.Base(pattern)
 		if err := validatePattern(pattern); err != nil {
 			return nil, fmt.Errorf("invalid pattern: %w", err)
 		}
@@ -74,6 +97,16 @@ func (g *GitHubFetcher) SearchFiles(ctx context.Context, repo RepositoryRef, pat
 	}
 
 	return allFiles, nil
+}
+
+// ListFilePaths returns all file paths in a repository at the given ref using
+// the Git Tree API (one request, not subject to Code Search rate limits).
+// Useful for language detection before calling SearchFiles.
+func (g *GitHubFetcher) ListFilePaths(ctx context.Context, repo RepositoryRef) ([]string, error) {
+	if err := repo.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid repository reference: %w", err)
+	}
+	return g.client.ListFilePaths(ctx, repo.Owner, repo.Repo, repo.Ref)
 }
 
 // fetchAndValidateFile fetches a file and performs all necessary validations.

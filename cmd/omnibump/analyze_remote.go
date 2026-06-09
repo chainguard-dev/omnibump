@@ -15,11 +15,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
 	"github.com/chainguard-dev/omnibump/pkg/config"
+	"github.com/chainguard-dev/omnibump/pkg/languages"
 	"github.com/chainguard-dev/omnibump/pkg/languages/golang"
+	"github.com/chainguard-dev/omnibump/pkg/languages/java/maven"
 	"github.com/chainguard-dev/omnibump/pkg/remote"
 	"github.com/ghodss/yaml"
 	"github.com/google/go-github/v75/github"
@@ -41,6 +44,9 @@ var (
 
 	// ErrInvalidGitHubURL is returned when a GitHub URL cannot be parsed.
 	ErrInvalidGitHubURL = errors.New("invalid GitHub URL format")
+
+	// errCodeSearchRateLimitExceeded is returned when all retry attempts are exhausted.
+	errCodeSearchRateLimitExceeded = errors.New("code search rate limit not resolved after retries")
 
 	// ErrFileContentNil is returned when file content is unexpectedly nil.
 	ErrFileContentNil = errors.New("file content is nil")
@@ -92,7 +98,7 @@ Examples:
 
 	f := cmd.Flags()
 	f.StringVar(&analyzeRemoteF.ref, "ref", "", "git reference (tag, branch, or commit)")
-	f.StringVarP(&analyzeRemoteF.language, "language", "l", "go", "language to analyze (currently only 'go' supported)")
+	f.StringVarP(&analyzeRemoteF.language, "language", "l", "auto", "language to analyze")
 	f.StringVar(&analyzeRemoteF.outputFormat, "output", "text", "output format (text, json, yaml)")
 	f.StringVar(&analyzeRemoteF.githubToken, "github-token", "", "GitHub token (default: $GITHUB_TOKEN)")
 	f.StringVar(&analyzeRemoteF.depsFile, "deps", "", "dependencies file to analyze strategy for")
@@ -146,11 +152,21 @@ func runAnalyzeRemote(cmd *cobra.Command, args []string) error {
 
 	log.Infof("Analyzing remote repository: %s/%s@%s", repoRef.Owner, repoRef.Repo, repoRef.Ref)
 
-	// Determine manifest patterns based on language
+	// Determine manifest patterns and analyzer based on language.
 	var manifestPatterns []string
 	var projectAnalyzer analyzer.Analyzer
 
-	switch analyzeRemoteF.language {
+	lang := analyzeRemoteF.language
+	if lang == "auto" || lang == "" {
+		var err error
+		lang, err = detectRemoteLanguage(ctx, fetcher, repoRef)
+		if err != nil {
+			return fmt.Errorf("could not detect language: %w (use --language to specify)", err)
+		}
+		log.Infof("Detected language: %s", lang)
+	}
+
+	switch lang {
 	case "go":
 		// If custom manifest file specified, use only that
 		if analyzeRemoteF.manifestFile != "" {
@@ -161,12 +177,19 @@ func runAnalyzeRemote(cmd *cobra.Command, args []string) error {
 			manifestPatterns = []string{"go.mod", "vendor.mod"}
 		}
 		projectAnalyzer = &golang.GolangAnalyzer{}
+	case languageJava, "maven":
+		l, err := languages.Get(languageJava)
+		if err != nil {
+			return fmt.Errorf("language not available: %w", err)
+		}
+		manifestPatterns = l.GetManifestFiles()
+		projectAnalyzer = &maven.MavenAnalyzer{}
 	default:
-		return fmt.Errorf("%w for language: %s", ErrRemoteAnalysisNotImplemented, analyzeRemoteF.language)
+		return fmt.Errorf("%w for language: %s", ErrRemoteAnalysisNotImplemented, lang)
 	}
 
 	// Search for manifest files with fallback
-	files, err := searchManifestFilesWithFallback(ctx, fetcher, repoRef, manifestPatterns, analyzeRemoteF.language)
+	files, err := searchManifestFilesWithFallback(ctx, fetcher, repoRef, manifestPatterns, lang)
 	if err != nil {
 		return err
 	}
@@ -204,6 +227,20 @@ func runAnalyzeRemote(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// detectRemoteLanguage lists all file paths via the Git Tree API and detects
+// the language from those paths. Returns an error when no language is detected.
+func detectRemoteLanguage(ctx context.Context, fetcher *remote.GitHubFetcher, repoRef remote.RepositoryRef) (string, error) {
+	paths, err := fetcher.ListFilePaths(ctx, repoRef)
+	if err != nil {
+		return "", fmt.Errorf("failed to list repository files: %w", err)
+	}
+	lang := languages.DetectLanguageFromPaths(paths)
+	if lang == "" {
+		return "", fmt.Errorf("%w in repository %s/%s", languages.ErrNoLanguageDetected, repoRef.Owner, repoRef.Repo)
+	}
+	return lang, nil
 }
 
 // searchManifestFilesWithFallback searches for manifest files with prioritization
@@ -337,7 +374,7 @@ func parseGitHubURL(url string) (owner, repo, ref string, err error) {
 	owner = matches[1]
 	repo = matches[2]
 	if len(matches) > 3 {
-		ref = matches[3]
+		ref = strings.TrimSuffix(matches[3], "/")
 	}
 
 	return owner, repo, ref, nil
@@ -397,11 +434,11 @@ func outputRemoteText(result *analyzer.RemoteAnalysisResult, strategies map[stri
 
 		fmt.Println()
 
-		// Show strategy or key dependencies
+		// Show strategy or full dependency + property listing
 		if strategies != nil {
 			printFileStrategy(fa, analysis, strategies)
 		} else if len(analysis.Dependencies) > 0 {
-			printKeyDependencies(analysis)
+			printDependencies(analysis)
 		}
 	}
 
@@ -483,22 +520,54 @@ func (t *tokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func (c *githubClient) SearchFiles(ctx context.Context, owner, repo, pattern string) ([]string, error) {
 	query := fmt.Sprintf("filename:%s repo:%s/%s", pattern, owner, repo)
+	opts := &github.SearchOptions{ListOptions: github.ListOptions{PerPage: 100}}
 
-	result, _, err := c.client.Search.Code(ctx, query, &github.SearchOptions{
-		ListOptions: github.ListOptions{PerPage: 100},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("code search failed: %w", err)
-	}
-
-	paths := make([]string, 0, len(result.CodeResults))
-	for _, item := range result.CodeResults {
-		if item.Path != nil {
-			paths = append(paths, *item.Path)
+	const maxRetries = 3
+	for attempt := range maxRetries {
+		result, _, err := c.client.Search.Code(ctx, query, opts)
+		if err != nil {
+			if retryErr := waitForRateLimit(ctx, err, attempt, maxRetries); retryErr != nil {
+				return nil, retryErr
+			}
+			continue
 		}
-	}
 
-	return paths, nil
+		paths := make([]string, 0, len(result.CodeResults))
+		for _, item := range result.CodeResults {
+			if item.Path != nil {
+				paths = append(paths, *item.Path)
+			}
+		}
+		return paths, nil
+	}
+	return nil, errCodeSearchRateLimitExceeded
+}
+
+// waitForRateLimit checks whether err is a rate-limit error and, if so, waits
+// until the reset window and returns nil so the caller can retry.
+// Returns a non-nil error when the limit is not a rate-limit, all retries are
+// exhausted, or the context is cancelled.
+func waitForRateLimit(ctx context.Context, err error, attempt, maxRetries int) error {
+	var rateErr *github.RateLimitError
+	if !errors.As(err, &rateErr) {
+		return fmt.Errorf("code search failed: %w", err)
+	}
+	if attempt >= maxRetries-1 {
+		return fmt.Errorf("code search failed: %w", err)
+	}
+	waitUntil := time.Until(rateErr.Rate.Reset.Time)
+	if waitUntil < 0 {
+		waitUntil = 0
+	}
+	// Add a small buffer so we don't immediately hit the next window.
+	waitUntil += 2 * time.Second
+	clog.FromContext(ctx).Warnf("code search rate limited, retrying after %s (attempt %d/%d)", waitUntil.Round(time.Second), attempt+1, maxRetries)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(waitUntil):
+		return nil
+	}
 }
 
 func (c *githubClient) GetFileContent(ctx context.Context, owner, repo, path, ref string) ([]byte, error) {
@@ -521,6 +590,20 @@ func (c *githubClient) GetFileContent(ctx context.Context, owner, repo, path, re
 	}
 
 	return []byte(content), nil
+}
+
+func (c *githubClient) ListFilePaths(ctx context.Context, owner, repo, ref string) ([]string, error) {
+	tree, _, err := c.client.Git.GetTree(ctx, owner, repo, ref, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get git tree: %w", err)
+	}
+	paths := make([]string, 0, len(tree.Entries))
+	for _, entry := range tree.Entries {
+		if entry.GetType() == "blob" && entry.Path != nil {
+			paths = append(paths, *entry.Path)
+		}
+	}
+	return paths, nil
 }
 
 // printFileStrategy prints the update strategy for a specific file.
@@ -565,15 +648,32 @@ func printFileStrategy(fa analyzer.FileAnalysis, analysis *analyzer.AnalysisResu
 	fmt.Println()
 }
 
-// printKeyDependencies prints a summary of key dependencies.
-func printKeyDependencies(analysis *analyzer.AnalysisResult) {
-	fmt.Println("  Key Dependencies:")
-	count := 0
-	for name, dep := range analysis.Dependencies {
-		if count >= 10 {
-			fmt.Printf("  ... and %d more\n", len(analysis.Dependencies)-10)
-			break
+// printDependencies prints all dependencies and properties for a file analysis,
+// mirroring the output of the local `analyze` command.
+func printDependencies(analysis *analyzer.AnalysisResult) {
+	// Properties section (Maven/Java).
+	if len(analysis.PropertyUsage) > 0 {
+		fmt.Println("  Property Usage:")
+		fmt.Println("  ---------------")
+		for prop, count := range analysis.PropertyUsage {
+			currentValue := analysis.Properties[prop]
+			source := analysis.PropertySources[prop]
+			suffix := ""
+			if source != "" {
+				suffix = fmt.Sprintf(" [manifest: %s]", source)
+			}
+			if currentValue != "" {
+				fmt.Printf("    %s = %s (used by %d dependencies)%s\n", prop, currentValue, count, suffix)
+			} else {
+				fmt.Printf("    %s (used by %d dependencies) - NOT DEFINED\n", prop, count)
+			}
 		}
+		fmt.Println()
+	}
+
+	// Full dependency list.
+	fmt.Println("  Dependencies:")
+	for name, dep := range analysis.Dependencies {
 		flags := ""
 		if dep.Transitive {
 			flags += " (indirect)"
@@ -584,7 +684,6 @@ func printKeyDependencies(analysis *analyzer.AnalysisResult) {
 			}
 		}
 		fmt.Printf("    - %s@%s%s\n", name, dep.Version, flags)
-		count++
 	}
 	fmt.Println()
 }
