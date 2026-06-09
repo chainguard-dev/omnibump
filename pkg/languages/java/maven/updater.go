@@ -16,6 +16,7 @@ import (
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/gopom"
+	"github.com/chainguard-dev/omnibump/pkg/pathutil"
 	"github.com/ghodss/yaml"
 )
 
@@ -37,8 +38,8 @@ var (
 	ErrPropertyNotFound = errors.New("property not found")
 
 	// ErrUnsafePomPath is returned when an update would write outside the
-	// configured Maven project root.
-	ErrUnsafePomPath = errors.New("unsafe POM path")
+	// configured Maven project root. It is an alias for pathutil.ErrUnsafePath.
+	ErrUnsafePomPath = pathutil.ErrUnsafePath
 
 	// ErrVersionConflict is returned when two updates try to set different
 	// versions for the same dependency or property-backed dependency set.
@@ -390,7 +391,7 @@ func resolvePropertyPomPath(ctx context.Context, pomPath, property, rootDir stri
 		}
 
 		// Stop traversal if the next parent escapes the project root boundary.
-		if err := validatePathWithinRoot(rootDir, parentPath); err != nil {
+		if err := pathutil.ValidatePathWithinRoot(rootDir, parentPath); err != nil {
 			boundaryErr = err
 			break
 		}
@@ -455,46 +456,6 @@ func pomPathFromParentPath(path string) string {
 		return filepath.Join(path, DefaultManifestFile)
 	}
 	return path
-}
-
-func validatePathWithinRoot(root, path string) error {
-	rootAbs, err := filepath.Abs(root)
-	if err != nil {
-		return fmt.Errorf("failed to resolve project root %s: %w", root, err)
-	}
-	rootAbs, err = filepath.EvalSymlinks(rootAbs)
-	if err != nil {
-		return fmt.Errorf("failed to resolve project root symlinks %s: %w", rootAbs, err)
-	}
-
-	pathAbs, err := filepath.Abs(path)
-	if err != nil {
-		return fmt.Errorf("failed to resolve POM path %s: %w", path, err)
-	}
-	pathAbs, err = filepath.EvalSymlinks(pathAbs)
-	if err != nil {
-		return fmt.Errorf("failed to resolve POM path symlinks %s: %w", pathAbs, err)
-	}
-
-	insideRoot, err := pathIsWithinRoot(rootAbs, pathAbs)
-	if err != nil {
-		return fmt.Errorf("%w: failed to compare POM path %s to project root %s: %w", ErrUnsafePomPath, pathAbs, rootAbs, err)
-	}
-	if !insideRoot {
-		return fmt.Errorf("%w: POM path %s escapes project root %s", ErrUnsafePomPath, pathAbs, rootAbs)
-	}
-	return nil
-}
-
-func pathIsWithinRoot(rootAbs, pathAbs string) (bool, error) {
-	rel, err := filepath.Rel(rootAbs, pathAbs)
-	if err != nil {
-		return false, err
-	}
-	if filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return false, nil
-	}
-	return true, nil
 }
 
 func pomPathKey(path string) (string, error) {

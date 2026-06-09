@@ -2099,40 +2099,6 @@ func TestResolvePropertyPomPath(t *testing.T) {
 	}
 }
 
-func TestValidatePathWithinRoot(t *testing.T) {
-	dir := t.TempDir()
-	root := filepath.Join(dir, "root")
-	insidePom := filepath.Join(root, "module", "pom.xml")
-	outsidePom := filepath.Join(dir, "outside", "pom.xml")
-	writeFile(t, insidePom, "<project></project>")
-	writeFile(t, outsidePom, "<project></project>")
-
-	if err := validatePathWithinRoot(root, insidePom); err != nil {
-		t.Fatalf("validatePathWithinRoot() inside path error = %v", err)
-	}
-	if err := validatePathWithinRoot(root, outsidePom); !errors.Is(err, ErrUnsafePomPath) {
-		t.Fatalf("validatePathWithinRoot() outside path error = %v, want ErrUnsafePomPath", err)
-	}
-}
-
-func TestValidatePathWithinRootRejectsSymlinkEscape(t *testing.T) {
-	dir := t.TempDir()
-	root := filepath.Join(dir, "root")
-	outsidePom := filepath.Join(dir, "outside", "pom.xml")
-	linkPom := filepath.Join(root, "linked-pom.xml")
-	writeFile(t, outsidePom, "<project></project>")
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatalf("MkdirAll(%s): %v", root, err)
-	}
-	if err := os.Symlink(outsidePom, linkPom); err != nil {
-		t.Fatalf("Symlink(%s, %s): %v", outsidePom, linkPom, err)
-	}
-
-	if err := validatePathWithinRoot(root, linkPom); !errors.Is(err, ErrUnsafePomPath) {
-		t.Fatalf("validatePathWithinRoot() symlink escape error = %v, want ErrUnsafePomPath", err)
-	}
-}
-
 func TestIsMavenPom_Valid(t *testing.T) {
 	path := t.TempDir() + "/pom.xml"
 	content := `<?xml version="1.0" encoding="UTF-8"?><project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"></project>`
