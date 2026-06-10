@@ -220,10 +220,6 @@ type mockGitHubSearcher struct {
 	listFilePathsFn func(ctx context.Context, owner, repo, ref string) ([]string, error)
 }
 
-func (m *mockGitHubSearcher) SearchFiles(_ context.Context, _, _, _ string) ([]string, error) {
-	return nil, nil
-}
-
 func (m *mockGitHubSearcher) GetFileContent(_ context.Context, _, _, _, _ string) ([]byte, error) {
 	return nil, nil
 }

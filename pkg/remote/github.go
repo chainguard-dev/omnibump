@@ -17,10 +17,6 @@ import (
 // GitHubSearcher defines the minimal interface needed to search and fetch files from GitHub.
 // This allows omnibump to work with different GitHub client implementations.
 type GitHubSearcher interface {
-	// SearchFiles searches for files matching the given pattern in a repository.
-	// Returns a list of file paths found.
-	SearchFiles(ctx context.Context, owner, repo, pattern string) ([]string, error)
-
 	// GetFileContent fetches the content of a file at a specific ref.
 	GetFileContent(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
 
@@ -71,7 +67,7 @@ func (g *GitHubFetcher) SearchFiles(ctx context.Context, repo RepositoryRef, pat
 			return nil, fmt.Errorf("invalid pattern: %w", err)
 		}
 
-		log.Debugf("Searching for pattern: %s", pattern)
+		log.Debugf("Searching for pattern: %q", pattern)
 		var paths []string
 		for _, path := range allPaths {
 			if filepath.Base(path) == pattern {
@@ -79,18 +75,16 @@ func (g *GitHubFetcher) SearchFiles(ctx context.Context, repo RepositoryRef, pat
 			}
 		}
 
-		log.Infof("Found %d files matching %s", len(paths), pattern)
+		log.Infof("Found %d files matching %q", len(paths), pattern)
 
 		// Fetch and validate each file
 		for _, path := range paths {
-			file, err := g.fetchAndValidateFile(ctx, repo, path, pattern)
+			file, err := g.fetchAndValidateFile(ctx, repo, path)
 			if err != nil {
-				log.Warnf("Skipping %s: %v", path, err)
+				log.Warnf("Skipping %q: %v", path, err)
 				continue
 			}
-			if file != nil {
-				allFiles = append(allFiles, *file)
-			}
+			allFiles = append(allFiles, *file)
 		}
 	}
 
@@ -108,16 +102,10 @@ func (g *GitHubFetcher) ListFilePaths(ctx context.Context, repo RepositoryRef) (
 }
 
 // fetchAndValidateFile fetches a file and performs all necessary validations.
-// Returns nil file if the file should be skipped (e.g., basename doesn't match).
-func (g *GitHubFetcher) fetchAndValidateFile(ctx context.Context, repo RepositoryRef, path, pattern string) (*RemoteFile, error) {
+func (g *GitHubFetcher) fetchAndValidateFile(ctx context.Context, repo RepositoryRef, path string) (*RemoteFile, error) {
 	// Validate path for security
 	if err := ValidatePath(path); err != nil {
 		return nil, err
-	}
-
-	// Filter to exact matches (basename must match pattern)
-	if filepath.Base(path) != pattern && path != pattern {
-		return nil, nil //nolint:nilnil // Returning (nil, nil) to skip file is appropriate here
 	}
 
 	// Fetch content

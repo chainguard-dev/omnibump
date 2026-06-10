@@ -12,13 +12,8 @@ import (
 	"testing"
 )
 
-var (
-	// errUnexpectedCodeSearch is returned when a test client receives a Code Search call.
-	errUnexpectedCodeSearch = errors.New("unexpected Code Search call: discovery must use ListFilePaths")
-
-	// errFileNotFound simulates a GitHub 404 for a path missing at the ref.
-	errFileNotFound = errors.New("get file content failed: 404 Not Found")
-)
+// errFileNotFound simulates a GitHub 404 for a path missing at the ref.
+var errFileNotFound = errors.New("get file content failed: 404 Not Found")
 
 // mockGitHubClient is a test double for GitHubSearcher that serves files from
 // a fixed tree listing.
@@ -28,12 +23,6 @@ type mockGitHubClient struct {
 
 	// fetchedPaths records every path requested via GetFileContent.
 	fetchedPaths []string
-}
-
-// SearchFiles implements GitHubSearcher. Discovery no longer uses Code Search,
-// so this must never be called.
-func (m *mockGitHubClient) SearchFiles(_ context.Context, _, _, _ string) ([]string, error) {
-	return nil, errUnexpectedCodeSearch
 }
 
 func (m *mockGitHubClient) GetFileContent(_ context.Context, _, _, path, _ string) ([]byte, error) {
@@ -66,17 +55,17 @@ func TestGitHubFetcherSearchFiles_OnlyFilesAtRef(t *testing.T) {
 	}
 	fetcher := NewGitHubFetcher(client)
 
-	files, err := fetcher.SearchFiles(context.Background(), testRepoRef(), []string{"pom.xml"})
+	files, err := fetcher.SearchFiles(t.Context(), testRepoRef(), []string{"pom.xml"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := map[string]bool{"pom.xml": true, "module-a/pom.xml": true}
+	want := map[string]struct{}{"pom.xml": {}, "module-a/pom.xml": {}}
 	if len(files) != len(want) {
 		t.Fatalf("expected %d files, got %d", len(want), len(files))
 	}
 	for _, f := range files {
-		if !want[f.Path] {
+		if _, ok := want[f.Path]; !ok {
 			t.Errorf("unexpected file returned: %s", f.Path)
 		}
 		if len(f.Content) == 0 {
@@ -115,17 +104,17 @@ func TestGitHubFetcherSearchFiles_MultiplePatterns(t *testing.T) {
 	}
 	fetcher := NewGitHubFetcher(client)
 
-	files, err := fetcher.SearchFiles(context.Background(), testRepoRef(), []string{"pom.xml", "build.gradle", "settings.gradle"})
+	files, err := fetcher.SearchFiles(t.Context(), testRepoRef(), []string{"pom.xml", "build.gradle", "settings.gradle"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got := make(map[string]bool, len(files))
+	got := make(map[string]struct{}, len(files))
 	for _, f := range files {
-		got[f.Path] = true
+		got[f.Path] = struct{}{}
 	}
 	for _, want := range []string{"pom.xml", "build.gradle", "app/build.gradle", "settings.gradle"} {
-		if !got[want] {
+		if _, ok := got[want]; !ok {
 			t.Errorf("expected file %s in results", want)
 		}
 	}
@@ -144,7 +133,7 @@ func TestGitHubFetcherSearchFiles_PathPrefixedPattern(t *testing.T) {
 	fetcher := NewGitHubFetcher(client)
 
 	// Patterns with a path prefix are matched on filename only.
-	files, err := fetcher.SearchFiles(context.Background(), testRepoRef(), []string{"gradle/libs.versions.toml"})
+	files, err := fetcher.SearchFiles(t.Context(), testRepoRef(), []string{"gradle/libs.versions.toml"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -160,7 +149,7 @@ func TestGitHubFetcherSearchFiles_NoMatches(t *testing.T) {
 	}
 	fetcher := NewGitHubFetcher(client)
 
-	files, err := fetcher.SearchFiles(context.Background(), testRepoRef(), []string{"pom.xml"})
+	files, err := fetcher.SearchFiles(t.Context(), testRepoRef(), []string{"pom.xml"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

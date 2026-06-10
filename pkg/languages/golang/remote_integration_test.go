@@ -13,7 +13,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"testing"
@@ -37,46 +36,6 @@ func newTestGitHubClient(token string) *testGitHubClient {
 		token:  token,
 		client: &http.Client{},
 	}
-}
-
-func (c *testGitHubClient) SearchFiles(ctx context.Context, owner, repo, pattern string) ([]string, error) {
-	url := fmt.Sprintf("https://api.github.com/search/code?q=filename:%s+repo:%s/%s", pattern, owner, repo)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("GitHub API error: %d - %s", resp.StatusCode, string(body))
-	}
-
-	var result struct {
-		Items []struct {
-			Path string `json:"path"`
-		} `json:"items"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-
-	paths := make([]string, 0, len(result.Items))
-	for _, item := range result.Items {
-		paths = append(paths, item.Path)
-	}
-
-	return paths, nil
 }
 
 func (c *testGitHubClient) GetFileContent(ctx context.Context, owner, repo, path, ref string) ([]byte, error) {

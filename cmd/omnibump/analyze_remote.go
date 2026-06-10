@@ -45,8 +45,8 @@ var (
 	// ErrInvalidGitHubURL is returned when a GitHub URL cannot be parsed.
 	ErrInvalidGitHubURL = errors.New("invalid GitHub URL format")
 
-	// errCodeSearchRateLimitExceeded is returned when all retry attempts are exhausted.
-	errCodeSearchRateLimitExceeded = errors.New("code search rate limit not resolved after retries")
+	// errRateLimitExceeded is returned when all retry attempts are exhausted.
+	errRateLimitExceeded = errors.New("GitHub API rate limit not resolved after retries")
 
 	// ErrFileContentNil is returned when file content is unexpectedly nil.
 	ErrFileContentNil = errors.New("file content is nil")
@@ -130,7 +130,8 @@ func runAnalyzeRemote(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("%w: use --ref flag or include in URL (e.g., /tree/v1.0.0)", ErrGitRefRequired)
 	}
 
-	// Get GitHub token (required for Code Search API)
+	// Get GitHub token (the unauthenticated API allows only 60 requests/hour,
+	// and multi-module repos need one content request per manifest)
 	token := analyzeRemoteF.githubToken
 	if token == "" {
 		token = os.Getenv("GITHUB_TOKEN")
@@ -518,42 +519,21 @@ func (t *tokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(req)
 }
 
-func (c *githubClient) SearchFiles(ctx context.Context, owner, repo, pattern string) ([]string, error) {
-	query := fmt.Sprintf("filename:%s repo:%s/%s", pattern, owner, repo)
-	opts := &github.SearchOptions{ListOptions: github.ListOptions{PerPage: 100}}
-
-	const maxRetries = 3
-	for attempt := range maxRetries {
-		result, _, err := c.client.Search.Code(ctx, query, opts)
-		if err != nil {
-			if retryErr := waitForRateLimit(ctx, err, attempt, maxRetries); retryErr != nil {
-				return nil, retryErr
-			}
-			continue
-		}
-
-		paths := make([]string, 0, len(result.CodeResults))
-		for _, item := range result.CodeResults {
-			if item.Path != nil {
-				paths = append(paths, *item.Path)
-			}
-		}
-		return paths, nil
-	}
-	return nil, errCodeSearchRateLimitExceeded
-}
+// maxRateLimitRetries is the number of attempts for a GitHub API call before
+// giving up on rate-limit recovery.
+const maxRateLimitRetries = 3
 
 // waitForRateLimit checks whether err is a rate-limit error and, if so, waits
 // until the reset window and returns nil so the caller can retry.
-// Returns a non-nil error when the limit is not a rate-limit, all retries are
-// exhausted, or the context is cancelled.
+// Returns the original error when it is not a rate-limit error or all retries
+// are exhausted, and the context error when the context is cancelled.
 func waitForRateLimit(ctx context.Context, err error, attempt, maxRetries int) error {
 	var rateErr *github.RateLimitError
 	if !errors.As(err, &rateErr) {
-		return fmt.Errorf("code search failed: %w", err)
+		return err
 	}
 	if attempt >= maxRetries-1 {
-		return fmt.Errorf("code search failed: %w", err)
+		return err
 	}
 	waitUntil := time.Until(rateErr.Rate.Reset.Time)
 	if waitUntil < 0 {
@@ -561,7 +541,7 @@ func waitForRateLimit(ctx context.Context, err error, attempt, maxRetries int) e
 	}
 	// Add a small buffer so we don't immediately hit the next window.
 	waitUntil += 2 * time.Second
-	clog.FromContext(ctx).Warnf("code search rate limited, retrying after %s (attempt %d/%d)", waitUntil.Round(time.Second), attempt+1, maxRetries)
+	clog.FromContext(ctx).Warnf("GitHub API rate limited, retrying after %s (attempt %d/%d)", waitUntil.Round(time.Second), attempt+1, maxRetries)
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -575,35 +555,48 @@ func (c *githubClient) GetFileContent(ctx context.Context, owner, repo, path, re
 		Ref: ref,
 	}
 
-	fileContent, _, _, err := c.client.Repositories.GetContents(ctx, owner, repo, path, opts)
-	if err != nil {
-		return nil, fmt.Errorf("get file content failed: %w", err)
-	}
+	for attempt := range maxRateLimitRetries {
+		fileContent, _, _, err := c.client.Repositories.GetContents(ctx, owner, repo, path, opts)
+		if err != nil {
+			if retryErr := waitForRateLimit(ctx, err, attempt, maxRateLimitRetries); retryErr != nil {
+				return nil, fmt.Errorf("get file content failed: %w", retryErr)
+			}
+			continue
+		}
 
-	if fileContent == nil {
-		return nil, ErrFileContentNil
-	}
+		if fileContent == nil {
+			return nil, ErrFileContentNil
+		}
 
-	content, err := fileContent.GetContent()
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode content: %w", err)
-	}
+		content, err := fileContent.GetContent()
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode content: %w", err)
+		}
 
-	return []byte(content), nil
+		return []byte(content), nil
+	}
+	return nil, errRateLimitExceeded
 }
 
 func (c *githubClient) ListFilePaths(ctx context.Context, owner, repo, ref string) ([]string, error) {
-	tree, _, err := c.client.Git.GetTree(ctx, owner, repo, ref, true)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get git tree: %w", err)
-	}
-	paths := make([]string, 0, len(tree.Entries))
-	for _, entry := range tree.Entries {
-		if entry.GetType() == "blob" && entry.Path != nil {
-			paths = append(paths, *entry.Path)
+	for attempt := range maxRateLimitRetries {
+		tree, _, err := c.client.Git.GetTree(ctx, owner, repo, ref, true)
+		if err != nil {
+			if retryErr := waitForRateLimit(ctx, err, attempt, maxRateLimitRetries); retryErr != nil {
+				return nil, fmt.Errorf("failed to get git tree: %w", retryErr)
+			}
+			continue
 		}
+
+		paths := make([]string, 0, len(tree.Entries))
+		for _, entry := range tree.Entries {
+			if entry.GetType() == "blob" && entry.Path != nil {
+				paths = append(paths, *entry.Path)
+			}
+		}
+		return paths, nil
 	}
-	return paths, nil
+	return nil, errRateLimitExceeded
 }
 
 // printFileStrategy prints the update strategy for a specific file.
