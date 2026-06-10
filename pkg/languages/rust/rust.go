@@ -95,7 +95,7 @@ func (r *Rust) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	// Build update configuration
 	updateCfg := &UpdateConfig{
 		CargoRoot: cfg.RootDir,
-		Update:    getOptionBool(cfg.Options, "update", false),
+		Update:    cfg.Update,
 		ShowDiff:  cfg.ShowDiff,
 	}
 

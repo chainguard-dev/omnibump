@@ -57,6 +57,9 @@ type UpdateConfig struct {
 	// When empty, each language falls back to its default filename within RootDir.
 	ManifestFile string
 
+	// Update indicates whether to update package dependencies
+	Update bool
+
 	// Options contains language-specific options as a flexible map
 	Options map[string]any
 }
