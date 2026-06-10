@@ -116,6 +116,41 @@ func (c *testGitHubClient) GetFileContent(ctx context.Context, owner, repo, path
 	return base64.StdEncoding.DecodeString(result.Content)
 }
 
+// ListFilePaths implements GitHubSearcher using the Git Tree API.
+func (c *testGitHubClient) ListFilePaths(ctx context.Context, owner, repo, ref string) ([]string, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, ref)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub API error: %d", resp.StatusCode)
+	}
+	var result struct {
+		Tree []struct {
+			Path string `json:"path"`
+			Type string `json:"type"`
+		} `json:"tree"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(result.Tree))
+	for _, entry := range result.Tree {
+		if entry.Type == "blob" {
+			paths = append(paths, entry.Path)
+		}
+	}
+	return paths, nil
+}
+
 func setupRemoteTest(t *testing.T) *remote.GitHubFetcher {
 	token := os.Getenv("GITHUB_TOKEN")
 	if token == "" {

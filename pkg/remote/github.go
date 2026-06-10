@@ -10,14 +10,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/chainguard-dev/clog"
 )
-
-// codeSearchDelay is the minimum pause between consecutive GitHub Code Search
-// API calls to stay well within the 10 req/min rate limit.
-const codeSearchDelay = 7 * time.Second
 
 // GitHubSearcher defines the minimal interface needed to search and fetch files from GitHub.
 // This allows omnibump to work with different GitHub client implementations.
@@ -49,36 +44,39 @@ func NewGitHubFetcher(client GitHubSearcher) *GitHubFetcher {
 
 // SearchFiles searches for files matching the given patterns in a repository.
 // Implements RemoteFetcher.SearchFiles.
+//
+// Files are discovered by listing the full tree at the requested ref via the
+// Git Tree API rather than GitHub Code Search: Code Search only indexes the
+// default branch (returning paths that may not exist at the ref) and caps
+// results at 100 per query.
 func (g *GitHubFetcher) SearchFiles(ctx context.Context, repo RepositoryRef, patterns []string) ([]RemoteFile, error) {
 	if err := repo.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid repository reference: %w", err)
 	}
 
 	log := clog.FromContext(ctx).With("owner", repo.Owner, "repo", repo.Repo, "ref", repo.Ref)
+
+	allPaths, err := g.client.ListFilePaths(ctx, repo.Owner, repo.Repo, repo.Ref)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list repository files: %w", err)
+	}
+
 	var allFiles []RemoteFile
 
-	for i, pattern := range patterns {
-		// Throttle between Code Search calls to stay within the 10 req/min rate limit.
-		if i > 0 {
-			log.Infof("Throttling code search to avoid rate limits (%s between requests)...", codeSearchDelay)
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(codeSearchDelay):
-			}
-		}
-
-		// GitHub Code Search matches on filename only; strip any path prefix so that
-		// patterns like "gradle/libs.versions.toml" become "libs.versions.toml".
+	for _, pattern := range patterns {
+		// Match on filename only; strip any path prefix so that patterns
+		// like "gradle/libs.versions.toml" become "libs.versions.toml".
 		pattern = filepath.Base(pattern)
 		if err := validatePattern(pattern); err != nil {
 			return nil, fmt.Errorf("invalid pattern: %w", err)
 		}
 
 		log.Debugf("Searching for pattern: %s", pattern)
-		paths, err := g.client.SearchFiles(ctx, repo.Owner, repo.Repo, pattern)
-		if err != nil {
-			return nil, fmt.Errorf("failed to search for %s: %w", pattern, err)
+		var paths []string
+		for _, path := range allPaths {
+			if filepath.Base(path) == pattern {
+				paths = append(paths, path)
+			}
 		}
 
 		log.Infof("Found %d files matching %s", len(paths), pattern)
