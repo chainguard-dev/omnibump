@@ -7,8 +7,17 @@ package remote
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
+)
+
+var (
+	// errUnexpectedCodeSearch is returned when a test client receives a Code Search call.
+	errUnexpectedCodeSearch = errors.New("unexpected Code Search call: discovery must use ListFilePaths")
+
+	// errFileNotFound simulates a GitHub 404 for a path missing at the ref.
+	errFileNotFound = errors.New("get file content failed: 404 Not Found")
 )
 
 // mockGitHubClient is a test double for GitHubSearcher that serves files from
@@ -24,7 +33,7 @@ type mockGitHubClient struct {
 // SearchFiles implements GitHubSearcher. Discovery no longer uses Code Search,
 // so this must never be called.
 func (m *mockGitHubClient) SearchFiles(_ context.Context, _, _, _ string) ([]string, error) {
-	return nil, fmt.Errorf("unexpected Code Search call: discovery must use ListFilePaths")
+	return nil, errUnexpectedCodeSearch
 }
 
 func (m *mockGitHubClient) GetFileContent(_ context.Context, _, _, path, _ string) ([]byte, error) {
@@ -34,7 +43,7 @@ func (m *mockGitHubClient) GetFileContent(_ context.Context, _, _, path, _ strin
 			return []byte("content of " + path), nil
 		}
 	}
-	return nil, fmt.Errorf("get file content failed: 404 Not Found: %s", path)
+	return nil, fmt.Errorf("%w: %s", errFileNotFound, path)
 }
 
 func (m *mockGitHubClient) ListFilePaths(_ context.Context, _, _, _ string) ([]string, error) {
