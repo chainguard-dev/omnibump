@@ -321,12 +321,29 @@ func validateUpdateFlags() error {
 	return nil
 }
 
-// loadUpdateConfig loads configuration from file or inline sources based on the flags.
+// loadUpdateConfig loads configuration from file and inline sources and
+// merges them. File and inline sources are not mutually exclusive: the
+// melange bump pipeline routinely combines an inline package list
+// (--packages) with a properties file (--properties properties.yaml), and
+// previously the inline packages were silently dropped whenever a file flag
+// was present. Genuinely conflicting combinations (--deps with --packages,
+// --properties with --props) are rejected by validateUpdateFlags before
+// this runs. Both loaders no-op on unset flags, so no guards are needed.
 func loadUpdateConfig(ctx context.Context) (*config.Config, error) {
-	if flags.depsFile != "" || flags.propertiesFile != "" {
-		return loadFileInputConfig(ctx)
+	cfg, err := loadFileInputConfig(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return loadInlineInputConfig()
+
+	inlineCfg, err := loadInlineInputConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := cfg.Merge(inlineCfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 // resolveLanguage determines which language implementation to use, honouring
