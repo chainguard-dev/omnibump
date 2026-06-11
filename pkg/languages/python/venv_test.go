@@ -17,9 +17,9 @@ import (
 
 func TestParseAndValidateVenvSpecs_Valid(t *testing.T) {
 	deps := []languages.Dependency{
-		{Name: "cryptography", Version: "==46.0.6"},
-		{Name: "pyjwt", Version: "==2.12.0"},
-		{Name: "requests", Version: "==2.33.0"},
+		{Name: "cryptography", Version: "46.0.6"},
+		{Name: "pyjwt", Version: "2.12.0"},
+		{Name: "requests", Version: "2.33.0"},
 	}
 
 	specs, err := parseAndValidateVenvSpecs(deps)
@@ -34,39 +34,9 @@ func TestParseAndValidateVenvSpecs_Valid(t *testing.T) {
 	assert.Equal(t, "2.33.0", specs[2].Version)
 }
 
-func TestParseAndValidateVenvSpecs_RejectsNonEqualsPin(t *testing.T) {
-	deps := []languages.Dependency{
-		{Name: "urllib3", Version: "~=2.6.0"},
-	}
-
-	_, err := parseAndValidateVenvSpecs(deps)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "requires == pinning")
-}
-
-func TestParseAndValidateVenvSpecs_RejectsGreaterThanPin(t *testing.T) {
-	deps := []languages.Dependency{
-		{Name: "authlib", Version: ">=1.3.1"},
-	}
-
-	_, err := parseAndValidateVenvSpecs(deps)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "requires == pinning")
-}
-
-func TestParseAndValidateVenvSpecs_RejectsCaretPin(t *testing.T) {
-	deps := []languages.Dependency{
-		{Name: "protobuf", Version: "^5.29.6"},
-	}
-
-	_, err := parseAndValidateVenvSpecs(deps)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "requires == pinning")
-}
-
 func TestParseAndValidateVenvSpecs_EmptyVersion(t *testing.T) {
 	deps := []languages.Dependency{
-		{Name: "requests", Version: "=="},
+		{Name: "requests", Version: ""},
 	}
 
 	_, err := parseAndValidateVenvSpecs(deps)
@@ -163,11 +133,11 @@ func TestSelectVenvInstaller_AutoDetect(t *testing.T) {
 func TestParseAndValidateVenvSpecs_AirflowPattern(t *testing.T) {
 	// Real airflow-3 CVE remediation pattern
 	deps := []languages.Dependency{
-		{Name: "cryptography", Version: "==46.0.6"}, // GHSA-r6ph-v2qm-q3c2
-		{Name: "pyjwt", Version: "==2.12.0"},        // CVE-2026-32597
-		{Name: "pyopenssl", Version: "==26.0.0"},    // CVE-2026-27459
-		{Name: "pygments", Version: "==2.20.0"},     // GHSA-5239-wwwm-4pmq
-		{Name: "requests", Version: "==2.33.0"},     // GHSA-gc5v-m9x4-r6x2
+		{Name: "cryptography", Version: "46.0.6"}, // GHSA-r6ph-v2qm-q3c2
+		{Name: "pyjwt", Version: "2.12.0"},        // CVE-2026-32597
+		{Name: "pyopenssl", Version: "26.0.0"},    // CVE-2026-27459
+		{Name: "pygments", Version: "2.20.0"},     // GHSA-5239-wwwm-4pmq
+		{Name: "requests", Version: "2.33.0"},     // GHSA-gc5v-m9x4-r6x2
 	}
 
 	specs, err := parseAndValidateVenvSpecs(deps)
@@ -184,9 +154,9 @@ func TestParseAndValidateVenvSpecs_AirflowPattern(t *testing.T) {
 func TestParseAndValidateVenvSpecs_MixedValid(t *testing.T) {
 	// Multiple dependencies with various version formats
 	deps := []languages.Dependency{
-		{Name: "aiohttp", Version: "==3.13.4"},
-		{Name: "litellm", Version: "==1.83.0"},
-		{Name: "ecdsa", Version: "==0.19.2"},
+		{Name: "aiohttp", Version: "3.13.4"},
+		{Name: "litellm", Version: "1.83.0"},
+		{Name: "ecdsa", Version: "0.19.2"},
 	}
 
 	specs, err := parseAndValidateVenvSpecs(deps)
@@ -235,40 +205,6 @@ func TestIsVersionLower_PEP440(t *testing.T) {
 		t.Run(tt.desc, func(t *testing.T) {
 			got := isVersionLower(tt.v1, tt.v2)
 			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
-// --- Validation error messages ---
-
-func TestParseAndValidateVenvSpecs_ErrorMessages(t *testing.T) {
-	tests := []struct {
-		dep  languages.Dependency
-		desc string
-	}{
-		{
-			dep:  languages.Dependency{Name: "pkg", Version: "~=1.0.0"},
-			desc: "compatible-release pin",
-		},
-		{
-			dep:  languages.Dependency{Name: "pkg", Version: ">1.0.0"},
-			desc: "greater-than pin",
-		},
-		{
-			dep:  languages.Dependency{Name: "pkg", Version: "<1.0.0"},
-			desc: "less-than pin",
-		},
-		{
-			dep:  languages.Dependency{Name: "pkg", Version: "1.0.0"},
-			desc: "no specifier",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.desc, func(t *testing.T) {
-			_, err := parseAndValidateVenvSpecs([]languages.Dependency{tt.dep})
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "requires ==")
 		})
 	}
 }

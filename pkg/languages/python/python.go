@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/chainguard-dev/clog"
@@ -78,14 +79,12 @@ func (p *Python) Update(ctx context.Context, cfg *languages.UpdateConfig) error 
 	}
 
 	// Otherwise, use manifest mode
-	toolHint, _ := cfg.Options["tool"].(string)
-
-	manifest, err := DetectManifestWithHint(cfg.RootDir, toolHint)
+	manifest, err := resolveManifest(cfg)
 	if err != nil {
-		return fmt.Errorf("detecting Python manifest in %s: %w", cfg.RootDir, err)
+		return err
 	}
 
-	log.Infof("Detected Python build tool: %s (manifest: %s)", manifest.BuildTool, manifest.Type)
+	log.Infof("Using Python build tool: %s (manifest: %s)", manifest.BuildTool, manifest.Type)
 
 	// Snapshot the manifest before updates for --show-diff.
 	var originalContent []byte
@@ -137,11 +136,9 @@ func (p *Python) Validate(ctx context.Context, cfg *languages.UpdateConfig) erro
 	}
 
 	// Otherwise, use manifest mode
-	toolHint, _ := cfg.Options["tool"].(string)
-
-	manifest, err := DetectManifestWithHint(cfg.RootDir, toolHint)
+	manifest, err := resolveManifest(cfg)
 	if err != nil {
-		return fmt.Errorf("detecting Python manifest in %s: %w", cfg.RootDir, err)
+		return err
 	}
 
 	specs, err := readSpecsFromManifest(manifest)
@@ -182,12 +179,35 @@ func (p *Python) Validate(ctx context.Context, cfg *languages.UpdateConfig) erro
 	return nil
 }
 
+// resolveManifest returns the manifest to operate on. If ManifestFile is set,
+// it uses that path directly; otherwise it auto-detects using the tool hint.
+func resolveManifest(cfg *languages.UpdateConfig) (*ManifestInfo, error) {
+	if cfg.ManifestFile != "" {
+		absPath, err := filepath.Abs(cfg.ManifestFile)
+		if err != nil {
+			return nil, fmt.Errorf("resolving manifest path: %w", err)
+		}
+		name := filepath.Base(absPath)
+		dir := filepath.Dir(absPath)
+		info := &ManifestInfo{Path: absPath, Type: name}
+		info.BuildTool = detectBuildTool(name, dir, absPath)
+		return info, nil
+	}
+
+	toolHint, _ := cfg.Options["tool"].(string)
+	manifest, err := DetectManifestWithHint(cfg.RootDir, toolHint)
+	if err != nil {
+		return nil, fmt.Errorf("detecting Python manifest in %s: %w", cfg.RootDir, err)
+	}
+	return manifest, nil
+}
+
 // updateDepInManifest routes the update to the correct file handler.
 func updateDepInManifest(manifest *ManifestInfo, pkg, version string) error {
 	switch manifest.Type {
 	case ManifestPyprojectTOML:
 		return UpdatePyprojectDep(manifest.Path, pkg, version)
-	case ManifestRequirementsTxt:
+	case ManifestRequirementsTxt, ManifestRequirementsPinnedTxt:
 		return UpdateRequirement(manifest.Path, pkg, version)
 	case ManifestSetupCfg:
 		return UpdateSetupCfg(manifest.Path, pkg, version)
