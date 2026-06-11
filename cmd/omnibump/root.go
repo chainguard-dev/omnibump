@@ -46,6 +46,7 @@ type rootFlags struct {
 	dryRun         bool
 	logLevel       string
 	logPolicy      []string
+	update         bool
 	tool           string
 	venv           string
 }
@@ -96,6 +97,7 @@ func New() *cobra.Command {
 	f.BoolVar(&flags.showDiff, "show-diff", false, "show diff of changes")
 	f.BoolVar(&flags.dryRun, "dry-run", false, "simulate update without making changes")
 	f.StringVar(&flags.manifestFile, "manifest", "", "path to manifest file to update (e.g. a specific pom.xml); defaults to <dir>/pom.xml")
+	f.BoolVar(&flags.update, "update", false, "update all dependencies")
 	f.StringVar(&flags.tool, "tool", "", "build tool override (Python: uv, pip, poetry, hatch, pdm, setuptools)")
 	f.StringVar(&flags.venv, "venv", "", "path to staged Python venv for in-place bumping (Python only)")
 
@@ -390,6 +392,7 @@ func buildUpdateConfig(cfg *config.Config) *languages.UpdateConfig {
 	updateCfg.ShowDiff = flags.showDiff
 	updateCfg.DryRun = flags.dryRun
 	updateCfg.ManifestFile = flags.manifestFile
+	updateCfg.Update = flags.update
 	if flags.tidyCompat != "" {
 		updateCfg.Options["tidy-compat"] = flags.tidyCompat
 	}
