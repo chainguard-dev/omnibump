@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
+	"github.com/chainguard-dev/omnibump/pkg/gradlefile"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 )
 
@@ -95,6 +95,7 @@ func TestGradle_GetManifestFiles(t *testing.T) {
 		"build.gradle.kts",
 		"settings.gradle",
 		"settings.gradle.kts",
+		"gradle.properties",
 		"gradle/libs.versions.toml",
 	}
 
@@ -314,19 +315,23 @@ func TestGradle_Update_NonExistentDependency(t *testing.T) {
 		},
 	}
 
-	// Should not error, but should log warning (no changes made)
 	if err := g.Update(context.Background(), cfg); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
-	// File should be unchanged
+	// A dependency declared nowhere is pinned through the managed
+	// resolutionStrategy force block (Maven DependencyManagement parity).
 	afterContent, err := os.ReadFile(dstFile)
 	if err != nil {
 		t.Fatalf("failed to read file: %v", err)
 	}
 
-	if string(afterContent) != string(content) {
-		t.Errorf("File should be unchanged when dependency not found, but content changed")
+	coords, err := ForceBlockCoordinates(dstFile, afterContent)
+	if err != nil {
+		t.Fatalf("ForceBlockCoordinates() error = %v", err)
+	}
+	if coords["com.example:nonexistent"] != "1.0.0" {
+		t.Errorf("Force block should pin com.example:nonexistent at 1.0.0, got %v\nContent:\n%s", coords, afterContent)
 	}
 }
 
@@ -373,32 +378,6 @@ func TestParseDependencyName(t *testing.T) {
 				t.Errorf("parseDependencyName() artifactID = %q, want %q", gotArtifact, tt.wantArtifactID)
 			}
 		})
-	}
-}
-
-func TestBuildDependencyPatterns(t *testing.T) {
-	patterns := buildDependencyPatterns("org.example", "my-lib")
-
-	if len(patterns) != 3 {
-		t.Fatalf("buildDependencyPatterns() returned %d patterns, want 3", len(patterns))
-	}
-
-	// Verify pattern names
-	expectedNames := []string{"string-notation", "library-function", "map-notation"}
-	for i, name := range expectedNames {
-		if patterns[i].name != name {
-			t.Errorf("pattern[%d].name = %q, want %q", i, patterns[i].name, name)
-		}
-	}
-
-	// Verify all patterns have valid regex
-	for i, pattern := range patterns {
-		if pattern.regex == "" {
-			t.Errorf("pattern[%d].regex is empty", i)
-		}
-		if pattern.versionGroup < 1 {
-			t.Errorf("pattern[%d].versionGroup = %d, should be >= 1", i, pattern.versionGroup)
-		}
 	}
 }
 
@@ -760,14 +739,14 @@ netty-all = { module = "io.netty:netty-all", version = "4.1.100.Final" }
 		t.Fatalf("Update() error = %v", err)
 	}
 
-	// Verify file was not modified (no [versions] section to update)
+	// With no [versions] section, the library's inline version is updated.
 	updated, err := os.ReadFile(tomlFile)
 	if err != nil {
 		t.Fatalf("failed to read updated file: %v", err)
 	}
 
-	if string(updated) != tomlContent {
-		t.Errorf("File should not be modified when no [versions] section exists")
+	if !strings.Contains(string(updated), `version = "4.1.101.Final"`) {
+		t.Errorf("Inline library version should be updated.\nContent:\n%s", updated)
 	}
 }
 
@@ -1379,9 +1358,9 @@ func TestValidateVersion_ValidVersions(t *testing.T) {
 
 	for _, version := range validVersions {
 		t.Run(version, func(t *testing.T) {
-			err := validateVersion(version)
+			err := gradlefile.ValidateVersion(version)
 			if err != nil {
-				t.Errorf("validateVersion(%q) should be valid, got error: %v", version, err)
+				t.Errorf("ValidateVersion(%q) should be valid, got error: %v", version, err)
 			}
 		})
 	}
@@ -1454,12 +1433,12 @@ dependencies {
 
 	for _, tt := range invalidVersions {
 		t.Run(tt.desc, func(t *testing.T) {
-			err := validateVersion(tt.version)
+			err := gradlefile.ValidateVersion(tt.version)
 			if err == nil {
-				t.Errorf("validateVersion(%q) should be invalid for: %s", tt.version, tt.desc)
+				t.Errorf("ValidateVersion(%q) should be invalid for: %s", tt.version, tt.desc)
 			}
 			if err != nil && !strings.Contains(err.Error(), "invalid version string") {
-				t.Errorf("validateVersion(%q) error should mention invalid version, got: %v", tt.version, err)
+				t.Errorf("ValidateVersion(%q) error should mention invalid version, got: %v", tt.version, err)
 			}
 		})
 	}
@@ -1585,71 +1564,6 @@ func TestFindBuildFiles_SkipsSymlinks(t *testing.T) {
 	}
 }
 
-// TestFindVersionKeyForArtifact_EdgeCases tests edge cases for version catalog key lookup.
-func TestFindVersionKeyForArtifact_EdgeCases(t *testing.T) {
-	tests := []struct {
-		name       string
-		artifactID string
-		versions   map[string]any
-		expected   string
-	}{
-		{
-			name:       "exact match found",
-			artifactID: "commons-lang3",
-			versions: map[string]any{
-				"commons-lang3": "3.14.0",
-			},
-			expected: "commons-lang3",
-		},
-		{
-			name:       "no match - empty map",
-			artifactID: "nonexistent",
-			versions:   map[string]any{},
-			expected:   "",
-		},
-		{
-			name:       "no match with different artifact",
-			artifactID: "spring-boot",
-			versions: map[string]any{
-				"spring-boot-starter": "2.7.0",
-			},
-			expected: "",
-		},
-		{
-			name:       "nil versions map",
-			artifactID: "any",
-			versions:   nil,
-			expected:   "",
-		},
-		{
-			name:       "ambiguous artifact requires exact match",
-			artifactID: "netty-codec-http",
-			versions: map[string]any{
-				"netty":       "4.1.90.Final",
-				"netty-codec": "4.1.91.Final",
-			},
-			expected: "", // No fuzzy matching - must be exact
-		},
-		{
-			name:       "no fuzzy match - artifact contains version key",
-			artifactID: "netty-all",
-			versions: map[string]any{
-				"netty": "4.1.90.Final",
-			},
-			expected: "", // Previously would match "netty", now requires exact match
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := findVersionKeyForArtifact(tt.artifactID, tt.versions)
-			if result != tt.expected {
-				t.Errorf("Expected %q, got %q", tt.expected, result)
-			}
-		})
-	}
-}
-
 // TestGradleAnalyzer_AnalyzeRemote tests the unimplemented remote analysis.
 func TestGradleAnalyzer_AnalyzeRemote(t *testing.T) {
 	ga := &GradleAnalyzer{}
@@ -1663,123 +1577,5 @@ func TestGradleAnalyzer_AnalyzeRemote(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not yet implemented") {
 		t.Errorf("Error should mention not implemented, got: %v", err)
-	}
-}
-
-// TestAnalyzeVersionCatalogToml_EmptyFile tests empty TOML file handling.
-func TestAnalyzeVersionCatalogToml_EmptyFile(t *testing.T) {
-	result := &analyzer.AnalysisResult{
-		Dependencies: make(map[string]*analyzer.DependencyInfo),
-		Properties:   make(map[string]string),
-	}
-
-	err := analyzeVersionCatalogToml(context.Background(), "", result)
-	if err == nil {
-		t.Error("Should error on empty content")
-	}
-}
-
-// TestAnalyzeVersionCatalogToml_InvalidToml tests invalid TOML handling.
-func TestAnalyzeVersionCatalogToml_InvalidToml(t *testing.T) {
-	result := &analyzer.AnalysisResult{
-		Dependencies: make(map[string]*analyzer.DependencyInfo),
-		Properties:   make(map[string]string),
-	}
-
-	invalidToml := "invalid toml content [[[["
-	err := analyzeVersionCatalogToml(context.Background(), invalidToml, result)
-	if err == nil {
-		t.Error("Should error on invalid TOML")
-	}
-}
-
-func TestParseLibraryModule(t *testing.T) {
-	tests := []struct {
-		name           string
-		libMap         map[string]any
-		wantGroupID    string
-		wantArtifactID string
-	}{
-		{
-			name:           "valid module",
-			libMap:         map[string]any{"module": "com.example:library"},
-			wantGroupID:    "com.example",
-			wantArtifactID: "library",
-		},
-		{
-			name:           "module not string",
-			libMap:         map[string]any{"module": 123},
-			wantGroupID:    "",
-			wantArtifactID: "",
-		},
-		{
-			name:           "module not present",
-			libMap:         map[string]any{},
-			wantGroupID:    "",
-			wantArtifactID: "",
-		},
-		{
-			name:           "invalid format - no colon",
-			libMap:         map[string]any{"module": "com.example.library"},
-			wantGroupID:    "",
-			wantArtifactID: "",
-		},
-		{
-			name:           "invalid format - too many parts",
-			libMap:         map[string]any{"module": "com.example:library:extra"},
-			wantGroupID:    "",
-			wantArtifactID: "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			gotGroupID, gotArtifactID := parseLibraryModule(tt.libMap)
-			if gotGroupID != tt.wantGroupID {
-				t.Errorf("parseLibraryModule() groupID = %v, want %v", gotGroupID, tt.wantGroupID)
-			}
-			if gotArtifactID != tt.wantArtifactID {
-				t.Errorf("parseLibraryModule() artifactID = %v, want %v", gotArtifactID, tt.wantArtifactID)
-			}
-		})
-	}
-}
-
-func TestParseLibraryVersion(t *testing.T) {
-	tests := []struct {
-		name   string
-		libMap map[string]any
-		alias  string
-		want   string
-	}{
-		{
-			name:   "direct version string",
-			libMap: map[string]any{"version": "1.0.0"},
-			alias:  "test",
-			want:   "1.0.0",
-		},
-		{
-			name:   "version map with ref key",
-			libMap: map[string]any{"version": map[string]any{"ref": "someVersion"}},
-			alias:  "test",
-			want:   "",
-		},
-		{
-			name:   "no version",
-			libMap: map[string]any{},
-			alias:  "test",
-			want:   "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			log := clog.FromContext(ctx)
-			got := parseLibraryVersion(tt.libMap, log, tt.alias)
-			if got != tt.want {
-				t.Errorf("parseLibraryVersion() = %v, want %v", got, tt.want)
-			}
-		})
 	}
 }
