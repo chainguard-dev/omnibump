@@ -1,0 +1,7 @@
+[versions]
+spring-boot = '3.5.13'
+netty = '4.1.132.Final'
+avro = '1.12.1'
+
+[libraries]
+apache-avro = { module = 'org.apache.avro:avro', version.ref = 'avro' }

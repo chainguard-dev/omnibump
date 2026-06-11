@@ -1,0 +1,18 @@
+ext {
+  versions = [:]
+  libs = [:]
+}
+
+versions += [
+  jackson: "2.16.2",
+  jetty: "12.0.25",
+  log4j2: "2.25.1",
+  lz4: "1.8.0",
+]
+
+libs += [
+  jacksonDatabind: "com.fasterxml.jackson.core:jackson-databind:$versions.jackson",
+  jettyServer: "org.eclipse.jetty:jetty-server:$versions.jetty",
+  log4j2Api: "org.apache.logging.log4j:log4j-api:$versions.log4j2",
+  lz4: "org.lz4:lz4-java:$versions.lz4",
+]
