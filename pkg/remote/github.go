@@ -10,22 +10,13 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/chainguard-dev/clog"
 )
 
-// codeSearchDelay is the minimum pause between consecutive GitHub Code Search
-// API calls to stay well within the 10 req/min rate limit.
-const codeSearchDelay = 7 * time.Second
-
 // GitHubSearcher defines the minimal interface needed to search and fetch files from GitHub.
 // This allows omnibump to work with different GitHub client implementations.
 type GitHubSearcher interface {
-	// SearchFiles searches for files matching the given pattern in a repository.
-	// Returns a list of file paths found.
-	SearchFiles(ctx context.Context, owner, repo, pattern string) ([]string, error)
-
 	// GetFileContent fetches the content of a file at a specific ref.
 	GetFileContent(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
 
@@ -49,50 +40,51 @@ func NewGitHubFetcher(client GitHubSearcher) *GitHubFetcher {
 
 // SearchFiles searches for files matching the given patterns in a repository.
 // Implements RemoteFetcher.SearchFiles.
+//
+// Files are discovered by listing the full tree at the requested ref via the
+// Git Tree API rather than GitHub Code Search: Code Search only indexes the
+// default branch (returning paths that may not exist at the ref) and caps
+// results at 100 per query.
 func (g *GitHubFetcher) SearchFiles(ctx context.Context, repo RepositoryRef, patterns []string) ([]RemoteFile, error) {
 	if err := repo.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid repository reference: %w", err)
 	}
 
 	log := clog.FromContext(ctx).With("owner", repo.Owner, "repo", repo.Repo, "ref", repo.Ref)
+
+	allPaths, err := g.client.ListFilePaths(ctx, repo.Owner, repo.Repo, repo.Ref)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list repository files: %w", err)
+	}
+
 	var allFiles []RemoteFile
 
-	for i, pattern := range patterns {
-		// Throttle between Code Search calls to stay within the 10 req/min rate limit.
-		if i > 0 {
-			log.Infof("Throttling code search to avoid rate limits (%s between requests)...", codeSearchDelay)
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(codeSearchDelay):
-			}
-		}
-
-		// GitHub Code Search matches on filename only; strip any path prefix so that
-		// patterns like "gradle/libs.versions.toml" become "libs.versions.toml".
+	for _, pattern := range patterns {
+		// Match on filename only; strip any path prefix so that patterns
+		// like "gradle/libs.versions.toml" become "libs.versions.toml".
 		pattern = filepath.Base(pattern)
 		if err := validatePattern(pattern); err != nil {
 			return nil, fmt.Errorf("invalid pattern: %w", err)
 		}
 
-		log.Debugf("Searching for pattern: %s", pattern)
-		paths, err := g.client.SearchFiles(ctx, repo.Owner, repo.Repo, pattern)
-		if err != nil {
-			return nil, fmt.Errorf("failed to search for %s: %w", pattern, err)
+		log.Debugf("Searching for pattern: %q", pattern)
+		var paths []string
+		for _, path := range allPaths {
+			if filepath.Base(path) == pattern {
+				paths = append(paths, path)
+			}
 		}
 
-		log.Infof("Found %d files matching %s", len(paths), pattern)
+		log.Infof("Found %d files matching %q", len(paths), pattern)
 
 		// Fetch and validate each file
 		for _, path := range paths {
-			file, err := g.fetchAndValidateFile(ctx, repo, path, pattern)
+			file, err := g.fetchAndValidateFile(ctx, repo, path)
 			if err != nil {
-				log.Warnf("Skipping %s: %v", path, err)
+				log.Warnf("Skipping %q: %v", path, err)
 				continue
 			}
-			if file != nil {
-				allFiles = append(allFiles, *file)
-			}
+			allFiles = append(allFiles, *file)
 		}
 	}
 
@@ -110,16 +102,10 @@ func (g *GitHubFetcher) ListFilePaths(ctx context.Context, repo RepositoryRef) (
 }
 
 // fetchAndValidateFile fetches a file and performs all necessary validations.
-// Returns nil file if the file should be skipped (e.g., basename doesn't match).
-func (g *GitHubFetcher) fetchAndValidateFile(ctx context.Context, repo RepositoryRef, path, pattern string) (*RemoteFile, error) {
+func (g *GitHubFetcher) fetchAndValidateFile(ctx context.Context, repo RepositoryRef, path string) (*RemoteFile, error) {
 	// Validate path for security
 	if err := ValidatePath(path); err != nil {
 		return nil, err
-	}
-
-	// Filter to exact matches (basename must match pattern)
-	if filepath.Base(path) != pattern && path != pattern {
-		return nil, nil //nolint:nilnil // Returning (nil, nil) to skip file is appropriate here
 	}
 
 	// Fetch content
