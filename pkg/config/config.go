@@ -170,29 +170,40 @@ func LoadMultipleConfigs(ctx context.Context, paths []string) (*Config, error) {
 		if err != nil {
 			return nil, err
 		}
-
-		// Merge configurations
-		merged.Packages = append(merged.Packages, cfg.Packages...)
-		merged.Properties = append(merged.Properties, cfg.Properties...)
-		merged.Replaces = append(merged.Replaces, cfg.Replaces...)
-
-		// Language should be consistent or auto
-		if cfg.Language != "" && cfg.Language != "auto" {
-			if merged.Language != "" && merged.Language != cfg.Language {
-				return nil, fmt.Errorf("%w: %s vs %s", ErrConflictingLanguage, merged.Language, cfg.Language)
-			}
-			merged.Language = cfg.Language
-		}
-
-		if len(cfg.Manager) > 0 {
-			if len(merged.Manager) > 0 && !slices.Equal(merged.Manager, cfg.Manager) {
-				return nil, fmt.Errorf("%w: %v vs %v", ErrConflictingManager, merged.Manager, cfg.Manager)
-			}
-			merged.Manager = cfg.Manager
+		if err := merged.Merge(cfg); err != nil {
+			return nil, err
 		}
 	}
 
 	return merged, nil
+}
+
+// Merge appends other's packages, properties and replaces into c and adopts
+// its language and manager, erroring on conflicting specifications.
+func (c *Config) Merge(other *Config) error {
+	if other == nil {
+		return nil
+	}
+	c.Packages = append(c.Packages, other.Packages...)
+	c.Properties = append(c.Properties, other.Properties...)
+	c.Replaces = append(c.Replaces, other.Replaces...)
+
+	// Language should be consistent or auto
+	if other.Language != "" && other.Language != "auto" {
+		if c.Language != "" && c.Language != other.Language {
+			return fmt.Errorf("%w: %q vs %q", ErrConflictingLanguage, c.Language, other.Language)
+		}
+		c.Language = other.Language
+	}
+
+	if len(other.Manager) > 0 {
+		if len(c.Manager) > 0 && !slices.Equal(c.Manager, other.Manager) {
+			return fmt.Errorf("%w: %v vs %v", ErrConflictingManager, c.Manager, other.Manager)
+		}
+		c.Manager = other.Manager
+	}
+
+	return nil
 }
 
 // DiscoverConfigFiles searches for configuration files in a directory.

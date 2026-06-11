@@ -6,6 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 package omnibump
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -264,5 +265,96 @@ func TestConvertToUpdateConfig_WithProperties(t *testing.T) {
 
 	if updateCfg.Properties["spring.version"] != "3.0.0" {
 		t.Errorf("expected spring.version=3.0.0, got %s", updateCfg.Properties["spring.version"])
+	}
+}
+
+// TestLoadUpdateConfig_MergesFileAndInlineInputs verifies that file and
+// inline inputs are combined rather than file inputs winning silently.
+func TestLoadUpdateConfig_MergesFileAndInlineInputs(t *testing.T) {
+	original := flags
+	defer func() { flags = original }()
+
+	dir := t.TempDir()
+	propertiesFile := filepath.Join(dir, "properties.yaml")
+	writeTestFile(t, propertiesFile, `properties:
+  - property: avro
+    value: "1.12.1"
+`)
+	depsFile := filepath.Join(dir, "deps.yaml")
+	writeTestFile(t, depsFile, `packages:
+  - groupId: io.netty
+    artifactId: netty-codec
+    version: 4.1.133.Final
+`)
+
+	tests := []struct {
+		name           string
+		set            rootFlags
+		wantPackages   int
+		wantProperties int
+		wantReplaces   int
+	}{
+		{
+			name: "inline packages with properties file",
+			set: rootFlags{
+				propertiesFile: propertiesFile,
+				packages:       "ch.qos.logback@logback-classic@1.5.25",
+			},
+			wantPackages:   1,
+			wantProperties: 1,
+		},
+		{
+			name: "deps file with inline replaces",
+			set: rootFlags{
+				depsFile: depsFile,
+				replaces: "github.com/old/pkg=github.com/new/pkg@v1.0.0",
+			},
+			wantPackages: 1,
+			wantReplaces: 1,
+		},
+		{
+			name: "file inputs only",
+			set: rootFlags{
+				depsFile:       depsFile,
+				propertiesFile: propertiesFile,
+			},
+			wantPackages:   1,
+			wantProperties: 1,
+		},
+		{
+			name: "inline inputs only",
+			set: rootFlags{
+				packages: "io.netty@netty-codec@4.1.133.Final org.apache.avro@avro@1.12.1",
+			},
+			wantPackages: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			flags = tt.set
+
+			cfg, err := loadUpdateConfig(t.Context())
+			if err != nil {
+				t.Fatalf("loadUpdateConfig() error = %v", err)
+			}
+			if got := len(cfg.Packages); got != tt.wantPackages {
+				t.Errorf("len(Packages) = %d, want %d (%+v)", got, tt.wantPackages, cfg.Packages)
+			}
+			if got := len(cfg.Properties); got != tt.wantProperties {
+				t.Errorf("len(Properties) = %d, want %d (%+v)", got, tt.wantProperties, cfg.Properties)
+			}
+			if got := len(cfg.Replaces); got != tt.wantReplaces {
+				t.Errorf("len(Replaces) = %d, want %d (%+v)", got, tt.wantReplaces, cfg.Replaces)
+			}
+		})
+	}
+}
+
+// writeTestFile writes content to path, failing the test on error.
+func writeTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("failed to write %s: %v", path, err)
 	}
 }
