@@ -175,12 +175,7 @@ func parseAndValidateVenvSpecs(deps []languages.Dependency) ([]venvSpecifier, er
 			return nil, fmt.Errorf("%w: %q (must match PEP 503 format)", ErrVenvInvalidPackageName, dep.Name)
 		}
 
-		// Validate == pinning
-		if !strings.HasPrefix(dep.Version, "==") {
-			return nil, fmt.Errorf("%w: %s@%s (use 'pkg==X.Y.Z')", ErrVenvInvalidPinning, dep.Name, dep.Version)
-		}
-
-		version := strings.TrimPrefix(dep.Version, "==")
+		version := dep.Version
 		if version == "" {
 			return nil, fmt.Errorf("%w: %s", ErrVenvEmptyVersion, dep.Name)
 		}

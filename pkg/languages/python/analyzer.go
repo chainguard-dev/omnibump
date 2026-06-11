@@ -147,7 +147,7 @@ func readSpecsFromManifest(manifest *ManifestInfo) ([]VersionSpec, error) {
 	switch manifest.Type {
 	case ManifestPyprojectTOML:
 		return ParsePyprojectDeps(data, manifest.BuildTool)
-	case ManifestRequirementsTxt:
+	case ManifestRequirementsTxt, ManifestRequirementsPinnedTxt:
 		return ParseRequirements(data), nil
 	case ManifestSetupCfg:
 		return ParseSetupCfg(data), nil

@@ -360,16 +360,14 @@ func resolveLanguage(ctx context.Context, cfg *config.Config) (string, error) {
 
 	detectedLang := normaliseLanguage(flags.language, "Language 'maven' is deprecated, use 'java' instead", log)
 
+	// When --manifest points to a subdirectory POM, auto-detection from
+	// --dir won't find it. Check explicitly before falling through.
 	if flags.manifestFile != "" && (detectedLang == languageAuto || detectedLang == "") {
-		ok, err := maven.IsMavenPom(flags.manifestFile)
-		if err != nil {
-			return "", fmt.Errorf("failed to read manifest file: %w", err)
+		ok, _ := maven.IsMavenPom(flags.manifestFile)
+		if ok {
+			detectedLang = languageJava
+			log.Infof("Detected language from manifest: %s", detectedLang)
 		}
-		if !ok {
-			return "", fmt.Errorf("--manifest %q: %w", flags.manifestFile, maven.ErrNotMavenPOM)
-		}
-		detectedLang = languageJava
-		log.Infof("Detected language: %s", detectedLang)
 	}
 
 	if detectedLang == languageAuto || detectedLang == "" {

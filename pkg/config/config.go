@@ -394,7 +394,23 @@ func ParseInlinePackages(packagesStr string) ([]Package, error) {
 			continue
 		}
 
-		// JS form: selector=version. Match this first so that selectors
+		// Python form: name==version. Must be checked before the JS
+		// single-= form, otherwise "urllib3==2.7.0" is mis-split as
+		// selector "urllib3=" / version "2.7.0".
+		if idx := strings.Index(pkgStr, "=="); idx > 0 {
+			name := strings.Trim(pkgStr[:idx], `"`)
+			version := strings.Trim(pkgStr[idx+2:], `"`)
+			if name == "" || version == "" {
+				return nil, fmt.Errorf("%w: %s (expected name==version)", ErrInvalidPackageFormat, pkgStr)
+			}
+			packages = append(packages, Package{
+				Name:    name,
+				Version: version,
+			})
+			continue
+		}
+
+		// JS form: selector=version. Match this so that selectors
 		// containing '@' (scoped names, version ranges) parse cleanly.
 		if eq := strings.LastIndexByte(pkgStr, '='); eq >= 0 {
 			selector := strings.Trim(pkgStr[:eq], `"`)
