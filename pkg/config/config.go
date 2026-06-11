@@ -181,6 +181,9 @@ func LoadMultipleConfigs(ctx context.Context, paths []string) (*Config, error) {
 // Merge appends other's packages, properties and replaces into c and adopts
 // its language and manager, erroring on conflicting specifications.
 func (c *Config) Merge(other *Config) error {
+	if other == nil {
+		return nil
+	}
 	c.Packages = append(c.Packages, other.Packages...)
 	c.Properties = append(c.Properties, other.Properties...)
 	c.Replaces = append(c.Replaces, other.Replaces...)
@@ -188,7 +191,7 @@ func (c *Config) Merge(other *Config) error {
 	// Language should be consistent or auto
 	if other.Language != "" && other.Language != "auto" {
 		if c.Language != "" && c.Language != other.Language {
-			return fmt.Errorf("%w: %s vs %s", ErrConflictingLanguage, c.Language, other.Language)
+			return fmt.Errorf("%w: %q vs %q", ErrConflictingLanguage, c.Language, other.Language)
 		}
 		c.Language = other.Language
 	}
