@@ -22,8 +22,9 @@ import (
 	_ "github.com/chainguard-dev/omnibump/pkg/languages/java"   // Register Java (Maven, Gradle, etc.)
 	"github.com/chainguard-dev/omnibump/pkg/languages/java/maven"
 	"github.com/chainguard-dev/omnibump/pkg/languages/js"
-	_ "github.com/chainguard-dev/omnibump/pkg/languages/php"  // Register PHP (Composer, etc.)
-	_ "github.com/chainguard-dev/omnibump/pkg/languages/rust" // Register Rust
+	_ "github.com/chainguard-dev/omnibump/pkg/languages/php"    // Register PHP (Composer, etc.)
+	_ "github.com/chainguard-dev/omnibump/pkg/languages/python" // Register Python
+	_ "github.com/chainguard-dev/omnibump/pkg/languages/rust"   // Register Rust
 	charmlog "github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
 	"sigs.k8s.io/release-utils/version"
@@ -46,6 +47,8 @@ type rootFlags struct {
 	logLevel       string
 	logPolicy      []string
 	update         bool
+	tool           string
+	venv           string
 }
 
 var flags rootFlags
@@ -81,7 +84,7 @@ func New() *cobra.Command {
 
 	// Add root command flags
 	f := cmd.Flags()
-	f.StringVarP(&flags.language, "language", "l", "auto", "language to use (auto, java, go, rust, js, or deprecated: maven)")
+	f.StringVarP(&flags.language, "language", "l", "auto", "language to use (auto, java, go, python, rust, js, or deprecated: maven)")
 	f.StringSliceVar(&flags.managers, "manager", nil, "build tool(s) within a language (currently only used for js: pnpm, yarn, npm, bun). May be repeated or comma-separated to write the same overrides under more than one manager's field.")
 	f.StringVar(&flags.depsFile, "deps", "", "dependencies file (deps.yaml, or legacy names)")
 	f.StringVar(&flags.propertiesFile, "properties", "", "properties file (properties.yaml)")
@@ -95,6 +98,8 @@ func New() *cobra.Command {
 	f.BoolVar(&flags.dryRun, "dry-run", false, "simulate update without making changes")
 	f.StringVar(&flags.manifestFile, "manifest", "", "path to manifest file to update (e.g. a specific pom.xml); defaults to <dir>/pom.xml")
 	f.BoolVar(&flags.update, "update", false, "update all dependencies")
+	f.StringVar(&flags.tool, "tool", "", "build tool override (Python: uv, pip, poetry, hatch, pdm, setuptools)")
+	f.StringVar(&flags.venv, "venv", "", "path to staged Python venv for in-place bumping (Python only)")
 
 	// Add version command
 	cmd.AddCommand(version.WithFont("starwars"))
@@ -400,6 +405,12 @@ func buildUpdateConfig(cfg *config.Config) *languages.UpdateConfig {
 			managers[i] = js.Manager(s)
 		}
 		updateCfg.Options["manager"] = managers
+	}
+	if flags.tool != "" {
+		updateCfg.Options["tool"] = flags.tool
+	}
+	if flags.venv != "" {
+		updateCfg.Options["venv"] = flags.venv
 	}
 
 	return updateCfg
