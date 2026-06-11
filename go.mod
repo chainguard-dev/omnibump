@@ -17,8 +17,8 @@ require (
 	github.com/tidwall/gjson v1.19.0
 	github.com/tidwall/sjson v1.2.5
 	golang.org/x/exp v0.0.0-20231006140011-7918f672742d
-	golang.org/x/mod v0.36.0
-	golang.org/x/tools v0.44.0
+	golang.org/x/mod v0.37.0
+	golang.org/x/tools v0.45.0
 	k8s.io/apimachinery v0.36.1
 	sigs.k8s.io/release-utils v0.12.4
 )
@@ -49,7 +49,7 @@ require (
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/sys v0.44.0 // indirect
 	golang.org/x/text v0.33.0 // indirect
 	golang.org/x/tools/go/packages/packagestest v0.1.1-deprecated // indirect
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
