@@ -35,6 +35,9 @@ const (
 	ManifestSetupPy = "setup.py"
 	// ManifestPipfile is the Pipfile manifest type.
 	ManifestPipfile = "Pipfile"
+	// ManifestRequirementsPinnedTxt is a pinned variant of requirements.txt
+	// used by some projects (e.g. in-toto).
+	ManifestRequirementsPinnedTxt = "requirements-pinned.txt"
 )
 
 // BuildTool identifies the Python build system in use.
@@ -91,15 +94,15 @@ type VersionSpec struct {
 // validateManifestPath checks that a path is safe for reading/writing.
 // Paths must be absolute and exist. Call this before ReadFile/WriteFile operations.
 func validateManifestPath(path string) error {
-	// Path must be absolute
 	if !filepath.IsAbs(path) {
 		return fmt.Errorf("%w: %s", ErrInvalidPath, path)
 	}
-	// Path must have one of the known manifest filenames
 	base := filepath.Base(path)
 	switch base {
 	case ManifestPyprojectTOML, ManifestRequirementsTxt, ManifestSetupCfg, ManifestSetupPy, ManifestPipfile:
-		// Valid manifest filename
+		// Standard manifest filenames
+	case ManifestRequirementsPinnedTxt:
+		// Used by some projects (e.g. in-toto) as a pinned variant of requirements.txt
 	default:
 		return fmt.Errorf("%w: %s", ErrUnsupportedManifestType, base)
 	}
@@ -118,7 +121,8 @@ func safeWriteFile(path string, data []byte) error {
 	}
 	base := filepath.Base(cleanPath)
 	switch base {
-	case ManifestPyprojectTOML, ManifestRequirementsTxt, ManifestSetupCfg, ManifestSetupPy, ManifestPipfile:
+	case ManifestPyprojectTOML, ManifestRequirementsTxt, ManifestSetupCfg, ManifestSetupPy, ManifestPipfile,
+		ManifestRequirementsPinnedTxt:
 		// Preserve existing file permissions; fall back to 0o644 for new files.
 		mode := os.FileMode(0o644)
 		if info, err := os.Stat(cleanPath); err == nil {
@@ -149,9 +153,6 @@ var (
 
 	// ErrVenvDowngrade is returned when a version downgrade is attempted.
 	ErrVenvDowngrade = errors.New("downgrade rejected")
-
-	// ErrVenvInvalidPinning is returned when venv mode requires == pinning.
-	ErrVenvInvalidPinning = errors.New("venv mode requires == pinning")
 
 	// ErrVenvEmptyVersion is returned when a version is empty.
 	ErrVenvEmptyVersion = errors.New("empty version for package")
