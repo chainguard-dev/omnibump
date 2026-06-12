@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
@@ -158,10 +159,11 @@ func (r *Rust) Validate(ctx context.Context, cfg *languages.UpdateConfig) error 
 	}
 
 	for _, dep := range cfg.Dependencies {
-		if pkg, exists := packageMap[dep.Name]; exists {
+		baseName, _, _ := strings.Cut(dep.Name, "@")
+		if pkg, exists := packageMap[baseName]; exists {
 			if pkg.Version != dep.Version {
 				log.Warnf("Dependency %s: expected %s, got %s",
-					dep.Name, dep.Version, pkg.Version)
+					baseName, dep.Version, pkg.Version)
 			}
 		} else {
 			log.Warnf("Dependency not found in Cargo.lock: %s", dep.Name)
