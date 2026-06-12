@@ -11,6 +11,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
@@ -71,17 +73,10 @@ func (j *Java) SupportsAnalysis() bool {
 
 // Update performs dependency updates on a Java project.
 func (j *Java) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
-	log := clog.FromContext(ctx)
-
-	if j.buildTool == nil {
-		tool, err := resolveBuildTool(ctx, cfg)
-		if err != nil {
-			return err
-		}
-		j.buildTool = tool
+	if err := j.ensureBuildTool(ctx, cfg); err != nil {
+		return err
 	}
-
-	log.Infof("Detected Java build tool: %s", j.buildTool.Name())
+	clog.InfoContextf(ctx, "Detected Java build tool: %s", j.buildTool.Name())
 
 	// Delegate to the build tool
 	return j.buildTool.Update(ctx, cfg)
@@ -89,16 +84,25 @@ func (j *Java) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 
 // Validate checks if the updates were applied successfully.
 func (j *Java) Validate(ctx context.Context, cfg *languages.UpdateConfig) error {
-	if j.buildTool == nil {
-		tool, err := resolveBuildTool(ctx, cfg)
-		if err != nil {
-			return err
-		}
-		j.buildTool = tool
+	if err := j.ensureBuildTool(ctx, cfg); err != nil {
+		return err
 	}
 
 	// Delegate to the build tool
 	return j.buildTool.Validate(ctx, cfg)
+}
+
+// ensureBuildTool resolves and caches the build tool for cfg.
+func (j *Java) ensureBuildTool(ctx context.Context, cfg *languages.UpdateConfig) error {
+	if j.buildTool != nil {
+		return nil
+	}
+	tool, err := resolveBuildTool(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	j.buildTool = tool
+	return nil
 }
 
 // GetBuildTool returns the detected build tool.
@@ -138,9 +142,32 @@ func resolveBuildTool(ctx context.Context, cfg *languages.UpdateConfig) (BuildTo
 }
 
 // detectBuildTool detects which Java build tool is present in the directory.
-// Returns the first build tool that reports a positive detection.
+//
+// Root-level manifests win over recursive detection: a Gradle project that
+// vendors a pom.xml somewhere in its tree (e.g. Kafka's streams quickstart
+// archetype) must resolve to Gradle, and a Maven project with a stray Gradle
+// script in a subdirectory must resolve to Maven. Only when no tool has a
+// manifest at the project root does the deeper per-tool detection decide.
 func detectBuildTool(ctx context.Context, dir string) BuildTool {
 	log := clog.FromContext(ctx)
+
+	for _, tool := range registeredBuildTools {
+		for _, manifest := range tool.GetManifestFiles() {
+			path := filepath.Join(dir, manifest)
+			if _, err := os.Stat(path); err != nil {
+				continue
+			}
+			// A file merely named pom.xml must not outrank a valid Gradle
+			// root: Maven roots are content-validated.
+			if manifest == maven.DefaultManifestFile {
+				if ok, err := maven.IsMavenPom(path); err != nil || !ok {
+					continue
+				}
+			}
+			log.Debugf("Detected Java build tool %s via root manifest %s", tool.Name(), manifest)
+			return tool
+		}
+	}
 
 	for _, tool := range registeredBuildTools {
 		detected, err := tool.Detect(ctx, dir)

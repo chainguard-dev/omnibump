@@ -1,0 +1,16 @@
+configurations.all {
+    resolutionStrategy {
+        eachDependency { DependencyResolveDetails details ->
+            // netty-tcnative-* uses independent versioning
+            if (details.requested.group == "io.netty" && !details.requested.name.startsWith("netty-tcnative-")) {
+                details.useVersion(libs.versions.netty.get())
+                details.because("CVE pins")
+            }
+            if (details.requested.group == 'com.signalfx.public') {
+                if (details.requested.name == 'signalfx-java') {
+                    details.useVersion '1.0.48'
+                }
+            }
+        }
+    }
+}
