@@ -89,10 +89,11 @@ func updatePackage(ctx context.Context, pkg *Package, cargoPkg CargoPackage, cfg
 func findMatchingPackages(name string, cargoPackages []CargoPackage) []CargoPackage {
 	var matches []CargoPackage
 
+	// We need to get the base name (without @version suffix) to match against
+	// e.g. "rand@0.8.5" should match "rand"
+	baseName, version, found := strings.Cut(name, "@")
+
 	for _, p := range cargoPackages {
-		// We need to get the base name (without @version suffix) to match against
-		// e.g. "rand@0.8.5" should match "rand"
-		baseName, version, found := strings.Cut(name, "@")
 		if p.Name == baseName && (!found || version == p.Version) {
 			matches = append(matches, p)
 		}
