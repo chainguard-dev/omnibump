@@ -15,6 +15,49 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
+func Test_findMatchingPackages(t *testing.T) {
+	tests := []struct {
+		name        string
+		packageName string
+		expected    []CargoPackage
+	}{
+		{
+			name:        "upgrade specific version",
+			packageName: "rand@0.8.4",
+			expected:    []CargoPackage{{Name: "rand", Version: "0.8.4"}},
+		},
+		{
+			name:        "upgrade all rand crates",
+			packageName: "rand",
+			expected: []CargoPackage{
+				{Name: "rand", Version: "0.8.4"},
+				{Name: "rand", Version: "0.10.1"},
+			},
+		},
+		{
+			name:        "no matching version",
+			packageName: "rand@0.9.0",
+			expected:    nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			packages := []CargoPackage{
+				{Name: "anyhow", Version: "1.0.102"},
+				{Name: "rand", Version: "0.8.4"},
+				{Name: "rand", Version: "0.10.1"},
+				{Name: "serde", Version: "1.0.228"},
+			}
+
+			expected := findMatchingPackages(tt.packageName, packages)
+			if diff := cmp.Diff(tt.expected, expected); diff != "" {
+				t.Errorf("unexpected result: %s", diff)
+			}
+		})
+	}
+}
+
 func TestUpdate(t *testing.T) {
 	tests := []struct {
 		name   string
