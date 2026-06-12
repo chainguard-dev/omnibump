@@ -498,3 +498,47 @@ func TestGradle_Update_ResolutionRuleBridge(t *testing.T) {
 		t.Errorf("rule-governed deps must not fall through to the force block:\n%s", build)
 	}
 }
+
+func TestGradle_Update_ForceBlock_RefusesSymlinkTarget(t *testing.T) {
+	// A malicious repo pre-places a symlink at the root build script name,
+	// pointing outside the checkout. Discovery skips symlinks, so the project
+	// is detected as Gradle with no usable root build script and the
+	// transitive-only dependency drives the force-block new-file path. The
+	// write must be refused rather than followed through the symlink.
+	tmpDir := t.TempDir()
+
+	outsideDir := t.TempDir()
+	victim := filepath.Join(outsideDir, "victim.txt")
+	const original = "DO NOT TOUCH"
+	if err := os.WriteFile(victim, []byte(original), 0o600); err != nil {
+		t.Fatalf("failed to write victim file: %v", err)
+	}
+
+	// settings.gradle makes the dir a Gradle project with no build script.
+	if err := os.WriteFile(filepath.Join(tmpDir, "settings.gradle"), []byte("rootProject.name = 'demo'\n"), 0o600); err != nil {
+		t.Fatalf("failed to write settings.gradle: %v", err)
+	}
+	// Symlinked root build script pointing at the victim outside the root.
+	if err := os.Symlink(victim, filepath.Join(tmpDir, "build.gradle")); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+
+	g := &Gradle{}
+	err := g.Update(t.Context(), &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "com.example:transitive-only", Version: "1.0.0"},
+		},
+	})
+	if !errors.Is(err, ErrSymlinkTarget) {
+		t.Fatalf("Update() error = %v, want ErrSymlinkTarget", err)
+	}
+
+	got, readErr := os.ReadFile(victim)
+	if readErr != nil {
+		t.Fatalf("failed to read victim file: %v", readErr)
+	}
+	if string(got) != original {
+		t.Errorf("victim file was modified through the symlink: got %q, want %q", got, original)
+	}
+}

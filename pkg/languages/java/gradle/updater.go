@@ -28,6 +28,11 @@ var (
 	// not match any catalog version key, version variable or properties-file
 	// entry in the project.
 	ErrPropertyNotFound = errors.New("property not found")
+
+	// ErrSymlinkTarget is returned when a build file omnibump would write
+	// already exists as a symlink, which os.WriteFile would follow out of
+	// the project root.
+	ErrSymlinkTarget = errors.New("refusing to write through a symlink")
 )
 
 // document is the common surface of all parsed gradlefile documents the
@@ -433,6 +438,13 @@ func writeNewForceFile(ctx context.Context, cfg *languages.UpdateConfig, path, c
 
 	if err := pathutil.ValidatePathWithinRoot(cfg.RootDir, filepath.Dir(path)); err != nil {
 		return fmt.Errorf("refusing to create %s: %w", path, err)
+	}
+	// A freshly created root build script must not already exist as a symlink:
+	// os.WriteFile would follow it and write through to its target, potentially
+	// outside the project root. Discovery skips symlinks, so any symlink at this
+	// path is unexpected - refuse it. (os.Lstat does not follow the link.)
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: %s", ErrSymlinkTarget, path)
 	}
 	if cfg.DryRun {
 		log.Infof("Dry run mode: would create %s with the managed force block", path)
