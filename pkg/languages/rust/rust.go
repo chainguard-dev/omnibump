@@ -159,10 +159,14 @@ func (r *Rust) Validate(ctx context.Context, cfg *languages.UpdateConfig) error 
 	}
 
 	for _, dep := range cfg.Dependencies {
-		baseName, pinnedVersion, pinned := strings.Cut(dep.Name, "@")
+		baseName, _, pinned := strings.Cut(dep.Name, "@")
 		found := false
 		for _, pkg := range packageMap[baseName] {
-			if pinned && pkg.Version != pinnedVersion {
+			// Validation runs against the post-update Cargo.lock, so the version
+			// embedded in a pinned name (the old/current version) is gone. For a
+			// pinned dependency the relevant instance is the one now at the target
+			// version, so match against dep.Version rather than the stale pin.
+			if pinned && pkg.Version != dep.Version {
 				continue
 			}
 			found = true
