@@ -219,9 +219,9 @@ func TestGradle_Update_ForceInjection_Groovy(t *testing.T) {
 	updateAndValidate(t, cfg)
 
 	build := readFile(t, filepath.Join(dir, "build.gradle"))
-	coords, err := ForceBlockCoordinates(filepath.Join(dir, "build.gradle"), []byte(build))
+	coords, err := forceBlockCoordinates(filepath.Join(dir, "build.gradle"), []byte(build))
 	if err != nil {
-		t.Fatalf("ForceBlockCoordinates() error = %v", err)
+		t.Fatalf("forceBlockCoordinates() error = %v", err)
 	}
 	if coords["io.netty:netty-codec"] != "4.1.133.Final" || coords["com.signalfx.public:signalfx-java"] != "1.0.49" {
 		t.Errorf("force block coords = %v", coords)
@@ -240,9 +240,9 @@ func TestGradle_Update_ForceInjection_Groovy(t *testing.T) {
 	if strings.Count(build, "omnibump:resolutionStrategy:begin") != 1 {
 		t.Errorf("force block duplicated on re-run:\n%s", build)
 	}
-	coords, err = ForceBlockCoordinates(filepath.Join(dir, "build.gradle"), []byte(build))
+	coords, err = forceBlockCoordinates(filepath.Join(dir, "build.gradle"), []byte(build))
 	if err != nil {
-		t.Fatalf("ForceBlockCoordinates() error = %v", err)
+		t.Fatalf("forceBlockCoordinates() error = %v", err)
 	}
 	if coords["io.netty:netty-codec"] != "4.1.135.Final" {
 		t.Errorf("force entry not merged to new version: %v", coords)
@@ -416,8 +416,8 @@ func TestGradle_Update_MissingCoordinates(t *testing.T) {
 			{Name: "justartifact", Version: "1.0.0"},
 		},
 	})
-	if !errors.Is(err, ErrMissingCoordinates) {
-		t.Errorf("Update() error = %v, want ErrMissingCoordinates", err)
+	if !errors.Is(err, errMissingCoordinates) {
+		t.Errorf("Update() error = %v, want errMissingCoordinates", err)
 	}
 }
 

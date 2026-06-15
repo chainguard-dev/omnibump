@@ -155,8 +155,6 @@ type declarationSite struct {
 // buildProjectModel scans rootDir and parses every Gradle file into the
 // model.
 func buildProjectModel(ctx context.Context, rootDir string) (*projectModel, error) {
-	log := clog.FromContext(ctx)
-
 	files, err := findBuildFiles(rootDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find build files: %w", err)
@@ -189,7 +187,7 @@ func buildProjectModel(ctx context.Context, rootDir string) (*projectModel, erro
 	m.indexVariables()
 	m.indexDeclarations()
 
-	log.Debugf("Gradle model: %d files, %d catalog modules, %d variables, %d declared modules",
+	clog.DebugContextf(ctx, "Gradle model: %d files, %d catalog modules, %d variables, %d declared modules",
 		len(m.sortedFiles), len(m.catalogLibrarySites), len(m.variableSites), len(m.declarationSites))
 	return m, nil
 }
@@ -200,8 +198,8 @@ func (m *projectModel) parseFile(path string) error {
 	if err != nil {
 		return fmt.Errorf("failed to stat: %w", err)
 	}
-	if info.Size() > MaxManifestSize {
-		return fmt.Errorf("%w: %s is %d bytes (max: %d)", ErrManifestTooLarge, path, info.Size(), MaxManifestSize)
+	if info.Size() > maxManifestSize {
+		return fmt.Errorf("%w: %s is %d bytes (max: %d)", ErrManifestTooLarge, path, info.Size(), maxManifestSize)
 	}
 	content, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {

@@ -326,9 +326,9 @@ func TestGradle_Update_NonExistentDependency(t *testing.T) {
 		t.Fatalf("failed to read file: %v", err)
 	}
 
-	coords, err := ForceBlockCoordinates(dstFile, afterContent)
+	coords, err := forceBlockCoordinates(dstFile, afterContent)
 	if err != nil {
-		t.Fatalf("ForceBlockCoordinates() error = %v", err)
+		t.Fatalf("forceBlockCoordinates() error = %v", err)
 	}
 	if coords["com.example:nonexistent"] != "1.0.0" {
 		t.Errorf("Force block should pin com.example:nonexistent at 1.0.0, got %v\nContent:\n%s", coords, afterContent)

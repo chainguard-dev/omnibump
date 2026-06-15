@@ -13,9 +13,9 @@ import (
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 )
 
-// ErrMissingCoordinates is returned when a dependency carries neither a
+// errMissingCoordinates is returned when a dependency carries neither a
 // parseable "group:artifact" name nor groupId/artifactId metadata.
-var ErrMissingCoordinates = errors.New("missing group/artifact coordinates for dependency")
+var errMissingCoordinates = errors.New("missing group/artifact coordinates for dependency")
 
 // depCoordinates extracts Maven coordinates from a dependency, preferring
 // explicit groupId/artifactId metadata (set by the groupId@artifactId@version
@@ -33,7 +33,7 @@ func depCoordinates(dep languages.Dependency) (group, artifact string, err error
 	group, artifact = parseDependencyName(dep.Name)
 	if group == "" || artifact == "" {
 		return "", "", fmt.Errorf("%w: name=%q (expected groupId:artifactId or groupId/artifactId metadata)",
-			ErrMissingCoordinates, dep.Name)
+			errMissingCoordinates, dep.Name)
 	}
 	return group, artifact, nil
 }

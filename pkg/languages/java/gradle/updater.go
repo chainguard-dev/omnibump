@@ -104,8 +104,6 @@ func (p *updatePlan) requireVersion(target, version string) error {
 // version.properties files). A property found nowhere is a hard error,
 // matching Maven.
 func (p *updatePlan) applyProperties(ctx context.Context) error {
-	log := clog.FromContext(ctx)
-
 	names := make([]string, 0, len(p.properties))
 	for name := range p.properties {
 		names = append(names, name)
@@ -122,20 +120,20 @@ func (p *updatePlan) applyProperties(ctx context.Context) error {
 		switch {
 		case len(catalogSites) > 0:
 			if len(variableSites) > 0 {
-				log.Warnf("Property %s matches both a catalog version key and a variable; updating the catalog key", name)
+				clog.WarnContextf(ctx, "Property %s matches both a catalog version key and a variable; updating the catalog key", name)
 			}
 			for _, site := range catalogSites {
 				if err := site.set(value); err != nil {
 					return fmt.Errorf("failed to update catalog version %s in %s: %w", name, site.path(), err)
 				}
-				log.Infof("Updating catalog version %s from %s to %s in %s", name, site.version.Value, value, site.path())
+				clog.InfoContextf(ctx, "Updating catalog version %s from %s to %s in %s", name, site.version.Value, value, site.path())
 			}
 		case len(variableSites) > 0:
 			for _, site := range variableSites {
 				if err := site.set(value); err != nil {
 					return fmt.Errorf("failed to update variable %s in %s: %w", name, site.path(), err)
 				}
-				log.Infof("Updating variable %s from %s to %s in %s", name, site.value(), value, site.path())
+				clog.InfoContextf(ctx, "Updating variable %s from %s to %s in %s", name, site.value(), value, site.path())
 			}
 		default:
 			return fmt.Errorf("%w: %s is not a catalog version key, version variable or properties-file entry", ErrPropertyNotFound, name)
@@ -150,10 +148,8 @@ func (p *updatePlan) applyProperties(ctx context.Context) error {
 // managed force block — the Gradle analog of Maven adding the dependency to
 // DependencyManagement.
 func (p *updatePlan) applyDependency(ctx context.Context, dep languages.Dependency) error {
-	log := clog.FromContext(ctx)
-
 	if dep.Version == "" {
-		log.Warnf("Skipping dependency %s: no target version", depDisplayName(dep))
+		clog.WarnContextf(ctx, "Skipping dependency %s: no target version", depDisplayName(dep))
 		return nil
 	}
 	group, artifact, err := depCoordinates(dep)
@@ -163,7 +159,7 @@ func (p *updatePlan) applyDependency(ctx context.Context, dep languages.Dependen
 	module := group + ":" + artifact
 
 	if dep.Scope != "" || dep.Type != "" {
-		log.Debugf("Ignoring scope/type for %s: not applicable to Gradle", module)
+		clog.DebugContextf(ctx, "Ignoring scope/type for %s: not applicable to Gradle", module)
 	}
 
 	catalogHandled, err := p.applyCatalogTier(ctx, module, dep.Version)
@@ -183,7 +179,7 @@ func (p *updatePlan) applyDependency(ctx context.Context, dep languages.Dependen
 		return nil
 	}
 
-	log.Infof("Dependency %s not declared in any Gradle file: pinning via resolutionStrategy force block", module)
+	clog.InfoContextf(ctx, "Dependency %s not declared in any Gradle file: pinning via resolutionStrategy force block", module)
 	if err := p.requireVersion("dependency "+module, dep.Version); err != nil {
 		return err
 	}
@@ -195,7 +191,6 @@ func (p *updatePlan) applyDependency(ctx context.Context, dep languages.Dependen
 // referenced [versions] key, or the library's inline version. Strictly
 // blocks tied to the module's catalog alias are kept consistent.
 func (p *updatePlan) applyCatalogTier(ctx context.Context, module, version string) (bool, error) {
-	log := clog.FromContext(ctx)
 	handled := false
 
 	for _, site := range p.model.catalogLibrarySites[module] {
@@ -219,7 +214,7 @@ func (p *updatePlan) applyCatalogTier(ctx context.Context, module, version strin
 			if err := site.catalog.SetLibraryVersion(library, version); err != nil {
 				return false, fmt.Errorf("failed to update catalog library %s in %s: %w", library.Alias, site.path(), err)
 			}
-			log.Infof("Updating catalog library %s (%s) from %s to %s in %s",
+			clog.InfoContextf(ctx, "Updating catalog library %s (%s) from %s to %s in %s",
 				library.Alias, module, library.Version, version, site.path())
 			handled = true
 		}
@@ -257,7 +252,6 @@ func toEditSites[S editSite](sites []S) []editSite {
 // links modules to their governing version when the project pins them only
 // through resolutionStrategy.eachDependency (kafbat/kayenta pattern).
 func (p *updatePlan) applyRuleTier(ctx context.Context, module, group, artifact, version string) (bool, error) {
-	log := clog.FromContext(ctx)
 	handled := false
 
 	for _, site := range p.model.resolutionRuleSites[group] {
@@ -285,7 +279,7 @@ func (p *updatePlan) applyRuleTier(ctx context.Context, module, group, artifact,
 			if err := site.build.SetResolutionRuleVersion(rule, version); err != nil {
 				return false, fmt.Errorf("failed to update resolution rule for %s in %s: %w", module, site.build.Path(), err)
 			}
-			log.Infof("Patching %s via resolution rule from %s to %s in %s", module, rule.Version, version, site.build.Path())
+			clog.InfoContextf(ctx, "Patching %s via resolution rule from %s to %s in %s", module, rule.Version, version, site.build.Path())
 			handled = true
 		}
 	}
@@ -317,19 +311,17 @@ func (p *updatePlan) applyVariableRef(ctx context.Context, module, varPath, vers
 // mismatching dependency version is a conflict); a key with no definition
 // site is left to the caller's fallback handling.
 func (p *updatePlan) applyKeyedSites(ctx context.Context, module, kind, key, version string, sites []editSite) (bool, error) {
-	log := clog.FromContext(ctx)
-
 	if explicit, isExplicit := p.properties[key]; isExplicit {
 		if explicit != version {
 			return false, fmt.Errorf("%w: dependency %s requests %s but property %s is explicitly set to %s",
 				ErrVersionConflict, module, version, key, explicit)
 		}
-		log.Infof("Dependency %s is covered by explicit property %s", module, key)
+		clog.InfoContextf(ctx, "Dependency %s is covered by explicit property %s", module, key)
 		return true, nil
 	}
 
 	if len(sites) == 0 {
-		log.Warnf("Dependency %s references %s %s which is not defined in this project", module, kind, key)
+		clog.WarnContextf(ctx, "Dependency %s references %s %s which is not defined in this project", module, kind, key)
 		return false, nil
 	}
 	if err := p.requireVersion(kind+" "+key, version); err != nil {
@@ -339,7 +331,7 @@ func (p *updatePlan) applyKeyedSites(ctx context.Context, module, kind, key, ver
 		if err := site.set(version); err != nil {
 			return false, fmt.Errorf("failed to update %s %s in %s: %w", kind, key, site.path(), err)
 		}
-		log.Infof("Patching %s via %s %s in %s to %s", module, kind, key, site.path(), version)
+		clog.InfoContextf(ctx, "Patching %s via %s %s in %s to %s", module, kind, key, site.path(), version)
 	}
 	return true, nil
 }
@@ -348,7 +340,6 @@ func (p *updatePlan) applyKeyedSites(ctx context.Context, module, kind, key, ver
 // literal versions in place, variable-referenced versions at the variable's
 // definition sites, and Spring Boot library() entries matched by artifact.
 func (p *updatePlan) applyDeclarationTier(ctx context.Context, module, artifact, version string) (bool, error) {
-	log := clog.FromContext(ctx)
 	handled := false
 
 	for _, site := range p.model.declarationSites[module] {
@@ -367,7 +358,7 @@ func (p *updatePlan) applyDeclarationTier(ctx context.Context, module, artifact,
 			if err := site.build.SetDependencyVersion(decl, version); err != nil {
 				return false, fmt.Errorf("failed to update %s in %s: %w", module, site.build.Path(), err)
 			}
-			log.Infof("Patching %s from %s to %s in %s", module, decl.Version, version, site.build.Path())
+			clog.InfoContextf(ctx, "Patching %s from %s to %s in %s", module, decl.Version, version, site.build.Path())
 			handled = true
 		}
 	}
@@ -379,7 +370,7 @@ func (p *updatePlan) applyDeclarationTier(ctx context.Context, module, artifact,
 		if err := site.build.SetDependencyVersion(site.decl, version); err != nil {
 			return false, fmt.Errorf("failed to update library(%q) in %s: %w", artifact, site.build.Path(), err)
 		}
-		log.Infof("Patching library(%q) from %s to %s in %s", artifact, site.decl.Version, version, site.build.Path())
+		clog.InfoContextf(ctx, "Patching library(%q) from %s to %s in %s", artifact, site.decl.Version, version, site.build.Path())
 		handled = true
 	}
 
@@ -390,8 +381,6 @@ func (p *updatePlan) applyDeclarationTier(ctx context.Context, module, artifact,
 // force block first when needed. Honors dry-run and validates every write
 // stays within the project root.
 func (p *updatePlan) apply(ctx context.Context, cfg *languages.UpdateConfig) error {
-	log := clog.FromContext(ctx)
-
 	newFilePath, newFileContent, err := p.injectForceBlock(ctx)
 	if err != nil {
 		return err
@@ -407,14 +396,14 @@ func (p *updatePlan) apply(ctx context.Context, cfg *languages.UpdateConfig) err
 			return fmt.Errorf("refusing to update %s: %w", path, err)
 		}
 		if cfg.DryRun {
-			log.Infof("Dry run mode: would write %d change(s) to %s", doc.ChangeCount(), path)
+			clog.InfoContextf(ctx, "Dry run mode: would write %d change(s) to %s", doc.ChangeCount(), path)
 			changes += doc.ChangeCount()
 			continue
 		}
 		if err := os.WriteFile(path, doc.Content(), gradleFilePerms); err != nil {
 			return fmt.Errorf("failed to write %s: %w", path, err)
 		}
-		log.Infof("Successfully updated %s with %d change(s)", path, doc.ChangeCount())
+		clog.InfoContextf(ctx, "Successfully updated %s with %d change(s)", path, doc.ChangeCount())
 		changes += doc.ChangeCount()
 	}
 
@@ -426,7 +415,7 @@ func (p *updatePlan) apply(ctx context.Context, cfg *languages.UpdateConfig) err
 	}
 
 	if changes == 0 {
-		log.Infof("No Gradle changes needed: everything already at the requested versions")
+		clog.InfoContextf(ctx, "No Gradle changes needed: everything already at the requested versions")
 	}
 	return nil
 }
@@ -434,8 +423,6 @@ func (p *updatePlan) apply(ctx context.Context, cfg *languages.UpdateConfig) err
 // writeNewForceFile creates a brand-new root build script that hosts only
 // the managed force block, honouring dry-run and root-boundary checks.
 func writeNewForceFile(ctx context.Context, cfg *languages.UpdateConfig, path, content string) error {
-	log := clog.FromContext(ctx)
-
 	if err := pathutil.ValidatePathWithinRoot(cfg.RootDir, filepath.Dir(path)); err != nil {
 		return fmt.Errorf("refusing to create %s: %w", path, err)
 	}
@@ -447,13 +434,13 @@ func writeNewForceFile(ctx context.Context, cfg *languages.UpdateConfig, path, c
 		return fmt.Errorf("%w: %s", ErrSymlinkTarget, path)
 	}
 	if cfg.DryRun {
-		log.Infof("Dry run mode: would create %s with the managed force block", path)
+		clog.InfoContextf(ctx, "Dry run mode: would create %s with the managed force block", path)
 		return nil
 	}
 	if err := os.WriteFile(path, []byte(content), gradleFilePerms); err != nil {
 		return fmt.Errorf("failed to create %s: %w", path, err)
 	}
-	log.Infof("Created %s with the managed force block", path)
+	clog.InfoContextf(ctx, "Created %s with the managed force block", path)
 	return nil
 }
 
@@ -464,13 +451,11 @@ func (p *updatePlan) injectForceBlock(ctx context.Context) (string, string, erro
 	if len(p.forced) == 0 {
 		return "", "", nil
 	}
-	log := clog.FromContext(ctx)
-
 	if root := p.model.rootBuildFile(); root != nil {
 		if err := root.EnsureForceBlock(p.forced); err != nil {
 			return "", "", fmt.Errorf("failed to update force block in %s: %w", root.Path(), err)
 		}
-		log.Infof("Pinning %d transitive dependencies via force block in %s", len(p.forced), root.Path())
+		clog.InfoContextf(ctx, "Pinning %d transitive dependencies via force block in %s", len(p.forced), root.Path())
 		return "", "", nil
 	}
 
@@ -484,7 +469,7 @@ func (p *updatePlan) injectForceBlock(ctx context.Context) (string, string, erro
 		return "", "", fmt.Errorf("failed to render force block: %w", err)
 	}
 	path := filepath.Join(p.model.rootDir, name)
-	log.Infof("Pinning %d transitive dependencies via new root build script %s", len(p.forced), path)
+	clog.InfoContextf(ctx, "Pinning %d transitive dependencies via new root build script %s", len(p.forced), path)
 	return path, content, nil
 }
 

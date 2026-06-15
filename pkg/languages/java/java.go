@@ -29,6 +29,14 @@ type Java struct {
 	buildTool BuildTool
 }
 
+// Compile-time assertions that the registered build tools satisfy BuildTool.
+// They live here rather than in each build-tool package because BuildTool is
+// defined in this package and those packages cannot import it (import cycle).
+var (
+	_ BuildTool = (*maven.Maven)(nil)
+	_ BuildTool = (*gradle.Gradle)(nil)
+)
+
 // registeredBuildTools is the list of supported build tools in priority order.
 // Build tools are checked in order until one is detected.
 var registeredBuildTools = []BuildTool{

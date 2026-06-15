@@ -3,20 +3,6 @@ Copyright 2026 Chainguard, Inc.
 SPDX-License-Identifier: Apache-2.0
 */
 
-// Package gradle implements Gradle build tool support for Java projects.
-//
-// It mirrors the Maven build tool's behavior: omnibump finds the best place
-// to apply each requested bump across the mechanisms Gradle projects use to
-// define dependency versions — version catalogs (gradle/libs.versions.toml
-// and settings-script inline catalogs), version variables (gradle.properties,
-// version.properties files, Groovy ext properties and version maps), and
-// direct declarations in build scripts. Dependencies not declared anywhere
-// are pinned through an omnibump-managed resolutionStrategy force block, the
-// Gradle analog of Maven's DependencyManagement fallback for transitive
-// dependencies.
-//
-// File parsing and editing is delegated to pkg/gradlefile, which performs
-// format-preserving edits on both Groovy and Kotlin DSL files.
 package gradle
 
 import (
@@ -40,8 +26,8 @@ const (
 	// File permissions for writing updated build files.
 	gradleFilePerms = 0o600
 
-	// MaxManifestSize limits manifest file size to prevent resource exhaustion.
-	MaxManifestSize = 10 * 1024 * 1024 // 10 MB
+	// maxManifestSize limits manifest file size to prevent resource exhaustion.
+	maxManifestSize = 10 * 1024 * 1024 // 10 MB
 
 	// gradleToolName is the build tool identifier.
 	gradleToolName = "gradle"
@@ -84,15 +70,14 @@ func (g *Gradle) Name() string {
 
 // Detect checks if Gradle manifest files exist in the directory.
 func (g *Gradle) Detect(ctx context.Context, dir string) (bool, error) {
-	log := clog.FromContext(ctx)
 	for _, file := range g.GetManifestFiles() {
 		if _, err := os.Stat(filepath.Join(dir, file)); err == nil {
-			log.Debugf("Detected Gradle project at %s (found %s)", dir, file)
+			clog.DebugContextf(ctx, "Detected Gradle project at %s (found %s)", dir, file)
 			return true, nil
 		}
 	}
 
-	log.Debugf("No Gradle project detected at %s", dir)
+	clog.DebugContextf(ctx, "No Gradle project detected at %s", dir)
 	return false, nil
 }
 
@@ -119,10 +104,9 @@ func (g *Gradle) GetAnalyzer() analyzer.Analyzer {
 // variable, direct declaration), and pins dependencies found nowhere via the
 // managed resolutionStrategy force block.
 func (g *Gradle) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
-	log := clog.FromContext(ctx)
-	log.Infof("Updating Gradle project at: %s", cfg.RootDir)
-	log.Infof("Dependencies to update: %d", len(cfg.Dependencies))
-	log.Infof("Properties to update: %d", len(cfg.Properties))
+	clog.InfoContextf(ctx, "Updating Gradle project at: %s", cfg.RootDir)
+	clog.InfoContextf(ctx, "Dependencies to update: %d", len(cfg.Dependencies))
+	clog.InfoContextf(ctx, "Properties to update: %d", len(cfg.Properties))
 
 	// Validate all versions upfront to fail fast before any file writes.
 	for _, dep := range cfg.Dependencies {
@@ -159,8 +143,7 @@ func (g *Gradle) Update(ctx context.Context, cfg *languages.UpdateConfig) error 
 // the project and verifying every dependency's effective version and every
 // property's definition sites.
 func (g *Gradle) Validate(ctx context.Context, cfg *languages.UpdateConfig) error {
-	log := clog.FromContext(ctx)
-	log.Infof("Validating Gradle updates in: %s", cfg.RootDir)
+	clog.InfoContextf(ctx, "Validating Gradle updates in: %s", cfg.RootDir)
 
 	model, err := buildProjectModel(ctx, cfg.RootDir)
 	if err != nil {
@@ -184,7 +167,7 @@ func (g *Gradle) Validate(ctx context.Context, cfg *languages.UpdateConfig) erro
 			ErrValidationFailed, len(failures), strings.Join(failures, "\n  - "))
 	}
 
-	log.Infof("Validation successful: all %d dependencies and %d properties updated correctly",
+	clog.InfoContextf(ctx, "Validation successful: all %d dependencies and %d properties updated correctly",
 		len(cfg.Dependencies), len(cfg.Properties))
 	return nil
 }
@@ -376,9 +359,9 @@ func findBuildFiles(root string) ([]string, error) {
 	return files, err
 }
 
-// ForceBlockCoordinates returns the managed force block entries of a build
+// forceBlockCoordinates returns the managed force block entries of a build
 // script's content, keyed by "group:artifact".
-func ForceBlockCoordinates(path string, content []byte) (map[string]string, error) {
+func forceBlockCoordinates(path string, content []byte) (map[string]string, error) {
 	f, err := gradlefile.ParseBuild(path, content)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse %s: %w", path, err)

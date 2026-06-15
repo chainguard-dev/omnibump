@@ -23,20 +23,20 @@ import (
 //nolint:revive // Explicit name preferred for clarity
 type GradleAnalyzer struct{}
 
+var _ analyzer.Analyzer = (*GradleAnalyzer)(nil)
+
 // Analyze analyzes a Gradle project's dependencies. Version catalog keys and
 // version variables are surfaced as properties (with their defining file in
 // PropertySources); dependencies declared through a catalog reference or a
 // variable interpolation report UsesProperty with the key they resolve
 // through, mirroring how the Maven analyzer reports ${property} versions.
 func (ga *GradleAnalyzer) Analyze(ctx context.Context, projectPath string) (*analyzer.AnalysisResult, error) {
-	log := clog.FromContext(ctx)
-
 	absPath, err := filepath.Abs(projectPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
-	log.Debugf("Analyzing Gradle project: %s", absPath)
+	clog.DebugContextf(ctx, "Analyzing Gradle project: %s", absPath)
 
 	model, err := buildProjectModel(ctx, absPath)
 	if err != nil {
@@ -59,7 +59,7 @@ func (ga *GradleAnalyzer) Analyze(ctx context.Context, projectPath string) (*ana
 	collectDeclaredDependencies(model, result)
 	countCatalogReferences(model, result)
 
-	log.Infof("Analysis complete: found %d dependencies, %d using version catalogs or variables",
+	clog.InfoContextf(ctx, "Analysis complete: found %d dependencies, %d using version catalogs or variables",
 		len(result.Dependencies), countPropertyUsage(result))
 
 	return result, nil
@@ -169,9 +169,7 @@ func countCatalogReferences(model *projectModel, result *analyzer.AnalysisResult
 
 // RecommendStrategy recommends an update strategy for given dependencies.
 func (ga *GradleAnalyzer) RecommendStrategy(ctx context.Context, analysis *analyzer.AnalysisResult, deps []analyzer.Dependency) (*analyzer.Strategy, error) {
-	log := clog.FromContext(ctx)
-
-	log.Debugf("Determining update strategy for %d dependencies", len(deps))
+	clog.DebugContextf(ctx, "Determining update strategy for %d dependencies", len(deps))
 
 	strategy := &analyzer.Strategy{
 		DirectUpdates:        []analyzer.Dependency{},
@@ -184,14 +182,14 @@ func (ga *GradleAnalyzer) RecommendStrategy(ctx context.Context, analysis *analy
 
 	for _, dep := range deps {
 		depKey := dep.Name
-		log.Debugf("Checking dependency: %s @ %s", depKey, dep.Version)
+		clog.DebugContextf(ctx, "Checking dependency: %s @ %s", depKey, dep.Version)
 
 		// Check if this dependency uses a version catalog
 		depInfo, exists := analysis.Dependencies[depKey]
 		if exists && depInfo.UsesProperty {
-			handleCatalogUpdate(log, depKey, dep, depInfo, analysis, strategy, &missingCatalogKeys)
+			handleCatalogUpdate(ctx, depKey, dep, depInfo, analysis, strategy, &missingCatalogKeys)
 		} else {
-			handleDirectUpdate(log, depKey, dep, exists, strategy)
+			handleDirectUpdate(ctx, depKey, dep, exists, strategy)
 		}
 	}
 
@@ -201,20 +199,20 @@ func (ga *GradleAnalyzer) RecommendStrategy(ctx context.Context, analysis *analy
 				strings.Join(missingCatalogKeys, ", ")))
 	}
 
-	log.Infof("Strategy: %d direct updates, %d version catalog updates",
+	clog.InfoContextf(ctx, "Strategy: %d direct updates, %d version catalog updates",
 		len(strategy.DirectUpdates), len(strategy.PropertyUpdates))
 
 	return strategy, nil
 }
 
 // handleCatalogUpdate processes a dependency that uses a version catalog.
-func handleCatalogUpdate(log *clog.Logger, depKey string, dep analyzer.Dependency, depInfo *analyzer.DependencyInfo, analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy, missingKeys *[]string) {
+func handleCatalogUpdate(ctx context.Context, depKey string, dep analyzer.Dependency, depInfo *analyzer.DependencyInfo, analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy, missingKeys *[]string) {
 	catalogKey := depInfo.PropertyName
-	log.Debugf("  -> Dependency uses version catalog key: %s", catalogKey)
+	clog.DebugContextf(ctx, "  -> Dependency uses version catalog key: %s", catalogKey)
 
 	// Check if we already have this catalog key
 	if existingVersion, exists := strategy.PropertyUpdates[catalogKey]; exists {
-		log.Warnf("Catalog key %s already set to %s, requested %s for %s",
+		clog.WarnContextf(ctx, "Catalog key %s already set to %s, requested %s for %s",
 			catalogKey, existingVersion, dep.Version, depKey)
 		return
 	}
@@ -227,23 +225,23 @@ func handleCatalogUpdate(log *clog.Logger, depKey string, dep analyzer.Dependenc
 
 	// Check if catalog key is actually defined
 	if currentValue, exists := analysis.Properties[catalogKey]; exists {
-		log.Infof("Will update version catalog key %s from %s to %s", catalogKey, currentValue, dep.Version)
+		clog.InfoContextf(ctx, "Will update version catalog key %s from %s to %s", catalogKey, currentValue, dep.Version)
 	} else {
-		log.Warnf("Catalog key %s is referenced but not found in version catalogs", catalogKey)
+		clog.WarnContextf(ctx, "Catalog key %s is referenced but not found in version catalogs", catalogKey)
 		*missingKeys = append(*missingKeys, catalogKey)
 	}
 }
 
 // handleDirectUpdate processes a dependency that requires a direct update.
-func handleDirectUpdate(log *clog.Logger, depKey string, dep analyzer.Dependency, exists bool, strategy *analyzer.Strategy) {
+func handleDirectUpdate(ctx context.Context, depKey string, dep analyzer.Dependency, exists bool, strategy *analyzer.Strategy) {
 	// Direct update in build file
 	if exists {
-		log.Debugf("  -> Dependency found but doesn't use version catalogs")
+		clog.DebugContextf(ctx, "  -> Dependency found but doesn't use version catalogs")
 	} else {
-		log.Debugf("  -> Dependency not found (may be transitive or new)")
+		clog.DebugContextf(ctx, "  -> Dependency not found (may be transitive or new)")
 	}
 	strategy.DirectUpdates = append(strategy.DirectUpdates, dep)
-	log.Infof("Will directly update %s to %s", depKey, dep.Version)
+	clog.InfoContextf(ctx, "Will directly update %s to %s", depKey, dep.Version)
 }
 
 // countPropertyUsage counts how many dependencies resolve their version
