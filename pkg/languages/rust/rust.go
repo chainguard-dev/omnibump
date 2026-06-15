@@ -153,19 +153,24 @@ func (r *Rust) Validate(ctx context.Context, cfg *languages.UpdateConfig) error 
 	}
 
 	// Validate dependencies
-	packageMap := make(map[string]CargoPackage)
+	packageMap := make(map[string][]CargoPackage)
 	for _, pkg := range cargoPackages {
-		packageMap[pkg.Name] = pkg
+		packageMap[pkg.Name] = append(packageMap[pkg.Name], pkg)
 	}
 
 	for _, dep := range cfg.Dependencies {
-		baseName, _, _ := strings.Cut(dep.Name, "@")
-		if pkg, exists := packageMap[baseName]; exists {
-			if pkg.Version != dep.Version {
-				log.Warnf("Dependency %s: expected %s, got %s",
-					baseName, dep.Version, pkg.Version)
+		baseName, pinnedVersion, pinned := strings.Cut(dep.Name, "@")
+		found := false
+		for _, pkg := range packageMap[baseName] {
+			if pinned && pkg.Version != pinnedVersion {
+				continue
 			}
-		} else {
+			found = true
+			if pkg.Version != dep.Version {
+				log.Warnf("Dependency %s: expected %s, got %s", baseName, dep.Version, pkg.Version)
+			}
+		}
+		if !found {
 			log.Warnf("Dependency not found in Cargo.lock: %s", dep.Name)
 		}
 	}
