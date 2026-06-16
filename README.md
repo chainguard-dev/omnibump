@@ -26,7 +26,7 @@
 | Go | Go Modules | `go.mod`, `go.sum` |
 | Rust | Cargo | `Cargo.lock`, `Cargo.toml` |
 | Java | Maven | `pom.xml` |
-| Java | Gradle | `build.gradle`, `build.gradle.kts` |
+| Java | Gradle | `build.gradle(.kts)`, `settings.gradle(.kts)`, `gradle.properties`, `gradle/libs.versions.toml`, version maps/files |
 | JavaScript | pnpm | `package.json`, `pnpm-lock.yaml` |
 | JavaScript | yarn | `package.json`, `yarn.lock` |
 | JavaScript | npm | `package.json`, `package-lock.json` |
@@ -205,7 +205,7 @@ Comprehensive documentation is available in the `docs/` directory:
 
 ### Does omnibump support Gradle?
 
-Yes! Gradle support is fully implemented. omnibump auto-detects Gradle projects and supports both Groovy DSL (`build.gradle`) and Kotlin DSL (`build.gradle.kts`). See the [Usage Examples](docs/usage-examples.md) for details.
+Yes! Gradle support is fully implemented with Maven parity. omnibump auto-detects Gradle projects, supports both Groovy DSL (`build.gradle`) and Kotlin DSL (`build.gradle.kts`), and finds the best place to apply each bump: version catalogs (`gradle/libs.versions.toml` and settings-script inline catalogs), version variables (`gradle.properties`, `version.properties` files, `ext` properties and Groovy version maps), and direct declarations including Spring dependency-management `dependencySet` blocks. Dependencies not declared anywhere (transitives) are pinned through an omnibump-managed `resolutionStrategy` force block, the Gradle analog of Maven's DependencyManagement fallback. See the [Usage Examples](docs/usage-examples.md) for details.
 
 ### Can I use omnibump in CI/CD?
 

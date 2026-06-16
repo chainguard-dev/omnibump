@@ -1,0 +1,5 @@
+apply plugin: 'java'
+
+dependencies {
+    implementation "com.netflix.kayenta:kayenta-core:1.0.0"
+}

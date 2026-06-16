@@ -1,0 +1,6 @@
+apply from: file('gradle/dependencies.gradle')
+
+dependencies {
+    implementation libs.jacksonDatabind
+    implementation libs.log4j2Api
+}

@@ -8,14 +8,14 @@ package gradle
 import (
 	"context"
 	"fmt"
-	"os"
+	"maps"
 	"path/filepath"
-	"regexp"
+	"slices"
 	"strings"
 
-	"github.com/BurntSushi/toml"
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
+	"github.com/chainguard-dev/omnibump/pkg/gradlefile"
 )
 
 // GradleAnalyzer implements dependency analysis for Gradle projects.
@@ -23,105 +23,153 @@ import (
 //nolint:revive // Explicit name preferred for clarity
 type GradleAnalyzer struct{}
 
-// Regex patterns for parsing Gradle files.
-var (
-	// Pattern for inline version catalog declarations: version("key", "version").
-	inlineVersionCatalogPattern = regexp.MustCompile(`version\s*\(\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']\s*\)`)
+var _ analyzer.Analyzer = (*GradleAnalyzer)(nil)
 
-	// Pattern for string notation dependencies: implementation("group:artifact:version").
-	stringDependencyPattern = regexp.MustCompile(`[a-zA-Z]+\s*\(\s*["']([^:]+):([^:]+):([^"']+)["']\s*\)`)
-
-	// Pattern for version catalog references: implementation(libs.foo.bar).
-	catalogReferencePattern = regexp.MustCompile(`[a-zA-Z]+\s*\(\s*libs\.([a-zA-Z0-9._-]+)\s*\)`)
-)
-
-// readFileContent is a helper to read file content with consistent error handling.
-func readFileContent(ctx context.Context, path string) ([]byte, error) {
-	log := clog.FromContext(ctx)
-	log.Debugf("Reading file: %s", path)
-
-	content, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read file: %w", err)
-	}
-	return content, nil
-}
-
-// Analyze analyzes a Gradle project's dependencies.
+// Analyze analyzes a Gradle project's dependencies. Version catalog keys and
+// version variables are surfaced as properties (with their defining file in
+// PropertySources); dependencies declared through a catalog reference or a
+// variable interpolation report UsesProperty with the key they resolve
+// through, mirroring how the Maven analyzer reports ${property} versions.
 func (ga *GradleAnalyzer) Analyze(ctx context.Context, projectPath string) (*analyzer.AnalysisResult, error) {
-	log := clog.FromContext(ctx)
-
-	// Get absolute path
 	absPath, err := filepath.Abs(projectPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
-	log.Debugf("Analyzing Gradle project: %s", absPath)
+	clog.DebugContextf(ctx, "Analyzing Gradle project: %s", absPath)
+
+	model, err := buildProjectModel(ctx, absPath)
+	if err != nil {
+		return nil, err
+	}
 
 	result := &analyzer.AnalysisResult{
-		Language:      "java",
-		Dependencies:  make(map[string]*analyzer.DependencyInfo),
-		Properties:    make(map[string]string), // Version catalog keys
-		PropertyUsage: make(map[string]int),    // Catalog key usage count
+		Language:        "java",
+		Dependencies:    make(map[string]*analyzer.DependencyInfo),
+		Properties:      make(map[string]string),
+		PropertySources: make(map[string]string),
+		PropertyUsage:   make(map[string]int),
 		Metadata: map[string]any{
-			"build_tool": "gradle",
+			"build_tool": gradleToolName,
 		},
 	}
 
-	// Find all Gradle manifest files
-	files, err := findBuildFiles(absPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find build files: %w", err)
-	}
+	collectProperties(model, result)
+	collectCatalogDependencies(model, result)
+	collectDeclaredDependencies(model, result)
+	countCatalogReferences(model, result)
 
-	log.Infof("Found %d Gradle file(s) to analyze", len(files))
-
-	// Parse version catalogs first (TOML and inline)
-	for _, file := range files {
-		filename := filepath.Base(file)
-		switch filename {
-		case "libs.versions.toml":
-			if err := analyzeVersionCatalogToml(ctx, file, result); err != nil {
-				log.Warnf("Failed to analyze %s: %v", file, err)
-			}
-		case "settings.gradle", "settings.gradle.kts":
-			if err := analyzeSettingsGradle(ctx, file, result); err != nil {
-				log.Warnf("Failed to analyze %s: %v", file, err)
-			}
-		}
-	}
-
-	// Parse build files for dependencies
-	for _, file := range files {
-		filename := filepath.Base(file)
-		if filename == "build.gradle" || filename == "build.gradle.kts" {
-			if err := analyzeBuildGradle(ctx, file, result); err != nil {
-				log.Warnf("Failed to analyze %s: %v", file, err)
-			}
-		}
-	}
-
-	log.Infof("Analysis complete: found %d dependencies, %d using version catalogs",
-		len(result.Dependencies), countCatalogUsage(result))
+	clog.InfoContextf(ctx, "Analysis complete: found %d dependencies, %d using version catalogs or variables",
+		len(result.Dependencies), countPropertyUsage(result))
 
 	return result, nil
 }
 
 // AnalyzeRemote performs dependency analysis on remotely-fetched Gradle files.
 // Not yet implemented for Gradle - returns error.
-// TODO: Implement this function and use ctx for logging and files for analysis.
 //
 //nolint:revive // Parameters will be used when implementation is added
 func (ga *GradleAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]byte) (*analyzer.RemoteAnalysisResult, error) {
 	return nil, fmt.Errorf("%w for Gradle", ErrRemoteAnalysisNotImplemented)
 }
 
+// collectProperties surfaces catalog version keys and version variables as
+// analysis properties with their defining files.
+func collectProperties(model *projectModel, result *analyzer.AnalysisResult) {
+	for _, key := range slices.Sorted(maps.Keys(model.catalogVersionSites)) {
+		site := model.catalogVersionSites[key][0]
+		result.Properties[key] = site.version.Value
+		result.PropertySources[key] = relativeTo(model.rootDir, site.path())
+	}
+	for _, name := range slices.Sorted(maps.Keys(model.variableSites)) {
+		if _, exists := result.Properties[name]; exists {
+			continue
+		}
+		site := model.variableSites[name][0]
+		result.Properties[name] = site.value()
+		result.PropertySources[name] = relativeTo(model.rootDir, site.path())
+	}
+}
+
+// collectCatalogDependencies records one dependency per catalog library.
+func collectCatalogDependencies(model *projectModel, result *analyzer.AnalysisResult) {
+	for _, module := range slices.Sorted(maps.Keys(model.catalogLibrarySites)) {
+		library := model.catalogLibrarySites[module][0].library
+		info := &analyzer.DependencyInfo{
+			Name:           module,
+			Version:        model.resolveCatalogValue(library),
+			UpdateStrategy: "catalog",
+			Metadata: map[string]any{
+				"catalog_alias": library.Alias,
+			},
+		}
+		if library.VersionRef != "" {
+			info.UsesProperty = true
+			info.PropertyName = library.VersionRef
+			result.PropertyUsage[library.VersionRef]++
+		}
+		result.Dependencies[module] = info
+	}
+}
+
+// collectDeclaredDependencies records dependencies declared directly in
+// build scripts. Catalog entries win when the same module appears in both.
+func collectDeclaredDependencies(model *projectModel, result *analyzer.AnalysisResult) {
+	for _, module := range slices.Sorted(maps.Keys(model.declarationSites)) {
+		if _, exists := result.Dependencies[module]; exists {
+			continue
+		}
+		decl := model.declarationSites[module][0].decl
+		info := &analyzer.DependencyInfo{
+			Name:           module,
+			Version:        decl.Version,
+			UpdateStrategy: "direct",
+			Metadata: map[string]any{
+				"groupId":    decl.Group,
+				"artifactId": decl.Artifact,
+			},
+		}
+		if decl.VarRef != "" {
+			info.UsesProperty = true
+			info.PropertyName = decl.VarRef
+			info.UpdateStrategy = "property"
+			if sites := model.variableSites[decl.VarRef]; len(sites) > 0 {
+				info.Version = sites[0].value()
+			}
+			result.PropertyUsage[decl.VarRef]++
+		}
+		result.Dependencies[module] = info
+	}
+}
+
+// countCatalogReferences counts libs.x.y accessor usages in build scripts
+// against the version key each referenced library resolves through.
+func countCatalogReferences(model *projectModel, result *analyzer.AnalysisResult) {
+	for _, path := range model.sortedFiles {
+		build, ok := model.builds[path]
+		if !ok {
+			continue
+		}
+		for _, decl := range build.Dependencies() {
+			if decl.Kind != gradlefile.CatalogRef {
+				continue
+			}
+			module, ok := model.aliasModules[gradlefile.NormalizeAlias(decl.CatalogAlias)]
+			if !ok {
+				continue
+			}
+			for _, site := range model.catalogLibrarySites[module] {
+				if site.library.VersionRef != "" {
+					result.PropertyUsage[site.library.VersionRef]++
+				}
+			}
+		}
+	}
+}
+
 // RecommendStrategy recommends an update strategy for given dependencies.
 func (ga *GradleAnalyzer) RecommendStrategy(ctx context.Context, analysis *analyzer.AnalysisResult, deps []analyzer.Dependency) (*analyzer.Strategy, error) {
-	log := clog.FromContext(ctx)
-
-	log.Debugf("Determining update strategy for %d dependencies", len(deps))
+	clog.DebugContextf(ctx, "Determining update strategy for %d dependencies", len(deps))
 
 	strategy := &analyzer.Strategy{
 		DirectUpdates:        []analyzer.Dependency{},
@@ -134,14 +182,14 @@ func (ga *GradleAnalyzer) RecommendStrategy(ctx context.Context, analysis *analy
 
 	for _, dep := range deps {
 		depKey := dep.Name
-		log.Debugf("Checking dependency: %s @ %s", depKey, dep.Version)
+		clog.DebugContextf(ctx, "Checking dependency: %s @ %s", depKey, dep.Version)
 
 		// Check if this dependency uses a version catalog
 		depInfo, exists := analysis.Dependencies[depKey]
 		if exists && depInfo.UsesProperty {
-			handleCatalogUpdate(log, depKey, dep, depInfo, analysis, strategy, &missingCatalogKeys)
+			handleCatalogUpdate(ctx, depKey, dep, depInfo, analysis, strategy, &missingCatalogKeys)
 		} else {
-			handleDirectUpdate(log, depKey, dep, exists, strategy)
+			handleDirectUpdate(ctx, depKey, dep, exists, strategy)
 		}
 	}
 
@@ -151,40 +199,20 @@ func (ga *GradleAnalyzer) RecommendStrategy(ctx context.Context, analysis *analy
 				strings.Join(missingCatalogKeys, ", ")))
 	}
 
-	log.Infof("Strategy: %d direct updates, %d version catalog updates",
+	clog.InfoContextf(ctx, "Strategy: %d direct updates, %d version catalog updates",
 		len(strategy.DirectUpdates), len(strategy.PropertyUpdates))
 
 	return strategy, nil
 }
 
-// analyzeVersionCatalogToml parses a TOML version catalog file.
-func analyzeVersionCatalogToml(ctx context.Context, path string, result *analyzer.AnalysisResult) error {
-	log := clog.FromContext(ctx)
-
-	content, err := readFileContent(ctx, path)
-	if err != nil {
-		return err
-	}
-
-	var catalog map[string]any
-	if err := toml.Unmarshal(content, &catalog); err != nil {
-		return fmt.Errorf("failed to parse TOML: %w", err)
-	}
-
-	extractVersionCatalogKeys(catalog, result, log)
-	extractLibraryDefinitions(catalog, result, log)
-
-	return nil
-}
-
 // handleCatalogUpdate processes a dependency that uses a version catalog.
-func handleCatalogUpdate(log *clog.Logger, depKey string, dep analyzer.Dependency, depInfo *analyzer.DependencyInfo, analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy, missingKeys *[]string) {
+func handleCatalogUpdate(ctx context.Context, depKey string, dep analyzer.Dependency, depInfo *analyzer.DependencyInfo, analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy, missingKeys *[]string) {
 	catalogKey := depInfo.PropertyName
-	log.Debugf("  -> Dependency uses version catalog key: %s", catalogKey)
+	clog.DebugContextf(ctx, "  -> Dependency uses version catalog key: %s", catalogKey)
 
 	// Check if we already have this catalog key
 	if existingVersion, exists := strategy.PropertyUpdates[catalogKey]; exists {
-		log.Warnf("Catalog key %s already set to %s, requested %s for %s",
+		clog.WarnContextf(ctx, "Catalog key %s already set to %s, requested %s for %s",
 			catalogKey, existingVersion, dep.Version, depKey)
 		return
 	}
@@ -197,212 +225,28 @@ func handleCatalogUpdate(log *clog.Logger, depKey string, dep analyzer.Dependenc
 
 	// Check if catalog key is actually defined
 	if currentValue, exists := analysis.Properties[catalogKey]; exists {
-		log.Infof("Will update version catalog key %s from %s to %s", catalogKey, currentValue, dep.Version)
+		clog.InfoContextf(ctx, "Will update version catalog key %s from %s to %s", catalogKey, currentValue, dep.Version)
 	} else {
-		log.Warnf("Catalog key %s is referenced but not found in version catalogs", catalogKey)
+		clog.WarnContextf(ctx, "Catalog key %s is referenced but not found in version catalogs", catalogKey)
 		*missingKeys = append(*missingKeys, catalogKey)
 	}
 }
 
 // handleDirectUpdate processes a dependency that requires a direct update.
-func handleDirectUpdate(log *clog.Logger, depKey string, dep analyzer.Dependency, exists bool, strategy *analyzer.Strategy) {
+func handleDirectUpdate(ctx context.Context, depKey string, dep analyzer.Dependency, exists bool, strategy *analyzer.Strategy) {
 	// Direct update in build file
 	if exists {
-		log.Debugf("  -> Dependency found but doesn't use version catalogs")
+		clog.DebugContextf(ctx, "  -> Dependency found but doesn't use version catalogs")
 	} else {
-		log.Debugf("  -> Dependency not found (may be transitive or new)")
+		clog.DebugContextf(ctx, "  -> Dependency not found (may be transitive or new)")
 	}
 	strategy.DirectUpdates = append(strategy.DirectUpdates, dep)
-	log.Infof("Will directly update %s to %s", depKey, dep.Version)
+	clog.InfoContextf(ctx, "Will directly update %s to %s", depKey, dep.Version)
 }
 
-// extractVersionCatalogKeys extracts version keys from TOML catalog.
-func extractVersionCatalogKeys(catalog map[string]any, result *analyzer.AnalysisResult, log *clog.Logger) {
-	versions, ok := catalog["versions"].(map[string]any)
-	if !ok {
-		return
-	}
-
-	for key, value := range versions {
-		if version, ok := value.(string); ok {
-			result.Properties[key] = version
-			log.Debugf("Found version catalog key: %s = %s", key, version)
-		}
-	}
-}
-
-// extractLibraryDefinitions extracts library definitions from TOML catalog.
-func extractLibraryDefinitions(catalog map[string]any, result *analyzer.AnalysisResult, log *clog.Logger) {
-	libraries, ok := catalog["libraries"].(map[string]any)
-	if !ok {
-		return
-	}
-
-	for alias, libDef := range libraries {
-		libMap, ok := libDef.(map[string]any)
-		if !ok {
-			continue
-		}
-
-		groupID, artifactID := parseLibraryModule(libMap)
-		if groupID == "" || artifactID == "" {
-			continue
-		}
-
-		version := parseLibraryVersion(libMap, log, alias)
-		depKey := fmt.Sprintf("%s:%s", groupID, artifactID)
-
-		result.Dependencies[depKey] = &analyzer.DependencyInfo{
-			Name:           depKey,
-			Version:        version,
-			UsesProperty:   false, // This is the catalog definition itself
-			UpdateStrategy: "catalog",
-			Metadata: map[string]any{
-				"catalog_alias": alias,
-			},
-		}
-	}
-}
-
-// parseLibraryModule extracts groupId and artifactId from library module definition.
-func parseLibraryModule(libMap map[string]any) (groupID, artifactID string) {
-	module, ok := libMap["module"].(string)
-	if !ok {
-		return "", ""
-	}
-
-	parts := strings.Split(module, ":")
-	if len(parts) != 2 {
-		return "", ""
-	}
-
-	return parts[0], parts[1]
-}
-
-// parseLibraryVersion extracts version from library definition.
-func parseLibraryVersion(libMap map[string]any, log *clog.Logger, alias string) string {
-	// Check for direct version
-	if v, ok := libMap["version"].(string); ok {
-		return v
-	}
-
-	// Check for version reference
-	if vRef, ok := libMap["version"].(map[string]any); ok {
-		if ref, ok := vRef["ref"].(string); ok {
-			log.Debugf("Library %s references version key: %s", alias, ref)
-		}
-	}
-
-	return ""
-}
-
-// analyzeSettingsGradle parses settings.gradle for inline version catalogs.
-func analyzeSettingsGradle(ctx context.Context, path string, result *analyzer.AnalysisResult) error {
-	log := clog.FromContext(ctx)
-
-	content, err := readFileContent(ctx, path)
-	if err != nil {
-		return err
-	}
-
-	matches := inlineVersionCatalogPattern.FindAllStringSubmatch(string(content), -1)
-
-	for _, match := range matches {
-		if len(match) >= 3 {
-			key := match[1]
-			version := match[2]
-			result.Properties[key] = version
-			log.Debugf("Found inline version catalog key: %s = %s", key, version)
-		}
-	}
-
-	return nil
-}
-
-// analyzeBuildGradle parses build.gradle files for dependency declarations.
-func analyzeBuildGradle(ctx context.Context, path string, result *analyzer.AnalysisResult) error {
-	log := clog.FromContext(ctx)
-
-	content, err := readFileContent(ctx, path)
-	if err != nil {
-		return err
-	}
-
-	text := string(content)
-
-	parseStringDependencies(text, result, log)
-	parseCatalogReferences(text, result, log)
-
-	return nil
-}
-
-// parseStringDependencies extracts direct dependency declarations.
-func parseStringDependencies(text string, result *analyzer.AnalysisResult, log *clog.Logger) {
-	matches := stringDependencyPattern.FindAllStringSubmatch(text, -1)
-
-	for _, match := range matches {
-		if len(match) < 4 {
-			continue
-		}
-
-		groupID := match[1]
-		artifactID := match[2]
-		version := match[3]
-		depKey := fmt.Sprintf("%s:%s", groupID, artifactID)
-
-		result.Dependencies[depKey] = &analyzer.DependencyInfo{
-			Name:           depKey,
-			Version:        version,
-			UsesProperty:   false,
-			UpdateStrategy: "direct",
-			Metadata: map[string]any{
-				"groupId":    groupID,
-				"artifactId": artifactID,
-			},
-		}
-		log.Debugf("Found dependency: %s @ %s", depKey, version)
-	}
-}
-
-// parseCatalogReferences extracts version catalog references and links them to definitions.
-func parseCatalogReferences(text string, result *analyzer.AnalysisResult, log *clog.Logger) {
-	matches := catalogReferencePattern.FindAllStringSubmatch(text, -1)
-
-	for _, match := range matches {
-		if len(match) < 2 {
-			continue
-		}
-
-		catalogRef := match[1]
-		catalogKey := strings.ReplaceAll(catalogRef, ".", "-")
-
-		log.Debugf("Found catalog reference: libs.%s (key: %s)", catalogRef, catalogKey)
-		result.PropertyUsage[catalogKey]++
-
-		linkCatalogToDependency(result, catalogRef, catalogKey, log)
-	}
-}
-
-// linkCatalogToDependency links a catalog reference to its dependency definition.
-func linkCatalogToDependency(result *analyzer.AnalysisResult, catalogRef, catalogKey string, log *clog.Logger) {
-	for depKey, depInfo := range result.Dependencies {
-		alias, ok := depInfo.Metadata["catalog_alias"].(string)
-		if !ok {
-			continue
-		}
-
-		if alias == catalogKey || alias == catalogRef {
-			depInfo.UsesProperty = true
-			depInfo.PropertyName = catalogKey
-			depInfo.UpdateStrategy = "catalog"
-			result.PropertyUsage[catalogKey]++
-			log.Debugf("Linked dependency %s to catalog key %s", depKey, catalogKey)
-		}
-	}
-}
-
-// countCatalogUsage counts how many dependencies use version catalogs.
-func countCatalogUsage(result *analyzer.AnalysisResult) int {
+// countPropertyUsage counts how many dependencies resolve their version
+// through a property (catalog key or variable).
+func countPropertyUsage(result *analyzer.AnalysisResult) int {
 	count := 0
 	for _, dep := range result.Dependencies {
 		if dep.UsesProperty {
@@ -421,4 +265,13 @@ func getAffectedDependenciesGradle(analysis *analyzer.AnalysisResult, catalogKey
 		}
 	}
 	return affected
+}
+
+// relativeTo returns path relative to root, falling back to path itself.
+func relativeTo(root, path string) string {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return path
+	}
+	return rel
 }

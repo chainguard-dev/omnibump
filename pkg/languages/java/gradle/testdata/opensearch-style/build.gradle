@@ -1,0 +1,6 @@
+dependencies {
+    api(libs.netty.codec)
+    api(libs.netty.handler)
+    implementation(libs.log4j.core)
+    implementation(libs.okio)
+}

@@ -3,8 +3,6 @@ Copyright 2026 Chainguard, Inc.
 SPDX-License-Identifier: Apache-2.0
 */
 
-// Package gradle implements Gradle build tool support for Java projects.
-// Uses text-based parsing/updating to match real-world usage patterns.
 package gradle
 
 import (
@@ -13,12 +11,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
-	"github.com/BurntSushi/toml"
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
+	"github.com/chainguard-dev/omnibump/pkg/gradlefile"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 )
 
@@ -29,24 +26,21 @@ const (
 	// File permissions for writing updated build files.
 	gradleFilePerms = 0o600
 
-	// Version group index constants for regex patterns.
-	versionGroupOne = 1
-	versionGroupTwo = 2
+	// maxManifestSize limits manifest file size to prevent resource exhaustion.
+	maxManifestSize = 10 * 1024 * 1024 // 10 MB
 
-	// MaxManifestSize limits manifest file size to prevent resource exhaustion.
-	MaxManifestSize = 10 * 1024 * 1024 // 10 MB
+	// gradleToolName is the build tool identifier.
+	gradleToolName = "gradle"
+
+	// Well-known Gradle file names.
+	buildGradleFile       = "build.gradle"
+	buildGradleKtsFile    = "build.gradle.kts"
+	settingsGradleFile    = "settings.gradle"
+	settingsGradleKtsFile = "settings.gradle.kts"
+	gradlePropertiesFile  = "gradle.properties"
 )
 
 var (
-	// versionValidationRegex defines the allowlist for valid version strings.
-	// Only allows alphanumeric characters, dots, underscores, hyphens, and plus signs.
-	// This prevents injection of quotes, parentheses, newlines, braces, and other
-	// characters that could be used for code injection in Gradle build files.
-	versionValidationRegex = regexp.MustCompile(`^[a-zA-Z0-9._+-]+$`)
-
-	// ErrInvalidVersion is returned when a version string fails validation.
-	ErrInvalidVersion = errors.New("invalid version string: contains disallowed characters")
-
 	// ErrRemoteAnalysisNotImplemented is returned when remote analysis is not implemented.
 	ErrRemoteAnalysisNotImplemented = errors.New("remote analysis not yet implemented")
 
@@ -63,65 +57,38 @@ var (
 	ErrManifestTooLarge = errors.New("manifest file too large")
 )
 
-// gradleManifestFiles lists all files that can contain dependency versions.
-var gradleManifestFiles = map[string]bool{
-	"build.gradle.kts":    true,
-	"build.gradle":        true,
-	"settings.gradle.kts": true,
-	"settings.gradle":     true,
-	"libs.versions.toml":  true,
-}
-
 // skipDirs lists directories to skip when walking the file tree.
-var skipDirs = map[string]bool{
-	"vendor":       true,
-	"node_modules": true,
-}
-
-// validateVersion checks if a version string contains only safe characters.
-// Returns an error if the version contains characters that could be used for
-// code injection (quotes, parentheses, newlines, braces, etc.).
-func validateVersion(version string) error {
-	if !versionValidationRegex.MatchString(version) {
-		return fmt.Errorf("%w: %q (allowed characters: a-zA-Z0-9._+-)", ErrInvalidVersion, version)
-	}
-	return nil
+var skipDirs = map[string]struct{}{
+	"vendor":       {},
+	"node_modules": {},
 }
 
 // Name returns the build tool identifier.
 func (g *Gradle) Name() string {
-	return "gradle"
+	return gradleToolName
 }
 
 // Detect checks if Gradle manifest files exist in the directory.
 func (g *Gradle) Detect(ctx context.Context, dir string) (bool, error) {
-	log := clog.FromContext(ctx)
-	// Check for build files in priority order
-	buildFiles := []string{
-		"build.gradle.kts", // Kotlin DSL (modern)
-		"build.gradle",     // Groovy DSL (legacy)
-		"settings.gradle.kts",
-		"settings.gradle",
-	}
-
-	for _, file := range buildFiles {
+	for _, file := range g.GetManifestFiles() {
 		if _, err := os.Stat(filepath.Join(dir, file)); err == nil {
-			log.Debugf("Detected Gradle project at %s (found %s)", dir, file)
+			clog.DebugContextf(ctx, "Detected Gradle project at %s (found %s)", dir, file)
 			return true, nil
 		}
 	}
 
-	log.Debugf("No Gradle project detected at %s", dir)
+	clog.DebugContextf(ctx, "No Gradle project detected at %s", dir)
 	return false, nil
 }
 
 // GetManifestFiles returns Gradle manifest files.
 func (g *Gradle) GetManifestFiles() []string {
 	return []string{
-		"build.gradle",
-		"build.gradle.kts",
-		"settings.gradle",
-		"settings.gradle.kts",
+		buildGradleFile,
+		buildGradleKtsFile,
+		settingsGradleFile,
+		settingsGradleKtsFile,
+		gradlePropertiesFile,
 		"gradle/libs.versions.toml",
 	}
 }
@@ -131,131 +98,236 @@ func (g *Gradle) GetAnalyzer() analyzer.Analyzer {
 	return &GradleAnalyzer{}
 }
 
-// Update performs dependency updates on a Gradle project.
+// Update performs dependency updates on a Gradle project. It builds a model
+// of every Gradle file that can define a version, routes each requested
+// update to the mechanism that defines it (version catalog, version
+// variable, direct declaration), and pins dependencies found nowhere via the
+// managed resolutionStrategy force block.
 func (g *Gradle) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
-	log := clog.FromContext(ctx)
-	log.Infof("Updating Gradle project at: %s", cfg.RootDir)
+	clog.InfoContextf(ctx, "Updating Gradle project at: %s", cfg.RootDir)
+	clog.InfoContextf(ctx, "Dependencies to update: %d", len(cfg.Dependencies))
+	clog.InfoContextf(ctx, "Properties to update: %d", len(cfg.Properties))
 
-	// Validate all dependency versions upfront to fail fast
+	// Validate all versions upfront to fail fast before any file writes.
 	for _, dep := range cfg.Dependencies {
-		if err := validateVersion(dep.Version); err != nil {
-			return fmt.Errorf("dependency %s: %w", dep.Name, err)
+		if dep.Version == "" {
+			continue
+		}
+		if err := gradlefile.ValidateVersion(dep.Version); err != nil {
+			return fmt.Errorf("dependency %s: %w", depDisplayName(dep), err)
+		}
+	}
+	for name, value := range cfg.Properties {
+		if err := gradlefile.ValidateVersion(value); err != nil {
+			return fmt.Errorf("property %s: %w", name, err)
 		}
 	}
 
-	// Find build files
-	buildFiles, err := findBuildFiles(cfg.RootDir)
+	model, err := buildProjectModel(ctx, cfg.RootDir)
 	if err != nil {
-		return fmt.Errorf("failed to find build files: %w", err)
+		return err
 	}
-
-	if len(buildFiles) == 0 {
+	if len(model.sortedFiles) == 0 {
 		return ErrNoBuildFiles
 	}
 
-	log.Infof("Found %d build file(s)", len(buildFiles))
-
-	// Update each build file
-	for _, buildFile := range buildFiles {
-		if err := updateBuildFile(ctx, buildFile, cfg); err != nil {
-			return fmt.Errorf("failed to update %s: %w", buildFile, err)
-		}
+	plan, err := resolveUpdates(ctx, model, cfg)
+	if err != nil {
+		return err
 	}
 
-	return nil
+	return plan.apply(ctx, cfg)
 }
 
-// Validate checks if the updates were applied successfully.
-// Re-parses build files and verifies that requested versions were actually updated.
+// Validate checks if the updates were applied successfully by re-scanning
+// the project and verifying every dependency's effective version and every
+// property's definition sites.
 func (g *Gradle) Validate(ctx context.Context, cfg *languages.UpdateConfig) error {
-	log := clog.FromContext(ctx)
-	log.Infof("Validating Gradle updates in: %s", cfg.RootDir)
+	clog.InfoContextf(ctx, "Validating Gradle updates in: %s", cfg.RootDir)
 
-	// Re-analyze the project to get current state
-	analyzer := g.GetAnalyzer()
-	analysis, err := analyzer.Analyze(ctx, cfg.RootDir)
+	model, err := buildProjectModel(ctx, cfg.RootDir)
 	if err != nil {
-		return fmt.Errorf("failed to analyze project for validation: %w", err)
+		return fmt.Errorf("failed to re-scan project for validation: %w", err)
 	}
 
-	// Verify each requested dependency update
 	var failures []string
 	for _, dep := range cfg.Dependencies {
-		if failure := validateDependency(ctx, dep, analysis); failure != "" {
+		if failure := validateDependency(model, dep); failure != "" {
+			failures = append(failures, failure)
+		}
+	}
+	for name, expected := range cfg.Properties {
+		if failure := validateProperty(model, name, expected); failure != "" {
 			failures = append(failures, failure)
 		}
 	}
 
 	if len(failures) > 0 {
-		return fmt.Errorf("%w for %d dependencies:\n  - %s",
+		return fmt.Errorf("%w for %d update(s):\n  - %s",
 			ErrValidationFailed, len(failures), strings.Join(failures, "\n  - "))
 	}
 
-	log.Infof("Validation successful: all %d dependencies updated correctly", len(cfg.Dependencies))
+	clog.InfoContextf(ctx, "Validation successful: all %d dependencies and %d properties updated correctly",
+		len(cfg.Dependencies), len(cfg.Properties))
 	return nil
 }
 
-// validateDependency validates a single dependency update.
-// Returns an error message if validation fails, empty string if successful.
-func validateDependency(ctx context.Context, dep languages.Dependency, analysis *analyzer.AnalysisResult) string {
-	depKey := dep.Name
-	expectedVersion := dep.Version
-
-	// Check if dependency exists in analysis
-	depInfo, exists := analysis.Dependencies[depKey]
-	if !exists {
-		return fmt.Sprintf("%s: not found in project after update", depKey)
-	}
-
-	// Validate based on dependency type
-	if depInfo.UsesProperty {
-		return validateCatalogDependency(ctx, depKey, expectedVersion, depInfo, analysis.Properties)
-	}
-	return validateDirectDependency(ctx, depKey, expectedVersion, depInfo)
+// effectiveVersion is one resolved version of a module together with a
+// description of the mechanism it came from, for validation messages.
+type effectiveVersion struct {
+	version string
+	desc    string
 }
 
-// validateCatalogDependency validates a dependency that uses a version catalog.
-func validateCatalogDependency(ctx context.Context, depKey, expectedVersion string, depInfo *analyzer.DependencyInfo, properties map[string]string) string {
-	log := clog.FromContext(ctx)
-	catalogKey := depInfo.PropertyName
-
-	actualVersion, exists := properties[catalogKey]
-	if !exists {
-		return fmt.Sprintf("%s: catalog key %s not found", depKey, catalogKey)
+// validateDependency verifies that at least one mechanism resolves the
+// dependency to the expected version. Returns a failure description or "".
+func validateDependency(model *projectModel, dep languages.Dependency) string {
+	if dep.Version == "" {
+		return ""
 	}
-
-	if actualVersion != expectedVersion {
-		return fmt.Sprintf("%s: catalog key %s has version %s, expected %s",
-			depKey, catalogKey, actualVersion, expectedVersion)
+	group, artifact, err := depCoordinates(dep)
+	if err != nil {
+		return err.Error()
 	}
+	module := group + ":" + artifact
 
-	log.Debugf("Verified %s via catalog key %s = %s", depKey, catalogKey, actualVersion)
+	versions := effectiveVersions(model, module, group, artifact)
+	if len(versions) == 0 {
+		return fmt.Sprintf("%s: not found in project after update", module)
+	}
+	for _, v := range versions {
+		if v.version == dep.Version {
+			return ""
+		}
+	}
+	return fmt.Sprintf("%s: %s, expected %s", module, versions[0].desc, dep.Version)
+}
+
+// effectiveVersions collects every version the project resolves module to,
+// across catalogs, declarations, referenced variables and force blocks.
+func effectiveVersions(model *projectModel, module, group, artifact string) []effectiveVersion {
+	var versions []effectiveVersion
+
+	for _, site := range model.catalogLibrarySites[module] {
+		value := model.resolveCatalogValue(site.library)
+		if value == "" {
+			continue
+		}
+		key := site.library.VersionRef
+		if key == "" {
+			key = site.library.Alias
+		}
+		versions = append(versions, effectiveVersion{
+			version: value,
+			desc:    fmt.Sprintf("catalog key %s has version %s", key, value),
+		})
+	}
+	for _, site := range model.declarationSites[module] {
+		switch {
+		case site.decl.Version != "":
+			versions = append(versions, effectiveVersion{
+				version: site.decl.Version,
+				desc:    fmt.Sprintf("has version %s", site.decl.Version),
+			})
+		case site.decl.VarRef != "":
+			versions = append(versions, variableEffectiveVersions(model, site.decl.VarRef)...)
+		}
+	}
+	for _, site := range model.libraryFnSites[artifact] {
+		versions = append(versions, effectiveVersion{
+			version: site.decl.Version,
+			desc:    fmt.Sprintf("has version %s", site.decl.Version),
+		})
+	}
+	for _, site := range model.resolutionRuleSites[group] {
+		rule := site.rule
+		if rule.Artifact != "" && rule.Artifact != artifact {
+			continue
+		}
+		switch {
+		case rule.CatalogKey != "":
+			for _, keySite := range model.catalogVersionSites[rule.CatalogKey] {
+				versions = append(versions, effectiveVersion{
+					version: keySite.version.Value,
+					desc:    fmt.Sprintf("catalog key %s has version %s", rule.CatalogKey, keySite.version.Value),
+				})
+			}
+		case rule.VarRef != "":
+			versions = append(versions, variableEffectiveVersions(model, rule.VarRef)...)
+		case rule.Version != "":
+			versions = append(versions, effectiveVersion{
+				version: rule.Version,
+				desc:    fmt.Sprintf("resolution rule has version %s", rule.Version),
+			})
+		}
+	}
+	for _, version := range model.forcedSites[module] {
+		versions = append(versions, effectiveVersion{
+			version: version,
+			desc:    fmt.Sprintf("forced to version %s", version),
+		})
+	}
+	return versions
+}
+
+// variableEffectiveVersions resolves a variable reference the same way the
+// updater routes it: definition sites first, then the catalog-accessor
+// bridge ("${versions.x}" resolving to the catalog version key x).
+func variableEffectiveVersions(model *projectModel, varPath string) []effectiveVersion {
+	varSites := model.variableSites[varPath]
+	if len(varSites) == 0 {
+		if key, ok := model.catalogKeyForVarPath(varPath); ok {
+			versions := make([]effectiveVersion, 0, len(model.catalogVersionSites[key]))
+			for _, keySite := range model.catalogVersionSites[key] {
+				versions = append(versions, effectiveVersion{
+					version: keySite.version.Value,
+					desc:    fmt.Sprintf("catalog key %s has version %s", key, keySite.version.Value),
+				})
+			}
+			return versions
+		}
+	}
+	versions := make([]effectiveVersion, 0, len(varSites))
+	for _, varSite := range varSites {
+		versions = append(versions, effectiveVersion{
+			version: varSite.value(),
+			desc:    fmt.Sprintf("variable %s has version %s", varPath, varSite.value()),
+		})
+	}
+	return versions
+}
+
+// validateProperty verifies that every definition site of the property
+// carries the expected value. Returns a failure description or "".
+func validateProperty(model *projectModel, name, expected string) string {
+	catalogSites := model.catalogVersionSites[name]
+	variableSites := model.variableSitesFor(name)
+	if len(catalogSites) == 0 && len(variableSites) == 0 {
+		return fmt.Sprintf("property %s: %v", name, ErrPropertyNotFound)
+	}
+	for _, site := range catalogSites {
+		if site.version.Value != expected {
+			return fmt.Sprintf("property %s: catalog key has value %s in %s, expected %s",
+				name, site.version.Value, site.path(), expected)
+		}
+	}
+	for _, site := range variableSites {
+		if site.value() != expected {
+			return fmt.Sprintf("property %s: has value %s in %s, expected %s",
+				name, site.value(), site.path(), expected)
+		}
+	}
 	return ""
 }
 
-// validateDirectDependency validates a dependency with a direct version declaration.
-func validateDirectDependency(ctx context.Context, depKey, expectedVersion string, depInfo *analyzer.DependencyInfo) string {
-	log := clog.FromContext(ctx)
-
-	if depInfo.Version != expectedVersion {
-		return fmt.Sprintf("%s: has version %s, expected %s",
-			depKey, depInfo.Version, expectedVersion)
-	}
-
-	log.Debugf("Verified %s = %s", depKey, depInfo.Version)
-	return ""
-}
-
-// findBuildFiles finds all Gradle files that can contain dependency versions.
-// Walks subdirectories to support multi-module Gradle projects.
-// Finds:
-// - build.gradle[.kts] - Direct dependency declarations
-// - settings.gradle[.kts] - Inline version catalogs
-// - gradle/libs.versions.toml - TOML version catalogs.
+// findBuildFiles finds all Gradle files that can contain dependency versions:
+// build and settings scripts (any *.gradle / *.gradle.kts, including files
+// like gradle/dependencies.gradle), gradle.properties, version.properties
+// files, and *.versions.toml version catalogs. Walks subdirectories to
+// support multi-module Gradle projects.
 func findBuildFiles(root string) ([]string, error) {
 	var files []string
 
-	// Walk directory tree looking for build files
 	// Use WalkDir instead of Walk - it doesn't follow symlinks and provides type info directly
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -265,7 +337,7 @@ func findBuildFiles(root string) ([]string, error) {
 		// Skip hidden directories and common non-build directories
 		if d.IsDir() {
 			name := d.Name()
-			if name[0] == '.' || skipDirs[name] {
+			if _, skip := skipDirs[name]; path != root && (name[0] == '.' || skip) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -277,8 +349,7 @@ func findBuildFiles(root string) ([]string, error) {
 			return nil // Skip symlinks
 		}
 
-		// Check if this is a file that can contain dependency versions
-		if gradleManifestFiles[d.Name()] {
+		if classifyFile(path) != fileKindUnknown {
 			files = append(files, path)
 		}
 
@@ -288,335 +359,12 @@ func findBuildFiles(root string) ([]string, error) {
 	return files, err
 }
 
-// updateBuildFile updates dependencies in a single Gradle file.
-// Routes to the appropriate handler based on file type.
-func updateBuildFile(ctx context.Context, path string, cfg *languages.UpdateConfig) error {
-	log := clog.FromContext(ctx)
-	log.Infof("Updating %s", path)
-
-	// Determine file type and route to appropriate handler
-	filename := filepath.Base(path)
-	switch filename {
-	case "libs.versions.toml":
-		return updateVersionCatalogToml(ctx, path, cfg)
-	case "settings.gradle", "settings.gradle.kts":
-		return updateSettingsGradle(ctx, path, cfg)
-	case "build.gradle", "build.gradle.kts":
-		return updateBuildGradle(ctx, path, cfg)
-	default:
-		return fmt.Errorf("%w: %s", ErrUnknownFileType, filename)
-	}
-}
-
-// updateFileFunc is a function that updates file content and returns the updated content and change count.
-type updateFileFunc func(ctx context.Context, content string, cfg *languages.UpdateConfig) (updated string, changeCount int, err error)
-
-// replaceRegexMatches replaces all regex matches with a new version in reverse order.
-// versionGroupIdx specifies which capture group contains the version (0-indexed).
-// Returns the updated content and the number of replacements made.
-func replaceRegexMatches(content string, matches [][]int, versionGroupIdx int, newVersion string) (string, int) {
-	updated := content
-	changeCount := 0
-
-	// Replace all occurrences (in reverse to maintain indices)
-	for i := len(matches) - 1; i >= 0; i-- {
-		match := matches[i]
-		versionSubmatchIdx := versionGroupIdx * 2 // submatch indices are pairs
-		if versionSubmatchIdx+1 < len(match) {
-			oldVersion := updated[match[versionSubmatchIdx]:match[versionSubmatchIdx+1]]
-			replacement := strings.Replace(
-				updated[match[0]:match[1]],
-				oldVersion,
-				newVersion,
-				1,
-			)
-			updated = updated[:match[0]] + replacement + updated[match[1]:]
-			changeCount++
-		}
-	}
-
-	return updated, changeCount
-}
-
-// processFileUpdate handles the common pattern of reading a file, updating it, and writing it back.
-func processFileUpdate(ctx context.Context, path string, cfg *languages.UpdateConfig, updater updateFileFunc) error {
-	log := clog.FromContext(ctx)
-
-	// Check file size before reading to prevent resource exhaustion.
-	fileInfo, err := os.Stat(path)
+// forceBlockCoordinates returns the managed force block entries of a build
+// script's content, keyed by "group:artifact".
+func forceBlockCoordinates(path string, content []byte) (map[string]string, error) {
+	f, err := gradlefile.ParseBuild(path, content)
 	if err != nil {
-		return fmt.Errorf("failed to stat %s: %w", path, err)
+		return nil, fmt.Errorf("failed to parse %s: %w", path, err)
 	}
-	if fileInfo.Size() > MaxManifestSize {
-		return fmt.Errorf("%w: %s is %d bytes (max: %d)", ErrManifestTooLarge, path, fileInfo.Size(), MaxManifestSize)
-	}
-
-	// Read the file
-	content, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		return fmt.Errorf("failed to read %s: %w", path, err)
-	}
-
-	// Call the updater function
-	updated, changeCount, err := updater(ctx, string(content), cfg)
-	if err != nil {
-		return err
-	}
-
-	if changeCount == 0 {
-		log.Warnf("No dependencies were updated in %s", path)
-		return nil
-	}
-
-	if cfg.DryRun {
-		log.Infof("Dry run mode: would write %d change(s) to %s", changeCount, path)
-		return nil
-	}
-
-	// Write updated content back
-	if err := os.WriteFile(path, []byte(updated), gradleFilePerms); err != nil {
-		return fmt.Errorf("failed to write %s: %w", path, err)
-	}
-
-	log.Infof("Successfully updated %s with %d change(s)", path, changeCount)
-	return nil
-}
-
-// updateBuildGradle updates dependencies in build.gradle or build.gradle.kts files.
-func updateBuildGradle(ctx context.Context, path string, cfg *languages.UpdateConfig) error {
-	return processFileUpdate(ctx, path, cfg, updateBuildGradleContent)
-}
-
-// updateBuildGradleContent performs the actual update logic for build.gradle files.
-func updateBuildGradleContent(ctx context.Context, content string, cfg *languages.UpdateConfig) (string, int, error) {
-	log := clog.FromContext(ctx)
-
-	updated := content
-	changeCount := 0
-
-	// Update each dependency
-	for _, dep := range cfg.Dependencies {
-		// Parse dependency name (format: "groupId:artifactId" or just "artifactId")
-		groupID, artifactID := parseDependencyName(dep.Name)
-
-		if groupID == "" {
-			log.Warnf("Skipping dependency with invalid name format: %s (expected groupId:artifactID)", dep.Name)
-			continue
-		}
-
-		// Try different Gradle dependency patterns
-		patterns := buildDependencyPatterns(groupID, artifactID)
-
-		for _, pattern := range patterns {
-			regex := regexp.MustCompile(pattern.regex)
-			matches := regex.FindAllStringSubmatchIndex(updated, -1)
-
-			if len(matches) > 0 {
-				log.Infof("Found %d occurrence(s) of %s:%s using pattern: %s", len(matches), groupID, artifactID, pattern.name)
-
-				var count int
-				updated, count = replaceRegexMatches(updated, matches, pattern.versionGroup, dep.Version)
-				changeCount += count
-
-				if count > 0 {
-					log.Infof("Updated %d occurrence(s) of %s:%s to version %s", count, groupID, artifactID, dep.Version)
-				}
-				break // Found and updated, don't try other patterns
-			}
-		}
-	}
-
-	return updated, changeCount, nil
-}
-
-// parseDependencyName parses "groupId:artifactId" format.
-func parseDependencyName(name string) (groupID, artifactID string) {
-	parts := strings.Split(name, ":")
-	if len(parts) == 2 {
-		return parts[0], parts[1]
-	}
-	if len(parts) == 1 {
-		// Assume it's just artifactID (less common)
-		return "", parts[0]
-	}
-	return "", ""
-}
-
-// dependencyPattern represents a regex pattern for matching dependencies.
-type dependencyPattern struct {
-	name         string
-	regex        string
-	versionGroup int // which capture group contains the version
-}
-
-// buildDependencyPatterns builds regex patterns for different Gradle dependency formats.
-func buildDependencyPatterns(groupID, artifactID string) []dependencyPattern {
-	// Escape special regex characters
-	g := regexp.QuoteMeta(groupID)
-	a := regexp.QuoteMeta(artifactID)
-
-	return []dependencyPattern{
-		// Pattern 1: String notation - implementation("group:artifact:version")
-		{
-			name:         "string-notation",
-			regex:        fmt.Sprintf(`([a-zA-Z]+)\s*\(\s*["']%s:%s:([^"']+)["']\s*\)`, g, a),
-			versionGroup: versionGroupTwo,
-		},
-		// Pattern 2: Spring Boot library() - library("name", "version") { ... }
-		// Handles both library("name", "version") and library("name", "version") { config }
-		{
-			name:         "library-function",
-			regex:        fmt.Sprintf(`library\s*\(\s*["']%s["']\s*,\s*["']([^"']+)["']\s*\)`, a),
-			versionGroup: versionGroupOne,
-		},
-		// Pattern 3: Map notation - group = "...", name = "...", version = "..."
-		{
-			name: "map-notation",
-			regex: fmt.Sprintf(
-				`(?s)group\s*=\s*["']%s["']\s*,\s*name\s*=\s*["']%s["']\s*,\s*version\s*=\s*["']([^"']+)["']`,
-				g, a,
-			),
-			versionGroup: versionGroupOne,
-		},
-	}
-}
-
-// updateVersionCatalogToml updates dependencies in gradle/libs.versions.toml files.
-// TOML version catalogs use a [versions] section with key-value pairs.
-func updateVersionCatalogToml(ctx context.Context, path string, cfg *languages.UpdateConfig) error {
-	return processFileUpdate(ctx, path, cfg, updateVersionCatalogTomlContent)
-}
-
-// updateVersionCatalogTomlContent performs the actual update logic for TOML version catalogs.
-func updateVersionCatalogTomlContent(ctx context.Context, content string, cfg *languages.UpdateConfig) (string, int, error) {
-	log := clog.FromContext(ctx)
-
-	// Parse TOML structure
-	var catalog map[string]any
-	if err := toml.Unmarshal([]byte(content), &catalog); err != nil {
-		return "", 0, fmt.Errorf("failed to parse TOML: %w", err)
-	}
-
-	// Get versions section
-	versions, ok := catalog["versions"].(map[string]any)
-	if !ok {
-		log.Warnf("No [versions] section found in TOML file")
-		return content, 0, nil
-	}
-
-	updated := content
-	changeCount := 0
-
-	// Update each dependency
-	for _, dep := range cfg.Dependencies {
-		_, artifactID := parseDependencyName(dep.Name)
-		if artifactID == "" {
-			log.Warnf("Skipping dependency with invalid name format: %s", dep.Name)
-			continue
-		}
-
-		// Find and update version key
-		versionKey := findVersionKeyForArtifact(artifactID, versions)
-		if versionKey == "" {
-			log.Debugf("No version key found for %s", artifactID)
-			continue
-		}
-
-		// Verify version value is a string
-		if _, ok := versions[versionKey].(string); !ok {
-			log.Warnf("Version key %s has non-string value", versionKey)
-			continue
-		}
-
-		// Update the version line in the content
-		newContent, changed := updateTomlVersionLine(updated, versionKey, dep.Version)
-		if changed {
-			updated = newContent
-			changeCount++
-			log.Infof("Updated %s (key: %s) to %s", artifactID, versionKey, dep.Version)
-		}
-	}
-
-	return updated, changeCount, nil
-}
-
-// findVersionKeyForArtifact finds the version key for an artifact in the versions map.
-// Only uses exact matching to avoid ambiguous matches.
-// For example, "netty-codec-http" could match both "netty" and "netty-codec",
-// leading to nondeterministic behavior due to map iteration order.
-func findVersionKeyForArtifact(artifactID string, versions map[string]any) string {
-	// Only use exact match on artifactId
-	if _, exists := versions[artifactID]; exists {
-		return artifactID
-	}
-
-	return ""
-}
-
-// updateTomlVersionLine updates a version line in TOML content.
-// Returns the updated content and whether a change was made.
-func updateTomlVersionLine(content, versionKey, newVersion string) (string, bool) {
-	// Build regex to match the version line in TOML
-	// Format: key = "version"
-	pattern := regexp.MustCompile(fmt.Sprintf(`(?m)^(\s*)%s\s*=\s*"([^"]+)"`, regexp.QuoteMeta(versionKey)))
-	matches := pattern.FindStringSubmatchIndex(content)
-
-	if len(matches) == 0 {
-		return content, false
-	}
-
-	oldVersion := content[matches[4]:matches[5]]
-	replacement := strings.Replace(
-		content[matches[0]:matches[1]],
-		oldVersion,
-		newVersion,
-		1,
-	)
-	updated := content[:matches[0]] + replacement + content[matches[1]:]
-	return updated, true
-}
-
-// updateSettingsGradle updates dependencies in settings.gradle or settings.gradle.kts files.
-// These files can contain inline version catalogs using versionCatalogs { } blocks.
-func updateSettingsGradle(ctx context.Context, path string, cfg *languages.UpdateConfig) error {
-	return processFileUpdate(ctx, path, cfg, updateSettingsGradleContent)
-}
-
-// updateSettingsGradleContent performs the actual update logic for settings.gradle files.
-func updateSettingsGradleContent(ctx context.Context, content string, cfg *languages.UpdateConfig) (string, int, error) {
-	log := clog.FromContext(ctx)
-
-	updated := content
-	changeCount := 0
-
-	// Update each dependency
-	for _, dep := range cfg.Dependencies {
-		_, artifactID := parseDependencyName(dep.Name)
-		if artifactID == "" {
-			log.Warnf("Skipping dependency with invalid name format: %s", dep.Name)
-			continue
-		}
-
-		// Pattern for version catalog version() declarations
-		// Format: version("key", "version")
-		pattern := regexp.MustCompile(fmt.Sprintf(
-			`version\s*\(\s*["']%s["']\s*,\s*["']([^"']+)["']\s*\)`,
-			regexp.QuoteMeta(artifactID),
-		))
-		matches := pattern.FindAllStringSubmatchIndex(updated, -1)
-
-		if len(matches) > 0 {
-			log.Infof("Found %d version catalog declaration(s) for %s", len(matches), artifactID)
-
-			var count int
-			updated, count = replaceRegexMatches(updated, matches, versionGroupOne, dep.Version)
-			changeCount += count
-
-			if count > 0 {
-				log.Infof("Updated %d occurrence(s) of %s to version %s", count, artifactID, dep.Version)
-			}
-		}
-	}
-
-	return updated, changeCount, nil
+	return f.ForcedCoordinates(), nil
 }

@@ -1,0 +1,5 @@
+dependencies {
+    implementation "io.netty:netty-handler:${nettyVersion}"
+    implementation group: 'ch.qos.logback', name: 'logback-classic', version: '1.5.23'
+    testImplementation "org.elasticsearch:elasticsearch:${elasticSearchServerVersion}"
+}

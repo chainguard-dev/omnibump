@@ -465,6 +465,129 @@ Works with:
 - `build.gradle` (Groovy DSL)
 - `build.gradle.kts` (Kotlin DSL)
 
+### Example 8: Version Catalogs (libs.versions.toml)
+
+omnibump resolves `[libraries]` entries to find the right `[versions]` key —
+you declare the Maven coordinates, omnibump finds where the version lives:
+
+```bash
+omnibump --packages "io.netty@netty-codec@4.2.13.Final"
+```
+
+```toml
+# gradle/libs.versions.toml — before
+[versions]
+netty = "4.2.12.Final"
+
+[libraries]
+netty-codec = { module = "io.netty:netty-codec", version.ref = "netty" }
+
+# after: the referenced version key is updated
+[versions]
+netty = "4.2.13.Final"
+```
+
+Libraries with inline versions (`version = "x"`) are updated in place, and
+inline catalogs declared in `settings.gradle(.kts)` via `version("key", "value")`
+are handled the same way.
+
+### Example 9: Version Variables (gradle.properties, ext maps, version.properties)
+
+Dependencies whose version is a variable reference are bumped at the
+variable's definition site, wherever it lives:
+
+```bash
+omnibump --packages "io.netty@netty-handler@4.1.133.Final org.apache.logging.log4j@log4j-api@2.25.4"
+```
+
+```groovy
+// build.gradle (declaration untouched — the variable is updated instead)
+implementation "io.netty:netty-handler:${nettyVersion}"
+
+// gradle.properties
+nettyVersion=4.1.133.Final
+
+// gradle/dependencies.gradle (Kafka-style version maps)
+versions += [
+  log4j2: "2.25.4",
+]
+libs += [
+  log4j2Api: "org.apache.logging.log4j:log4j-api:$versions.log4j2",
+]
+```
+
+`version.properties`-style files (e.g. Elasticsearch's
+`build-tools-internal/version.properties`) are supported the same way, as
+are projects that bridge the version catalog into build scripts
+(`"g:a:${versions.log4j}"` resolves to the catalog key `log4j`) and Spring
+dependency-management `dependencySet(group: 'g', version: 'v')` blocks.
+
+### Example 10: Property Updates for Gradle
+
+Like Maven, properties can be updated directly. A property name matches a
+catalog `[versions]` key, a `gradle.properties` / `version.properties` entry,
+an `ext` definition, or a version-map entry name (e.g. `log4j2` for
+`versions.log4j2`):
+
+```yaml
+# properties.yaml
+properties:
+  - property: netty
+    value: "4.2.13.Final"
+  - property: log4j2
+    value: "2.25.4"
+```
+
+```bash
+omnibump --properties properties.yaml
+```
+
+A property found nowhere in the project is a hard error, and explicit
+properties take precedence over dependency updates routed to the same key.
+
+### Example 11: Transitive Dependencies (Force Block)
+
+A dependency that is not declared in any Gradle file — typically a vulnerable
+transitive — is pinned through an omnibump-managed `resolutionStrategy` block
+in the root build script, the Gradle analog of Maven's DependencyManagement
+fallback:
+
+```bash
+omnibump --packages "io.netty@netty-codec-http2@4.1.133.Final"
+```
+
+```groovy
+// appended to the root build.gradle (markers make re-runs idempotent;
+// entries are merged and deduplicated)
+// omnibump:resolutionStrategy:begin
+allprojects {
+    afterEvaluate {
+        configurations.matching { it.name ==~ /.*([Cc]ompileClasspath|[Rr]untimeClasspath)/ }.all {
+            resolutionStrategy {
+                force 'io.netty:netty-codec-http2:4.1.133.Final'
+                eachDependency {
+                    if (it.requested.group == 'io.netty' && it.requested.name == 'netty-codec-http2') { it.useVersion('4.1.133.Final') }
+                }
+            }
+        }
+    }
+}
+// omnibump:resolutionStrategy:end
+```
+
+The force block only applies to compile and runtime classpaths (including
+per-source-set variants) — the dependency graphs that end up in the built
+artifact. Resolution contexts created by build tooling (Spotless, Checkstyle,
+PMD, code generators, ...) are not touched: their dependencies never ship,
+and their bare resolution contexts cannot disambiguate multi-variant modules
+such as guava 32.x.
+
+Both force and eachDependency rules are emitted, registered in
+afterEvaluate: force defeats transitive requests and platform()/BOM
+constraints, while the eachDependency rules (registered last) defeat plugins
+that manage versions through their own resolve rules, such as
+io.spring.dependency-management — which silently overrides a plain force.
+
 ## Cross-Language Projects
 
 ### Example 1: Automatic Detection

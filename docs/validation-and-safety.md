@@ -113,7 +113,27 @@ omnibump --packages "github.com/docker/docker@v28.0.0"
 ### Format Detection
 
 - Automatically handles both Groovy DSL and Kotlin DSL
-- Preserves exact formatting and structure
+- Preserves exact formatting and structure: edits replace only the version
+  literal at its definition site (catalog key, variable value or inline
+  declaration)
+
+### Post-Update Verification
+
+- Re-scans the project after updates and verifies every dependency's
+  effective version through the mechanism that defines it (version catalog,
+  version variable, direct declaration or managed force block)
+- Verifies every requested property at all of its definition sites; a
+  property found nowhere is a hard error
+
+### Code Injection Prevention
+
+- Version strings are validated against a strict allowlist before being
+  embedded in any Gradle file
+- The managed `resolutionStrategy` force block is the only place omnibump
+  synthesizes script code; group, artifact and version are each validated
+  against allowlists before rendering, and the block is delimited by
+  `// omnibump:resolutionStrategy:begin/end` markers so re-runs merge
+  idempotently instead of duplicating code
 
 ## Rust Validation
 
