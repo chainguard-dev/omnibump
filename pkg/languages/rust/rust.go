@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
@@ -152,18 +153,28 @@ func (r *Rust) Validate(ctx context.Context, cfg *languages.UpdateConfig) error 
 	}
 
 	// Validate dependencies
-	packageMap := make(map[string]CargoPackage)
+	packageMap := make(map[string][]CargoPackage)
 	for _, pkg := range cargoPackages {
-		packageMap[pkg.Name] = pkg
+		packageMap[pkg.Name] = append(packageMap[pkg.Name], pkg)
 	}
 
 	for _, dep := range cfg.Dependencies {
-		if pkg, exists := packageMap[dep.Name]; exists {
-			if pkg.Version != dep.Version {
-				log.Warnf("Dependency %s: expected %s, got %s",
-					dep.Name, dep.Version, pkg.Version)
+		baseName, _, pinned := strings.Cut(dep.Name, "@")
+		found := false
+		for _, pkg := range packageMap[baseName] {
+			// Validation runs against the post-update Cargo.lock, so the version
+			// embedded in a pinned name (the old/current version) is gone. For a
+			// pinned dependency the relevant instance is the one now at the target
+			// version, so match against dep.Version rather than the stale pin.
+			if pinned && pkg.Version != dep.Version {
+				continue
 			}
-		} else {
+			found = true
+			if pkg.Version != dep.Version {
+				log.Warnf("Dependency %s: expected %s, got %s", baseName, dep.Version, pkg.Version)
+			}
+		}
+		if !found {
 			log.Warnf("Dependency not found in Cargo.lock: %s", dep.Name)
 		}
 	}

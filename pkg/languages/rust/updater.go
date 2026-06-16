@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/chainguard-dev/clog"
 	"golang.org/x/mod/semver"
@@ -61,25 +62,25 @@ func updatePackage(ctx context.Context, pkg *Package, cargoPkg CargoPackage, cfg
 
 	// Check if already at target version
 	if semver.Compare("v"+cargoPkg.Version, "v"+pkg.Version) == 0 {
-		log.Infof("Package %s is already at version %s, skipping", pkg.Name, pkg.Version)
+		log.Infof("Package %s is already at version %s, skipping", cargoPkg.Name, pkg.Version)
 		return nil
 	}
 
 	// Check for downgrade
 	if semver.Compare("v"+cargoPkg.Version, "v"+pkg.Version) > 0 {
 		log.Warnf("Package %s: current version %s is newer than requested %s, skipping",
-			pkg.Name, cargoPkg.Version, pkg.Version)
+			cargoPkg.Name, cargoPkg.Version, pkg.Version)
 		return nil
 	}
 
-	log.Infof("Updating package %s from version %s to %s", pkg.Name, cargoPkg.Version, pkg.Version)
+	log.Infof("Updating package %s from version %s to %s", cargoPkg.Name, cargoPkg.Version, pkg.Version)
 
-	if output, err := CargoUpdatePackage(ctx, pkg.Name, cargoPkg.Version, pkg.Version, cfg.CargoRoot); err != nil {
+	if output, err := CargoUpdatePackage(ctx, cargoPkg.Name, cargoPkg.Version, pkg.Version, cfg.CargoRoot); err != nil {
 		return fmt.Errorf("failed to run cargo update for package '%s' from version '%s' to '%s': %w with output: %v",
-			pkg.Name, cargoPkg.Version, pkg.Version, err, output)
+			cargoPkg.Name, cargoPkg.Version, pkg.Version, err, output)
 	}
 
-	log.Infof("Package updated successfully: %s to version %s", pkg.Name, pkg.Version)
+	log.Infof("Package updated successfully: %s to version %s", cargoPkg.Name, pkg.Version)
 	return nil
 }
 
@@ -88,8 +89,12 @@ func updatePackage(ctx context.Context, pkg *Package, cargoPkg CargoPackage, cfg
 func findMatchingPackages(name string, cargoPackages []CargoPackage) []CargoPackage {
 	var matches []CargoPackage
 
+	// We need to get the base name (without @version suffix) to match against
+	// e.g. "rand@0.8.5" should match "rand"
+	baseName, version, found := strings.Cut(name, "@")
+
 	for _, p := range cargoPackages {
-		if p.Name == name {
+		if p.Name == baseName && (!found || version == p.Version) {
 			matches = append(matches, p)
 		}
 	}
