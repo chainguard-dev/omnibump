@@ -191,3 +191,43 @@ func detectBuildTool(ctx context.Context, dir string) BuildTool {
 
 	return nil
 }
+
+// DetectBuildToolFromPaths picks the Java build tool for a remote repository
+// from its file path list, mirroring detectBuildTool's precedence without disk
+// access: a tool with a manifest at the repository root wins (a root pom.xml
+// beats a Gradle script elsewhere), otherwise the first registered tool with a
+// matching manifest basename at any depth wins. Maven keeps priority at equal
+// depth via registeredBuildTools order. Returns nil when no Java build tool
+// matches.
+//
+// Unlike detectBuildTool, a root pom.xml is accepted by name: remote detection
+// only has paths, not content, so it cannot run maven.IsMavenPom. This matches
+// how languages.DetectLanguageFromPaths already resolves remote Java repos.
+func DetectBuildToolFromPaths(paths []string) BuildTool {
+	pathSet := make(map[string]struct{}, len(paths))
+	baseSet := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		pathSet[p] = struct{}{}
+		baseSet[filepath.Base(p)] = struct{}{}
+	}
+
+	// Root manifest wins.
+	for _, tool := range registeredBuildTools {
+		for _, manifest := range tool.GetManifestFiles() {
+			if _, ok := pathSet[manifest]; ok {
+				return tool
+			}
+		}
+	}
+
+	// Otherwise any-depth basename match, in registration order.
+	for _, tool := range registeredBuildTools {
+		for _, manifest := range tool.GetManifestFiles() {
+			if _, ok := baseSet[filepath.Base(manifest)]; ok {
+				return tool
+			}
+		}
+	}
+
+	return nil
+}

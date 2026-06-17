@@ -22,6 +22,7 @@ import (
 	"github.com/chainguard-dev/omnibump/pkg/config"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 	"github.com/chainguard-dev/omnibump/pkg/languages/golang"
+	"github.com/chainguard-dev/omnibump/pkg/languages/java"
 	"github.com/chainguard-dev/omnibump/pkg/languages/java/maven"
 	"github.com/chainguard-dev/omnibump/pkg/remote"
 	"github.com/ghodss/yaml"
@@ -71,7 +72,8 @@ func analyzeRemoteCmd() *cobra.Command {
 		Long: `Analyze a remote repository to understand how dependencies are defined.
 Uses GitHub API to fetch dependency manifest files without requiring a full clone.
 
-Supports Go projects with automatic manifest file discovery.
+Supports Go and Java (Maven and Gradle) projects with automatic language and
+manifest file discovery.
 
 Requires a GitHub token (use --github-token flag or set GITHUB_TOKEN environment variable).
 
@@ -157,10 +159,11 @@ func runAnalyzeRemote(cmd *cobra.Command, args []string) error {
 	var manifestPatterns []string
 	var projectAnalyzer analyzer.Analyzer
 
+	var detectedPaths []string
 	lang := analyzeRemoteF.language
 	if lang == "auto" || lang == "" {
 		var err error
-		lang, err = detectRemoteLanguage(ctx, fetcher, repoRef)
+		lang, detectedPaths, err = detectRemoteLanguage(ctx, fetcher, repoRef)
 		if err != nil {
 			return fmt.Errorf("could not detect language: %w (use --language to specify)", err)
 		}
@@ -178,13 +181,13 @@ func runAnalyzeRemote(cmd *cobra.Command, args []string) error {
 			manifestPatterns = []string{"go.mod", "vendor.mod"}
 		}
 		projectAnalyzer = &golang.GolangAnalyzer{}
-	case languageJava, "maven":
-		l, err := languages.Get(languageJava)
+	case languageJava, "maven", "gradle":
+		a, patterns, err := resolveJavaRemoteAnalyzer(ctx, fetcher, repoRef, detectedPaths)
 		if err != nil {
-			return fmt.Errorf("language not available: %w", err)
+			return err
 		}
-		manifestPatterns = l.GetManifestFiles()
-		projectAnalyzer = &maven.MavenAnalyzer{}
+		projectAnalyzer = a
+		manifestPatterns = patterns
 	default:
 		return fmt.Errorf("%w for language: %s", ErrRemoteAnalysisNotImplemented, lang)
 	}
@@ -231,17 +234,46 @@ func runAnalyzeRemote(cmd *cobra.Command, args []string) error {
 }
 
 // detectRemoteLanguage lists all file paths via the Git Tree API and detects
-// the language from those paths. Returns an error when no language is detected.
-func detectRemoteLanguage(ctx context.Context, fetcher *remote.GitHubFetcher, repoRef remote.RepositoryRef) (string, error) {
+// the language from those paths. It also returns the listed paths so callers
+// can reuse them (e.g. to pick a Java build tool) without a second tree fetch.
+// Returns an error when no language is detected.
+func detectRemoteLanguage(ctx context.Context, fetcher *remote.GitHubFetcher, repoRef remote.RepositoryRef) (string, []string, error) {
 	paths, err := fetcher.ListFilePaths(ctx, repoRef)
 	if err != nil {
-		return "", fmt.Errorf("failed to list repository files: %w", err)
+		return "", nil, fmt.Errorf("failed to list repository files: %w", err)
 	}
 	lang := languages.DetectLanguageFromPaths(paths)
 	if lang == "" {
-		return "", fmt.Errorf("%w in repository %s/%s", languages.ErrNoLanguageDetected, repoRef.Owner, repoRef.Repo)
+		return "", nil, fmt.Errorf("%w in repository %s/%s", languages.ErrNoLanguageDetected, repoRef.Owner, repoRef.Repo)
 	}
-	return lang, nil
+	return lang, paths, nil
+}
+
+// resolveJavaRemoteAnalyzer picks the Maven or Gradle analyzer and its
+// tool-specific manifest patterns for a remote Java repository, based on the
+// repository's file paths. knownPaths is reused when available (from language
+// auto-detection); otherwise the paths are listed here. When no Java build tool
+// can be identified it falls back to Maven, preserving prior behaviour.
+func resolveJavaRemoteAnalyzer(ctx context.Context, fetcher *remote.GitHubFetcher, repoRef remote.RepositoryRef, knownPaths []string) (analyzer.Analyzer, []string, error) {
+	log := clog.FromContext(ctx)
+
+	paths := knownPaths
+	if len(paths) == 0 {
+		var err error
+		paths, err = fetcher.ListFilePaths(ctx, repoRef)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to list repository files: %w", err)
+		}
+	}
+
+	tool := java.DetectBuildToolFromPaths(paths)
+	if tool == nil {
+		log.Debugf("No Java build tool identified from paths; defaulting to Maven")
+		tool = &maven.Maven{}
+	} else {
+		log.Infof("Detected Java build tool: %s", tool.Name())
+	}
+	return tool.GetAnalyzer(), tool.GetManifestFiles(), nil
 }
 
 // searchManifestFilesWithFallback searches for manifest files with prioritization
@@ -675,6 +707,9 @@ func printDependencies(analysis *analyzer.AnalysisResult) {
 			if replacedWith, ok := dep.Metadata["replacedWith"].(string); ok {
 				flags += fmt.Sprintf(" [replaced with %s]", replacedWith)
 			}
+		}
+		if dep.UsesProperty && dep.PropertyName != "" {
+			flags += fmt.Sprintf(" (via %s)", dep.PropertyName)
 		}
 		fmt.Printf("    - %s@%s%s\n", name, dep.Version, flags)
 	}

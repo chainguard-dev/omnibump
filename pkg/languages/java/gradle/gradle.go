@@ -41,9 +41,6 @@ const (
 )
 
 var (
-	// ErrRemoteAnalysisNotImplemented is returned when remote analysis is not implemented.
-	ErrRemoteAnalysisNotImplemented = errors.New("remote analysis not yet implemented")
-
 	// ErrNoBuildFiles is returned when no build.gradle files are found.
 	ErrNoBuildFiles = errors.New("no build.gradle or build.gradle.kts files found")
 

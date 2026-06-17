@@ -7,6 +7,7 @@ package gradle
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1564,18 +1565,89 @@ func TestFindBuildFiles_SkipsSymlinks(t *testing.T) {
 	}
 }
 
-// TestGradleAnalyzer_AnalyzeRemote tests the unimplemented remote analysis.
+// TestGradleAnalyzer_AnalyzeRemote analyzes in-memory Gradle files the way the
+// analyze-remote command feeds GitHub-fetched manifests, covering a catalog
+// reference and a direct declaration.
 func TestGradleAnalyzer_AnalyzeRemote(t *testing.T) {
-	ga := &GradleAnalyzer{}
 	files := map[string][]byte{
-		"build.gradle": []byte("dependencies {}"),
+		"gradle/libs.versions.toml": []byte(`[versions]
+netty-all = "4.1.100.Final"
+
+[libraries]
+netty-all = { module = "io.netty:netty-all", version.ref = "netty-all" }
+`),
+		"build.gradle": []byte(`dependencies {
+    implementation(libs.netty.all)
+    implementation("org.apache.commons:commons-lang3:3.12.0")
+}
+`),
 	}
 
-	_, err := ga.AnalyzeRemote(context.Background(), files)
-	if err == nil {
-		t.Error("AnalyzeRemote should return error for unimplemented function")
+	ga := &GradleAnalyzer{}
+	result, err := ga.AnalyzeRemote(context.Background(), files)
+	if err != nil {
+		t.Fatalf("AnalyzeRemote() error = %v", err)
 	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Errorf("Error should mention not implemented, got: %v", err)
+
+	if result.Language != "java" {
+		t.Errorf("Expected language java, got %s", result.Language)
+	}
+	if len(result.FileAnalyses) != 1 {
+		t.Fatalf("Expected 1 file analysis, got %d", len(result.FileAnalyses))
+	}
+
+	fa := result.FileAnalyses[0]
+	if fa.FilePath != "build.gradle" {
+		t.Errorf("Expected FilePath build.gradle, got %s", fa.FilePath)
+	}
+
+	analysis := fa.Analysis
+	if analysis.Metadata["build_tool"] != "gradle" {
+		t.Errorf("Expected build_tool gradle, got %v", analysis.Metadata["build_tool"])
+	}
+
+	// Catalog version key surfaced as a property with its defining file.
+	if analysis.Properties["netty-all"] != "4.1.100.Final" {
+		t.Errorf("Expected netty-all version 4.1.100.Final, got %s", analysis.Properties["netty-all"])
+	}
+	if analysis.PropertySources["netty-all"] != "gradle/libs.versions.toml" {
+		t.Errorf("Expected netty-all source gradle/libs.versions.toml, got %s", analysis.PropertySources["netty-all"])
+	}
+
+	// Catalog-backed dependency.
+	netty, ok := analysis.Dependencies["io.netty:netty-all"]
+	if !ok {
+		t.Fatal("Expected io.netty:netty-all dependency")
+	}
+	if netty.UpdateStrategy != "catalog" {
+		t.Errorf("Expected catalog strategy for netty, got %s", netty.UpdateStrategy)
+	}
+	if !netty.UsesProperty || netty.PropertyName != "netty-all" {
+		t.Errorf("Expected netty to use property netty-all, got UsesProperty=%v PropertyName=%s", netty.UsesProperty, netty.PropertyName)
+	}
+
+	// Directly declared dependency.
+	commons, ok := analysis.Dependencies["org.apache.commons:commons-lang3"]
+	if !ok {
+		t.Fatal("Expected org.apache.commons:commons-lang3 dependency")
+	}
+	if commons.UpdateStrategy != "direct" {
+		t.Errorf("Expected direct strategy for commons-lang3, got %s", commons.UpdateStrategy)
+	}
+	if commons.Version != "3.12.0" {
+		t.Errorf("Expected commons-lang3 version 3.12.0, got %s", commons.Version)
+	}
+
+	// The libs.netty.all accessor in build.gradle counts against the key.
+	if analysis.PropertyUsage["netty-all"] < 1 {
+		t.Errorf("Expected netty-all property usage >= 1, got %d", analysis.PropertyUsage["netty-all"])
+	}
+}
+
+// TestGradleAnalyzer_AnalyzeRemote_Empty verifies empty input is rejected.
+func TestGradleAnalyzer_AnalyzeRemote_Empty(t *testing.T) {
+	ga := &GradleAnalyzer{}
+	if _, err := ga.AnalyzeRemote(context.Background(), nil); !errors.Is(err, ErrNoBuildFiles) {
+		t.Errorf("Expected ErrNoBuildFiles for empty input, got %v", err)
 	}
 }
