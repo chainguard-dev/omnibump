@@ -26,6 +26,13 @@ func DoUpdate(ctx context.Context, packages map[string]*Package, cargoPackages [
 		if output, err := CargoUpdate(ctx, cfg.CargoRoot); err != nil {
 			return fmt.Errorf("failed to run 'cargo update': %w with output: %v", err, output)
 		}
+
+		// Re-read Cargo.lock post-update
+		var err error
+		cargoPackages, err = GetCurrentPackages(ctx, cfg.CargoRoot)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Order packages by index for consistent updates
