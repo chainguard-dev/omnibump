@@ -38,17 +38,17 @@ func TestGetCargoLockPath(t *testing.T) {
 	tests := []struct {
 		name        string
 		shouldExist bool
-		errContains string
+		err         error
 	}{
 		{
 			name:        "No Cargo.lock",
 			shouldExist: false,
-			errContains: "cargo.lock not found",
+			err:         ErrCargoLockNotFound,
 		},
 		{
 			shouldExist: true,
 			name:        "Yes Cargo.lock",
-			errContains: "",
+			err:         nil,
 		},
 	}
 
@@ -66,8 +66,8 @@ func TestGetCargoLockPath(t *testing.T) {
 			// We should get a valid path back or an error if the file doesn't exist
 			cargoLockPath, err := GetCargoLockPath(cargoRoot)
 			if err != nil {
-				if test.errContains != "" {
-					require.Contains(t, err.Error(), test.errContains)
+				if test.err != nil {
+					require.ErrorIs(t, err, ErrCargoLockNotFound)
 				} else {
 					t.Errorf("GetCargoLockPath(%s) = %v, want nil", cargoRoot, err)
 				}
