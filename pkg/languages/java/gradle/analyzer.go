@@ -43,6 +43,42 @@ func (ga *GradleAnalyzer) Analyze(ctx context.Context, projectPath string) (*ana
 		return nil, err
 	}
 
+	result := analyzeModel(model)
+
+	clog.InfoContextf(ctx, "Analysis complete: found %d dependencies, %d using version catalogs or variables",
+		len(result.Dependencies), countPropertyUsage(result))
+
+	return result, nil
+}
+
+// AnalyzeRemote performs dependency analysis on remotely-fetched Gradle files.
+// It mirrors Analyze, building the project model from the in-memory file
+// contents instead of disk, and returns a single aggregated FileAnalysis the
+// way the Maven analyzer aggregates all pom.xml files into one.
+func (ga *GradleAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]byte) (*analyzer.RemoteAnalysisResult, error) {
+	model := buildModelFromFiles(ctx, ".", files)
+	if len(model.sortedFiles) == 0 {
+		return nil, ErrNoBuildFiles
+	}
+
+	result := analyzeModel(model)
+
+	clog.InfoContextf(ctx, "Remote analysis: %d Gradle files, %d dependencies, %d using version catalogs or variables",
+		len(model.sortedFiles), len(result.Dependencies), countPropertyUsage(result))
+
+	return &analyzer.RemoteAnalysisResult{
+		Language: result.Language,
+		FileAnalyses: []analyzer.FileAnalysis{{
+			FilePath: remoteFilePath(model),
+			Analysis: result,
+		}},
+	}, nil
+}
+
+// analyzeModel builds the AnalysisResult for a fully-indexed project model.
+// Shared by Analyze and AnalyzeRemote so both surface dependencies, version
+// catalog keys and variables identically.
+func analyzeModel(model *projectModel) *analyzer.AnalysisResult {
 	result := &analyzer.AnalysisResult{
 		Language:        "java",
 		Dependencies:    make(map[string]*analyzer.DependencyInfo),
@@ -59,18 +95,20 @@ func (ga *GradleAnalyzer) Analyze(ctx context.Context, projectPath string) (*ana
 	collectDeclaredDependencies(model, result)
 	countCatalogReferences(model, result)
 
-	clog.InfoContextf(ctx, "Analysis complete: found %d dependencies, %d using version catalogs or variables",
-		len(result.Dependencies), countPropertyUsage(result))
-
-	return result, nil
+	return result
 }
 
-// AnalyzeRemote performs dependency analysis on remotely-fetched Gradle files.
-// Not yet implemented for Gradle - returns error.
-//
-//nolint:revive // Parameters will be used when implementation is added
-func (ga *GradleAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]byte) (*analyzer.RemoteAnalysisResult, error) {
-	return nil, fmt.Errorf("%w for Gradle", ErrRemoteAnalysisNotImplemented)
+// remoteFilePath picks a representative path for the single aggregated remote
+// FileAnalysis: the root build script when the model has one, else the first
+// parsed file, else "build.gradle".
+func remoteFilePath(model *projectModel) string {
+	if build := model.rootBuildFile(); build != nil {
+		return relativeTo(model.rootDir, build.Path())
+	}
+	if len(model.sortedFiles) > 0 {
+		return relativeTo(model.rootDir, model.sortedFiles[0])
+	}
+	return buildGradleFile
 }
 
 // collectProperties surfaces catalog version keys and version variables as

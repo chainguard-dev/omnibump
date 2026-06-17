@@ -152,6 +152,18 @@ func parseVersionToken(token string) (literal, varRef string) {
 	return token, ""
 }
 
+// containsDigit reports whether s contains an ASCII digit. It distinguishes a
+// real version literal (which always carries a digit) from an alphabetic
+// format-string segment such as the "ss" in "HH:mm:ss".
+func containsDigit(s string) bool {
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
 // NormalizeAlias normalizes a catalog accessor path (netty.codec.http) to
 // the catalog entry key form (netty-codec-http). Gradle generates accessors
 // by splitting alias keys on '-', '_' and '.'; normalizing to dashes matches

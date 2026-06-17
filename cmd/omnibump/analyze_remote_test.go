@@ -240,7 +240,7 @@ func TestDetectRemoteLanguage_Java(t *testing.T) {
 	fetcher := remote.NewGitHubFetcher(mock)
 	repoRef := remote.RepositoryRef{Owner: "org", Repo: "repo", Ref: "v1.0.0"}
 
-	lang, err := detectRemoteLanguage(context.Background(), fetcher, repoRef)
+	lang, _, err := detectRemoteLanguage(context.Background(), fetcher, repoRef)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestDetectRemoteLanguage_Go(t *testing.T) {
 	fetcher := remote.NewGitHubFetcher(mock)
 	repoRef := remote.RepositoryRef{Owner: "org", Repo: "repo", Ref: "v1.0.0"}
 
-	lang, err := detectRemoteLanguage(context.Background(), fetcher, repoRef)
+	lang, _, err := detectRemoteLanguage(context.Background(), fetcher, repoRef)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestDetectRemoteLanguage_NoFiles(t *testing.T) {
 	fetcher := remote.NewGitHubFetcher(mock)
 	repoRef := remote.RepositoryRef{Owner: "org", Repo: "repo", Ref: "v1.0.0"}
 
-	_, err := detectRemoteLanguage(context.Background(), fetcher, repoRef)
+	_, _, err := detectRemoteLanguage(context.Background(), fetcher, repoRef)
 	if err == nil {
 		t.Fatal("expected error when no language detected, got nil")
 	}
@@ -291,7 +291,7 @@ func TestDetectRemoteLanguage_FetchError(t *testing.T) {
 	fetcher := remote.NewGitHubFetcher(mock)
 	repoRef := remote.RepositoryRef{Owner: "org", Repo: "repo", Ref: "v1.0.0"}
 
-	_, err := detectRemoteLanguage(context.Background(), fetcher, repoRef)
+	_, _, err := detectRemoteLanguage(context.Background(), fetcher, repoRef)
 	if err == nil {
 		t.Fatal("expected error on fetch failure, got nil")
 	}

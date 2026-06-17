@@ -286,6 +286,13 @@ func (f *BuildFile) scanCoordinateLiterals(content []byte) {
 		}
 		token := string(content[m[6]:m[7]])
 		literal, varRef := parseVersionToken(token)
+		// A bare "group:artifact:version" literal is ambiguous: time and date
+		// format strings like "HH:mm:ss" match the same shape. Treat it as a
+		// dependency only when the version is a variable reference or contains
+		// a digit, which every real version does and a format string does not.
+		if varRef == "" && !containsDigit(literal) {
+			continue
+		}
 		f.deps = append(f.deps, DependencyDecl{
 			Kind:        StringNotation,
 			Group:       string(content[m[2]:m[3]]),

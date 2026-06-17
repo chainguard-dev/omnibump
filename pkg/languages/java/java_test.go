@@ -218,3 +218,55 @@ func TestJava_GetBuildTool(t *testing.T) {
 		}
 	})
 }
+
+func TestDetectBuildToolFromPaths(t *testing.T) {
+	tests := []struct {
+		name  string
+		paths []string
+		want  string // build tool name, or "" for nil
+	}{
+		{
+			name:  "root pom.xml wins over nested gradle",
+			paths: []string{"pom.xml", "subproject/build.gradle"},
+			want:  "maven",
+		},
+		{
+			name:  "root build.gradle",
+			paths: []string{"build.gradle", "src/main/Foo.java"},
+			want:  "gradle",
+		},
+		{
+			name:  "version catalog only",
+			paths: []string{"gradle/libs.versions.toml", "settings.gradle.kts"},
+			want:  "gradle",
+		},
+		{
+			name:  "nested pom only",
+			paths: []string{"service/pom.xml", "README.md"},
+			want:  "maven",
+		},
+		{
+			name:  "nested build.gradle only",
+			paths: []string{"app/build.gradle"},
+			want:  "gradle",
+		},
+		{
+			name:  "no java manifests",
+			paths: []string{"go.mod", "main.go"},
+			want:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tool := DetectBuildToolFromPaths(tt.paths)
+			got := ""
+			if tool != nil {
+				got = tool.Name()
+			}
+			if got != tt.want {
+				t.Errorf("DetectBuildToolFromPaths(%v) = %q, want %q", tt.paths, got, tt.want)
+			}
+		})
+	}
+}

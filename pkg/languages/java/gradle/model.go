@@ -152,15 +152,10 @@ type declarationSite struct {
 	decl  gradlefile.DependencyDecl
 }
 
-// buildProjectModel scans rootDir and parses every Gradle file into the
-// model.
-func buildProjectModel(ctx context.Context, rootDir string) (*projectModel, error) {
-	files, err := findBuildFiles(rootDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find build files: %w", err)
-	}
-
-	m := &projectModel{
+// newProjectModel returns a projectModel rooted at rootDir with every index
+// map allocated and ready to receive parsed files.
+func newProjectModel(rootDir string) *projectModel {
+	return &projectModel{
 		rootDir:             rootDir,
 		builds:              make(map[string]*gradlefile.BuildFile),
 		settings:            make(map[string]*gradlefile.SettingsFile),
@@ -175,21 +170,62 @@ func buildProjectModel(ctx context.Context, rootDir string) (*projectModel, erro
 		resolutionRuleSites: make(map[string][]resolutionRuleSite),
 		forcedSites:         make(map[string][]string),
 	}
+}
 
+// finalize sorts the parsed file list and builds every site index. Call once
+// after all files have been parsed into the model.
+func (m *projectModel) finalize() {
+	sort.Strings(m.sortedFiles)
+	m.indexCatalogs()
+	m.indexVariables()
+	m.indexDeclarations()
+}
+
+// buildProjectModel scans rootDir and parses every Gradle file into the
+// model.
+func buildProjectModel(ctx context.Context, rootDir string) (*projectModel, error) {
+	files, err := findBuildFiles(rootDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find build files: %w", err)
+	}
+
+	m := newProjectModel(rootDir)
 	for _, path := range files {
 		if err := m.parseFile(path); err != nil {
 			return nil, fmt.Errorf("failed to parse %s: %w", path, err)
 		}
 	}
-	sort.Strings(m.sortedFiles)
-
-	m.indexCatalogs()
-	m.indexVariables()
-	m.indexDeclarations()
+	m.finalize()
 
 	clog.DebugContextf(ctx, "Gradle model: %d files, %d catalog modules, %d variables, %d declared modules",
 		len(m.sortedFiles), len(m.catalogLibrarySites), len(m.variableSites), len(m.declarationSites))
 	return m, nil
+}
+
+// buildModelFromFiles parses an in-memory set of Gradle files (path -> content)
+// into a projectModel rooted at rootDir, without touching disk. It is the
+// remote counterpart of buildProjectModel: files whose basename is not a
+// recognized Gradle file are skipped, and files that fail to parse are logged
+// and skipped (mirroring how the Maven analyzer skips unparseable poms) so an
+// over-broad remote file search can never fail the whole analysis. Map keys are
+// used verbatim as file paths so PropertySources are reported relative to
+// rootDir.
+func buildModelFromFiles(ctx context.Context, rootDir string, files map[string][]byte) *projectModel {
+	m := newProjectModel(rootDir)
+	for path, content := range files {
+		if classifyFile(path) == fileKindUnknown {
+			continue
+		}
+		if err := m.parseContent(path, content); err != nil {
+			clog.DebugContextf(ctx, "Skipping %s: %v", path, err)
+			continue
+		}
+	}
+	m.finalize()
+
+	clog.DebugContextf(ctx, "Gradle model (remote): %d files, %d catalog modules, %d variables, %d declared modules",
+		len(m.sortedFiles), len(m.catalogLibrarySites), len(m.variableSites), len(m.declarationSites))
+	return m
 }
 
 // parseFile reads and parses one discovered file into the model.
@@ -204,6 +240,17 @@ func (m *projectModel) parseFile(path string) error {
 	content, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return fmt.Errorf("failed to read: %w", err)
+	}
+	return m.parseContent(path, content)
+}
+
+// parseContent parses one file's bytes into the model, dispatching on the
+// file's classification. It guards against oversized content so the in-memory
+// (remote) path is protected the same way parseFile's os.Stat guard protects
+// the disk path.
+func (m *projectModel) parseContent(path string, content []byte) error {
+	if len(content) > maxManifestSize {
+		return fmt.Errorf("%w: %s is %d bytes (max: %d)", ErrManifestTooLarge, path, len(content), maxManifestSize)
 	}
 
 	switch classifyFile(path) {
