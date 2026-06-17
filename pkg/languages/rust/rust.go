@@ -71,26 +71,10 @@ func (r *Rust) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	log.Infof("Updating Rust project at: %s", cfg.RootDir)
 	log.Infof("Dependencies to update: %d", len(cfg.Dependencies))
 
-	// Find Cargo.lock
-	cargoLockPath := filepath.Join(cfg.RootDir, "Cargo.lock")
-	if _, err := os.Stat(cargoLockPath); os.IsNotExist(err) {
-		return fmt.Errorf("%w in: %s", ErrCargoLockNotFound, cfg.RootDir)
-	}
-
-	// Parse Cargo.lock to get current packages
-	file, err := os.Open(filepath.Clean(cargoLockPath))
+	// Get current packages
+	cargoPackages, err := GetCurrentPackages(ctx, cfg.RootDir)
 	if err != nil {
-		return fmt.Errorf("failed to open Cargo.lock: %w", err)
-	}
-	defer func() {
-		if closeErr := file.Close(); closeErr != nil {
-			log.Warnf("failed to close Cargo.lock: %v", closeErr)
-		}
-	}()
-
-	cargoPackages, err := ParseCargoLock(file)
-	if err != nil {
-		return fmt.Errorf("failed to parse Cargo.lock: %w", err)
+		return err
 	}
 
 	// Build update configuration
@@ -106,6 +90,12 @@ func (r *Rust) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	if cfg.DryRun {
 		log.Infof("Dry run mode: not making actual changes")
 		return nil
+	}
+
+	// Get the path to Cargo.lock so we can diff the contents
+	cargoLockPath, err := GetCargoLockPath(cfg.RootDir)
+	if err != nil {
+		return err
 	}
 
 	var originalContent []byte
