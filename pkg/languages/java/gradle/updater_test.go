@@ -249,7 +249,7 @@ func TestGradle_Update_Substitution_AndConstraintTogether(t *testing.T) {
 		t.Errorf("managed coords = %v", coords)
 	}
 	got := readFile(t, settings)
-	if !strings.Contains(got, "add('implementation', 'io.netty:netty-codec:4.1.135.Final')") {
+	if !strings.Contains(got, "configuration.resolutionStrategy.force 'io.netty:netty-codec:4.1.135.Final'") {
 		t.Errorf("constraint missing:\n%s", got)
 	}
 	if !strings.Contains(got, "substitute module('org.lz4:lz4-java')") {
@@ -313,7 +313,7 @@ func TestGradle_Update_ManagedBlock_InExistingSettings(t *testing.T) {
 	// The existing settings.gradle.kts hosts the managed block; no build
 	// script is created.
 	settings := filepath.Join(dir, "settings.gradle.kts")
-	if got := readFile(t, settings); !strings.Contains(got, `add("implementation", "com.example:transitive:1.0.0")`) {
+	if got := readFile(t, settings); !strings.Contains(got, `resolutionStrategy.force("com.example:transitive:1.0.0")`) {
 		t.Errorf("settings.gradle.kts missing kotlin constraint:\n%s", got)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "build.gradle.kts")); err == nil {
