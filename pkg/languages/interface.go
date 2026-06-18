@@ -69,7 +69,8 @@ type Dependency struct {
 	// Name is the primary package/module name
 	Name string
 
-	// OldName is used for module replacements (Go-specific)
+	// OldName is the original coordinate for a replacement directive
+	// (Go module replace; Gradle coordinate swap via dependencySubstitution)
 	OldName string
 
 	// Version is the target version to update to
@@ -81,7 +82,8 @@ type Dependency struct {
 	// Type is the dependency type (Maven-specific: jar, pom, etc.)
 	Type string
 
-	// Replace indicates this is a replacement directive (Go-specific)
+	// Replace indicates this is a replacement directive
+	// (Go module replace; Gradle coordinate swap via dependencySubstitution)
 	Replace bool
 
 	// Additional metadata can be stored here

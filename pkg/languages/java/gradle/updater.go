@@ -44,14 +44,18 @@ type document interface {
 }
 
 // updatePlan tracks the outcome of strategy resolution: edits are queued
-// directly on the model's parsed documents; deps satisfied nowhere are
-// collected for the managed force block.
+// directly on the model's parsed documents; deps satisfied nowhere, and all
+// coordinate swaps, are collected for the managed block in the settings script.
 type updatePlan struct {
 	model *projectModel
 
-	// forced maps "group:artifact" to the version to pin via the managed
-	// resolutionStrategy force block.
-	forced map[string]string
+	// constraints maps "group:artifact" to the version to pin via a dependency
+	// constraint in the managed block (Gradle's raise-the-floor `require`).
+	constraints map[string]string
+
+	// substitutions are coordinate swaps (replace directives) applied via
+	// dependencySubstitution in the managed block.
+	substitutions []gradlefile.Substitution
 
 	// requested tracks the version requested per routing target for
 	// conflict detection, keyed by a human-readable target description.
@@ -69,10 +73,10 @@ type updatePlan struct {
 // error.
 func resolveUpdates(ctx context.Context, model *projectModel, cfg *languages.UpdateConfig) (*updatePlan, error) {
 	plan := &updatePlan{
-		model:      model,
-		forced:     make(map[string]string),
-		requested:  make(map[string]string),
-		properties: cfg.Properties,
+		model:       model,
+		constraints: make(map[string]string),
+		requested:   make(map[string]string),
+		properties:  cfg.Properties,
 	}
 
 	if err := plan.applyProperties(ctx); err != nil {
@@ -80,12 +84,52 @@ func resolveUpdates(ctx context.Context, model *projectModel, cfg *languages.Upd
 	}
 
 	for _, dep := range cfg.Dependencies {
+		if dep.Replace || dep.OldName != "" {
+			if err := plan.applyReplace(ctx, dep); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if err := plan.applyDependency(ctx, dep); err != nil {
 			return nil, err
 		}
 	}
 
 	return plan, nil
+}
+
+// applyReplace records a coordinate swap (a replace directive). The old
+// module ("group:artifact") is redirected to the new module at the requested
+// version via a dependencySubstitution rule in the managed block, covering
+// both declared and transitive requests for the old coordinate.
+func (p *updatePlan) applyReplace(ctx context.Context, dep languages.Dependency) error {
+	if dep.Version == "" {
+		clog.WarnContextf(ctx, "Skipping replace %s: no target version", dep.OldName)
+		return nil
+	}
+	oldGroup, oldArtifact := parseDependencyName(dep.OldName)
+	if oldGroup == "" || oldArtifact == "" {
+		return fmt.Errorf("%w: replace from %q (expected groupId:artifactId)",
+			errMissingCoordinates, dep.OldName)
+	}
+	// The new coordinate goes through depCoordinates so it honours groupId/
+	// artifactId metadata the same way a normal dependency does.
+	newGroup, newArtifact, err := depCoordinates(dep)
+	if err != nil {
+		return fmt.Errorf("replace to %q: %w", dep.Name, err)
+	}
+	oldModule := oldGroup + ":" + oldArtifact
+	newModule := newGroup + ":" + newArtifact
+	if err := p.requireVersion("substitution "+oldModule, dep.Version); err != nil {
+		return err
+	}
+	clog.InfoContextf(ctx, "Substituting %s with %s:%s via dependencySubstitution", oldModule, newModule, dep.Version)
+	p.substitutions = append(p.substitutions, gradlefile.Substitution{
+		OldModule: oldModule,
+		NewModule: newModule,
+		Version:   dep.Version,
+	})
+	return nil
 }
 
 // requireVersion records the version requested for a routing target and
@@ -145,8 +189,8 @@ func (p *updatePlan) applyProperties(ctx context.Context) error {
 // applyDependency routes one dependency update. Every definition site found
 // for the module is updated (catalog entries, declarations, variables they
 // reference); when no site exists at all the module is recorded for the
-// managed force block — the Gradle analog of Maven adding the dependency to
-// DependencyManagement.
+// managed block as a dependency constraint — the Gradle analog of Maven
+// adding the dependency to DependencyManagement.
 func (p *updatePlan) applyDependency(ctx context.Context, dep languages.Dependency) error {
 	if dep.Version == "" {
 		clog.WarnContextf(ctx, "Skipping dependency %s: no target version", depDisplayName(dep))
@@ -179,11 +223,11 @@ func (p *updatePlan) applyDependency(ctx context.Context, dep languages.Dependen
 		return nil
 	}
 
-	clog.InfoContextf(ctx, "Dependency %s not declared in any Gradle file: pinning via resolutionStrategy force block", module)
+	clog.InfoContextf(ctx, "Dependency %s not declared in any Gradle file: pinning via managed block constraint", module)
 	if err := p.requireVersion("dependency "+module, dep.Version); err != nil {
 		return err
 	}
-	p.forced[module] = dep.Version
+	p.constraints[module] = dep.Version
 	return nil
 }
 
@@ -378,10 +422,10 @@ func (p *updatePlan) applyDeclarationTier(ctx context.Context, module, artifact,
 }
 
 // apply writes every changed document back to disk, injecting the managed
-// force block first when needed. Honors dry-run and validates every write
-// stays within the project root.
+// block (settings script) first when needed. Honors dry-run and validates
+// every write stays within the project root.
 func (p *updatePlan) apply(ctx context.Context, cfg *languages.UpdateConfig) error {
-	newFilePath, newFileContent, err := p.injectForceBlock(ctx)
+	newFilePath, newFileContent, err := p.injectManagedBlock(ctx)
 	if err != nil {
 		return err
 	}
@@ -408,7 +452,7 @@ func (p *updatePlan) apply(ctx context.Context, cfg *languages.UpdateConfig) err
 	}
 
 	if newFilePath != "" {
-		if err := writeNewForceFile(ctx, cfg, newFilePath, newFileContent); err != nil {
+		if err := writeNewManagedFile(ctx, cfg, newFilePath, newFileContent); err != nil {
 			return err
 		}
 		changes++
@@ -420,56 +464,62 @@ func (p *updatePlan) apply(ctx context.Context, cfg *languages.UpdateConfig) err
 	return nil
 }
 
-// writeNewForceFile creates a brand-new root build script that hosts only
-// the managed force block, honouring dry-run and root-boundary checks.
-func writeNewForceFile(ctx context.Context, cfg *languages.UpdateConfig, path, content string) error {
+// writeNewManagedFile creates a brand-new root settings script that hosts
+// only the managed block, honouring dry-run and root-boundary checks.
+func writeNewManagedFile(ctx context.Context, cfg *languages.UpdateConfig, path, content string) error {
 	if err := pathutil.ValidatePathWithinRoot(cfg.RootDir, filepath.Dir(path)); err != nil {
 		return fmt.Errorf("refusing to create %s: %w", path, err)
 	}
-	// A freshly created root build script must not already exist as a symlink:
-	// os.WriteFile would follow it and write through to its target, potentially
-	// outside the project root. Discovery skips symlinks, so any symlink at this
-	// path is unexpected - refuse it. (os.Lstat does not follow the link.)
+	// A freshly created root settings script must not already exist as a
+	// symlink: os.WriteFile would follow it and write through to its target,
+	// potentially outside the project root. Discovery skips symlinks, so any
+	// symlink at this path is unexpected - refuse it. (os.Lstat does not
+	// follow the link.)
 	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("%w: %s", ErrSymlinkTarget, path)
 	}
 	if cfg.DryRun {
-		clog.InfoContextf(ctx, "Dry run mode: would create %s with the managed force block", path)
+		clog.InfoContextf(ctx, "Dry run mode: would create %s with the managed block", path)
 		return nil
 	}
 	if err := os.WriteFile(path, []byte(content), gradleFilePerms); err != nil {
 		return fmt.Errorf("failed to create %s: %w", path, err)
 	}
-	clog.InfoContextf(ctx, "Created %s with the managed force block", path)
+	clog.InfoContextf(ctx, "Created %s with the managed block", path)
 	return nil
 }
 
-// injectForceBlock queues the managed force block on the root build script,
-// or prepares a new root build script when the project has none. Returns the
-// path and content of the new file to create, if any.
-func (p *updatePlan) injectForceBlock(ctx context.Context) (string, string, error) {
-	if len(p.forced) == 0 {
+// injectManagedBlock queues the managed block (dependency constraints for
+// transitive version pins, dependencySubstitution for coordinate swaps) on the
+// root settings script, or prepares a new root settings script when the
+// project has none. The block runs from gradle.beforeProject so it applies
+// before any project resolves a configuration. Returns the path and content of
+// the new file to create, if any.
+func (p *updatePlan) injectManagedBlock(ctx context.Context) (string, string, error) {
+	if len(p.constraints) == 0 && len(p.substitutions) == 0 {
 		return "", "", nil
 	}
-	if root := p.model.rootBuildFile(); root != nil {
-		if err := root.EnsureForceBlock(p.forced); err != nil {
-			return "", "", fmt.Errorf("failed to update force block in %s: %w", root.Path(), err)
+	if root := p.model.rootSettingsFile(); root != nil {
+		if err := root.EnsureManagedBlock(p.constraints, p.substitutions); err != nil {
+			return "", "", fmt.Errorf("failed to update managed block in %s: %w", root.Path(), err)
 		}
-		clog.InfoContextf(ctx, "Pinning %d transitive dependencies via force block in %s", len(p.forced), root.Path())
+		clog.InfoContextf(ctx, "Pinning %d transitive dependencies and %d substitutions via managed block in %s",
+			len(p.constraints), len(p.substitutions), root.Path())
 		return "", "", nil
 	}
 
 	dsl := p.model.rootSettingsDSL()
-	name := buildGradleFile
+	name := settingsGradleFile
 	if dsl == gradlefile.Kotlin {
-		name = buildGradleKtsFile
+		name = settingsGradleKtsFile
 	}
-	content, err := gradlefile.NewBuildFileContent(dsl, p.forced)
+	content, err := gradlefile.NewSettingsFileContent(dsl, p.constraints, p.substitutions)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to render force block: %w", err)
+		return "", "", fmt.Errorf("failed to render managed block: %w", err)
 	}
 	path := filepath.Join(p.model.rootDir, name)
-	clog.InfoContextf(ctx, "Pinning %d transitive dependencies via new root build script %s", len(p.forced), path)
+	clog.InfoContextf(ctx, "Pinning %d transitive dependencies and %d substitutions via new root settings script %s",
+		len(p.constraints), len(p.substitutions), path)
 	return path, content, nil
 }
 

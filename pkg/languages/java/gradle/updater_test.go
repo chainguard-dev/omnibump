@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/chainguard-dev/omnibump/pkg/gradlefile"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 )
 
@@ -205,7 +206,58 @@ func TestGradle_Update_ElasticsearchStyle_VersionProperties(t *testing.T) {
 	}
 }
 
-func TestGradle_Update_ForceInjection_Groovy(t *testing.T) {
+func TestGradle_Update_Substitution(t *testing.T) {
+	dir := copyFixture(t, "kayenta-style")
+
+	// A replace directive (coordinate swap) is applied through a
+	// dependencySubstitution rule in the managed block. updateAndValidate also
+	// proves post-update validation finds the new module's version, which is
+	// surfaced from the substitution's target.
+	updateAndValidate(t, &languages.UpdateConfig{
+		RootDir: dir,
+		Dependencies: []languages.Dependency{
+			{Replace: true, OldName: "org.lz4:lz4-java", Name: "at.yawk.lz4:lz4-java", Version: "1.10.1"},
+		},
+	})
+
+	settings := filepath.Join(dir, "settings.gradle")
+	if got := readFile(t, settings); !strings.Contains(got,
+		"substitute module('org.lz4:lz4-java') using module('at.yawk.lz4:lz4-java:1.10.1')") {
+		t.Errorf("settings missing substitution rule:\n%s", got)
+	}
+	if coords := managedCoordinates(t, settings); coords["at.yawk.lz4:lz4-java"] != "1.10.1" {
+		t.Errorf("substitution target not surfaced for validation: %v", coords)
+	}
+}
+
+func TestGradle_Update_Substitution_AndConstraintTogether(t *testing.T) {
+	dir := copyFixture(t, "kayenta-style")
+
+	updateAndValidate(t, &languages.UpdateConfig{
+		RootDir: dir,
+		Dependencies: []languages.Dependency{
+			// Transitive-only version pin -> constraint.
+			{Name: "io.netty:netty-codec", Version: "4.1.135.Final"},
+			// Coordinate swap -> substitution.
+			{Replace: true, OldName: "org.lz4:lz4-java", Name: "at.yawk.lz4:lz4-java", Version: "1.10.1"},
+		},
+	})
+
+	settings := filepath.Join(dir, "settings.gradle")
+	coords := managedCoordinates(t, settings)
+	if coords["io.netty:netty-codec"] != "4.1.135.Final" || coords["at.yawk.lz4:lz4-java"] != "1.10.1" {
+		t.Errorf("managed coords = %v", coords)
+	}
+	got := readFile(t, settings)
+	if !strings.Contains(got, "add('implementation', 'io.netty:netty-codec:4.1.135.Final')") {
+		t.Errorf("constraint missing:\n%s", got)
+	}
+	if !strings.Contains(got, "substitute module('org.lz4:lz4-java')") {
+		t.Errorf("substitution missing:\n%s", got)
+	}
+}
+
+func TestGradle_Update_ManagedBlock_Groovy(t *testing.T) {
 	dir := copyFixture(t, "kayenta-style")
 
 	cfg := &languages.UpdateConfig{
@@ -218,41 +270,37 @@ func TestGradle_Update_ForceInjection_Groovy(t *testing.T) {
 	}
 	updateAndValidate(t, cfg)
 
-	build := readFile(t, filepath.Join(dir, "build.gradle"))
-	coords, err := forceBlockCoordinates(filepath.Join(dir, "build.gradle"), []byte(build))
-	if err != nil {
-		t.Fatalf("forceBlockCoordinates() error = %v", err)
-	}
+	// kayenta-style has a settings.gradle, which hosts the managed block.
+	settings := filepath.Join(dir, "settings.gradle")
+	coords := managedCoordinates(t, settings)
 	if coords["io.netty:netty-codec"] != "4.1.133.Final" || coords["com.signalfx.public:signalfx-java"] != "1.0.49" {
-		t.Errorf("force block coords = %v", coords)
+		t.Errorf("managed coords = %v", coords)
+	}
+	if build := readFile(t, filepath.Join(dir, "build.gradle")); strings.Contains(build, gradlefile.ForceBlockBegin) {
+		t.Errorf("managed block should live in settings, not build.gradle:\n%s", build)
 	}
 
 	// Re-running with one bumped version merges into the existing block.
-	cfg2 := &languages.UpdateConfig{
+	updateAndValidate(t, &languages.UpdateConfig{
 		RootDir: dir,
 		Dependencies: []languages.Dependency{
 			{Name: "io.netty:netty-codec", Version: "4.1.135.Final"},
 		},
-	}
-	updateAndValidate(t, cfg2)
+	})
 
-	build = readFile(t, filepath.Join(dir, "build.gradle"))
-	if strings.Count(build, "omnibump:resolutionStrategy:begin") != 1 {
-		t.Errorf("force block duplicated on re-run:\n%s", build)
+	if got := readFile(t, settings); strings.Count(got, gradlefile.ForceBlockBegin) != 1 {
+		t.Errorf("managed block duplicated on re-run:\n%s", got)
 	}
-	coords, err = forceBlockCoordinates(filepath.Join(dir, "build.gradle"), []byte(build))
-	if err != nil {
-		t.Fatalf("forceBlockCoordinates() error = %v", err)
-	}
+	coords = managedCoordinates(t, settings)
 	if coords["io.netty:netty-codec"] != "4.1.135.Final" {
-		t.Errorf("force entry not merged to new version: %v", coords)
+		t.Errorf("constraint not merged to new version: %v", coords)
 	}
 	if coords["com.signalfx.public:signalfx-java"] != "1.0.49" {
-		t.Errorf("existing force entry lost on merge: %v", coords)
+		t.Errorf("existing constraint lost on merge: %v", coords)
 	}
 }
 
-func TestGradle_Update_ForceInjection_SettingsOnlyCreatesKotlinFile(t *testing.T) {
+func TestGradle_Update_ManagedBlock_InExistingSettings(t *testing.T) {
 	dir := copyFixture(t, "settings-only")
 
 	updateAndValidate(t, &languages.UpdateConfig{
@@ -262,12 +310,29 @@ func TestGradle_Update_ForceInjection_SettingsOnlyCreatesKotlinFile(t *testing.T
 		},
 	})
 
-	// No build script existed, so one is created matching the settings DSL.
-	created := filepath.Join(dir, "build.gradle.kts")
-	build := readFile(t, created)
-	if !strings.Contains(build, `force("com.example:transitive:1.0.0")`) {
-		t.Errorf("created build.gradle.kts missing kotlin force entry:\n%s", build)
+	// The existing settings.gradle.kts hosts the managed block; no build
+	// script is created.
+	settings := filepath.Join(dir, "settings.gradle.kts")
+	if got := readFile(t, settings); !strings.Contains(got, `add("implementation", "com.example:transitive:1.0.0")`) {
+		t.Errorf("settings.gradle.kts missing kotlin constraint:\n%s", got)
 	}
+	if _, err := os.Stat(filepath.Join(dir, "build.gradle.kts")); err == nil {
+		t.Errorf("no build script should be created when a settings script exists")
+	}
+	if coords := managedCoordinates(t, settings); coords["com.example:transitive"] != "1.0.0" {
+		t.Errorf("managed coords = %v", coords)
+	}
+}
+
+// managedCoordinates parses the settings file at path and returns the
+// effective pins of its omnibump-managed block.
+func managedCoordinates(t *testing.T, path string) map[string]string {
+	t.Helper()
+	f, err := gradlefile.ParseSettings(path, []byte(readFile(t, path)))
+	if err != nil {
+		t.Fatalf("ParseSettings(%q) error = %v", path, err)
+	}
+	return f.ManagedCoordinates()
 }
 
 func TestGradle_Update_StrictlyWithCatalog(t *testing.T) {
@@ -499,12 +564,12 @@ func TestGradle_Update_ResolutionRuleBridge(t *testing.T) {
 	}
 }
 
-func TestGradle_Update_ForceBlock_RefusesSymlinkTarget(t *testing.T) {
-	// A malicious repo pre-places a symlink at the root build script name,
+func TestGradle_Update_ManagedBlock_RefusesSymlinkTarget(t *testing.T) {
+	// A malicious repo pre-places a symlink at the settings script name,
 	// pointing outside the checkout. Discovery skips symlinks, so the project
-	// is detected as Gradle with no usable root build script and the
-	// transitive-only dependency drives the force-block new-file path. The
-	// write must be refused rather than followed through the symlink.
+	// has no usable settings script and the transitive-only dependency drives
+	// the new-settings-file path. The write must be refused rather than
+	// followed through the symlink.
 	tmpDir := t.TempDir()
 
 	outsideDir := t.TempDir()
@@ -514,12 +579,13 @@ func TestGradle_Update_ForceBlock_RefusesSymlinkTarget(t *testing.T) {
 		t.Fatalf("failed to write victim file: %v", err)
 	}
 
-	// settings.gradle makes the dir a Gradle project with no build script.
-	if err := os.WriteFile(filepath.Join(tmpDir, "settings.gradle"), []byte("rootProject.name = 'demo'\n"), 0o600); err != nil {
-		t.Fatalf("failed to write settings.gradle: %v", err)
+	// A real build.gradle makes the dir a Gradle project; with no real
+	// settings script, the managed block would be written to a new one.
+	if err := os.WriteFile(filepath.Join(tmpDir, "build.gradle"), []byte("apply plugin: 'java'\n"), 0o600); err != nil {
+		t.Fatalf("failed to write build.gradle: %v", err)
 	}
-	// Symlinked root build script pointing at the victim outside the root.
-	if err := os.Symlink(victim, filepath.Join(tmpDir, "build.gradle")); err != nil {
+	// Symlinked settings script pointing at the victim outside the root.
+	if err := os.Symlink(victim, filepath.Join(tmpDir, "settings.gradle")); err != nil {
 		t.Fatalf("failed to create symlink: %v", err)
 	}
 
