@@ -98,8 +98,10 @@ func (g *Gradle) GetAnalyzer() analyzer.Analyzer {
 // Update performs dependency updates on a Gradle project. It builds a model
 // of every Gradle file that can define a version, routes each requested
 // update to the mechanism that defines it (version catalog, version
-// variable, direct declaration), and pins dependencies found nowhere via the
-// managed resolutionStrategy force block.
+// variable, direct declaration), pins dependencies found nowhere via a
+// dependency constraint, and applies coordinate swaps via dependency
+// substitution — both hosted in the managed block of the settings script so
+// they apply before any configuration resolves.
 func (g *Gradle) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	clog.InfoContextf(ctx, "Updating Gradle project at: %s", cfg.RootDir)
 	clog.InfoContextf(ctx, "Dependencies to update: %d", len(cfg.Dependencies))
@@ -258,10 +260,10 @@ func effectiveVersions(model *projectModel, module, group, artifact string) []ef
 			})
 		}
 	}
-	for _, version := range model.forcedSites[module] {
+	for _, version := range model.pinnedSites[module] {
 		versions = append(versions, effectiveVersion{
 			version: version,
-			desc:    fmt.Sprintf("forced to version %s", version),
+			desc:    fmt.Sprintf("pinned to version %s", version),
 		})
 	}
 	return versions
@@ -354,14 +356,4 @@ func findBuildFiles(root string) ([]string, error) {
 	})
 
 	return files, err
-}
-
-// forceBlockCoordinates returns the managed force block entries of a build
-// script's content, keyed by "group:artifact".
-func forceBlockCoordinates(path string, content []byte) (map[string]string, error) {
-	f, err := gradlefile.ParseBuild(path, content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse %s: %w", path, err)
-	}
-	return f.ForcedCoordinates(), nil
 }

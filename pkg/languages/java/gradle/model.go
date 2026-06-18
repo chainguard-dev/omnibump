@@ -65,9 +65,11 @@ type projectModel struct {
 	// useVersion(libs.versions.netty.get()) rule).
 	resolutionRuleSites map[string][]resolutionRuleSite
 
-	// forcedSites indexes the managed force-block pins of every build
-	// script by "group:artifact", collected once at scan time.
-	forcedSites map[string][]string
+	// pinnedSites indexes the effective managed pins by "group:artifact":
+	// settings-script constraints and substitution targets, plus any legacy
+	// build-script force blocks. Collected at scan time and surfaced to
+	// post-update validation.
+	pinnedSites map[string][]string
 }
 
 // resolutionRuleSite is one resolve rule in a build script.
@@ -168,7 +170,7 @@ func newProjectModel(rootDir string) *projectModel {
 		declarationSites:    make(map[string][]declarationSite),
 		libraryFnSites:      make(map[string][]declarationSite),
 		resolutionRuleSites: make(map[string][]resolutionRuleSite),
-		forcedSites:         make(map[string][]string),
+		pinnedSites:         make(map[string][]string),
 	}
 }
 
@@ -403,7 +405,15 @@ func (m *projectModel) indexDeclarations() {
 			}
 		}
 		for module, version := range build.ForcedCoordinates() {
-			m.forcedSites[module] = append(m.forcedSites[module], version)
+			m.pinnedSites[module] = append(m.pinnedSites[module], version)
+		}
+	}
+	// Settings-script managed blocks pin transitive versions (constraints) and
+	// coordinate swaps (substitution targets); surface both as effective
+	// versions so post-update validation finds them.
+	for _, settings := range m.settings {
+		for module, version := range settings.ManagedCoordinates() {
+			m.pinnedSites[module] = append(m.pinnedSites[module], version)
 		}
 	}
 }
@@ -463,9 +473,11 @@ func (m *projectModel) resolveCatalogValue(library gradlefile.CatalogLibrary) st
 	return library.Version
 }
 
-// rootBuildFile picks the build script that should host the managed force
-// block: the build file adjacent to the root settings file, else the
-// shallowest build file. Returns nil when the project has no build script.
+// rootBuildFile picks a representative root build script: the build file
+// adjacent to the root settings file, else the shallowest build file. Returns
+// nil when the project has no build script. The managed block lives in the
+// settings file (see rootSettingsFile); this is used only to label a
+// representative path for remote analysis.
 func (m *projectModel) rootBuildFile() *gradlefile.BuildFile {
 	for _, settingsPath := range m.sortedFiles {
 		if _, ok := m.settings[settingsPath]; !ok {
@@ -493,6 +505,26 @@ func (m *projectModel) rootBuildFile() *gradlefile.BuildFile {
 		depth := strings.Count(path, string(filepath.Separator))
 		if bestDepth == -1 || depth < bestDepth {
 			best = build
+			bestDepth = depth
+		}
+	}
+	return best
+}
+
+// rootSettingsFile picks the settings script that should host the managed
+// block: the shallowest settings file (the build root). Returns nil when the
+// project has no settings script.
+func (m *projectModel) rootSettingsFile() *gradlefile.SettingsFile {
+	var best *gradlefile.SettingsFile
+	bestDepth := -1
+	for _, path := range m.sortedFiles {
+		settings, ok := m.settings[path]
+		if !ok {
+			continue
+		}
+		depth := strings.Count(path, string(filepath.Separator))
+		if bestDepth == -1 || depth < bestDepth {
+			best = settings
 			bestDepth = depth
 		}
 	}
