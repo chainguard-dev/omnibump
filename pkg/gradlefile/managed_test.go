@@ -29,9 +29,8 @@ func TestRenderManagedBlock_Groovy(t *testing.T) {
 		ForceBlockBegin,
 		ForceBlockEnd,
 		"gradle.beforeProject { project ->",
-		"project.plugins.withId('java') {",
-		"add('implementation', 'commons-io:commons-io:2.17.0')",
-		"add('implementation', 'io.netty:netty-handler:4.1.135.Final')",
+		"configuration.resolutionStrategy.force 'commons-io:commons-io:2.17.0'",
+		"configuration.resolutionStrategy.force 'io.netty:netty-handler:4.1.135.Final'",
 		"configuration.name ==~ /.*([Cc]ompileClasspath|[Rr]untimeClasspath)/",
 		"substitute module('org.lz4:lz4-java') using module('at.yawk.lz4:lz4-java:1.10.1') because 'omnibump coordinate swap'",
 	} {
@@ -53,8 +52,7 @@ func TestRenderManagedBlock_Kotlin(t *testing.T) {
 	)
 	for _, want := range []string{
 		"gradle.beforeProject {",
-		`plugins.withId("java") {`,
-		`add("implementation", "a.b:c:1.0")`,
+		`resolutionStrategy.force("a.b:c:1.0")`,
 		`name.matches(Regex(".*([Cc]ompileClasspath|[Rr]untimeClasspath)"))`,
 		`substitute(module("old.g:old-a")).using(module("new.g:new-a:2.0")).because("omnibump coordinate swap")`,
 	} {
@@ -86,13 +84,13 @@ func TestEnsureManagedBlock_MergeAndIdempotency(t *testing.T) {
 	if strings.Count(second, ForceBlockBegin) != 1 || strings.Count(second, ForceBlockEnd) != 1 {
 		t.Errorf("markers duplicated:\n%s", second)
 	}
-	if !strings.Contains(second, "add('implementation', 'a.b:c:2.0')") {
+	if !strings.Contains(second, "resolutionStrategy.force 'a.b:c:2.0'") {
 		t.Errorf("merged version bump missing:\n%s", second)
 	}
 	if strings.Contains(second, "a.b:c:1.0") {
-		t.Errorf("stale constraint not replaced:\n%s", second)
+		t.Errorf("stale pin not replaced:\n%s", second)
 	}
-	if !strings.Contains(second, "add('implementation', 'x.y:z:3.0')") || !strings.Contains(second, "substitute module('org.lz4:lz4-java')") {
+	if !strings.Contains(second, "resolutionStrategy.force 'x.y:z:3.0'") || !strings.Contains(second, "substitute module('org.lz4:lz4-java')") {
 		t.Errorf("new entries missing:\n%s", second)
 	}
 
@@ -119,7 +117,7 @@ func TestEnsureManagedBlock_Kotlin(t *testing.T) {
 	first := string(f.Content())
 	for _, want := range []string{
 		"gradle.beforeProject {",
-		`add("implementation", "a.b:c:1.0")`,
+		`resolutionStrategy.force("a.b:c:1.0")`,
 		`substitute(module("old.g:old-a")).using(module("new.g:new-a:2.0"))`,
 	} {
 		if !strings.Contains(first, want) {
@@ -185,7 +183,7 @@ func TestNewSettingsFileContent(t *testing.T) {
 	if !strings.HasPrefix(content, ForceBlockBegin) {
 		t.Errorf("new settings file should start with the marker:\n%s", content)
 	}
-	if !strings.Contains(content, `add("implementation", "a.b:c:1.0")`) {
+	if !strings.Contains(content, `resolutionStrategy.force("a.b:c:1.0")`) {
 		t.Errorf("kotlin constraint missing:\n%s", content)
 	}
 }

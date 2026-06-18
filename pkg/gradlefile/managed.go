@@ -37,10 +37,12 @@ const managedConfigurations = `.*([Cc]ompileClasspath|[Rr]untimeClasspath)`
 const managedBlockOpen = "gradle.beforeProject {"
 
 var (
-	// managedConstraintPattern matches a constraint line in the managed block:
-	// add('implementation', 'group:artifact:version').
-	managedConstraintPattern = regexp.MustCompile(
-		`add\(\s*["']implementation["']\s*,\s*["']([A-Za-z0-9._-]+:[A-Za-z0-9._-]+):([A-Za-z0-9._+-]+)["']\s*\)`)
+	// managedForcePattern matches a version-pin line in the managed block,
+	// either DSL:
+	//   Groovy: configuration.resolutionStrategy.force 'group:artifact:version'
+	//   Kotlin: resolutionStrategy.force("group:artifact:version")
+	managedForcePattern = regexp.MustCompile(
+		`resolutionStrategy\.force\s*\(?\s*["']([A-Za-z0-9._-]+:[A-Za-z0-9._-]+):([A-Za-z0-9._+-]+)["']`)
 
 	// managedSubstitutionPattern matches a substitution line in either DSL:
 	//   Groovy: substitute module('old:mod') using module('new:mod:version')
@@ -95,12 +97,12 @@ func validateModule(module string) error {
 // build-script-appended resolutionStrategy block cannot.
 //
 // Two rule kinds are emitted:
-//   - Version bumps become dependency constraints on the implementation
-//     configuration. A constraint with a bare version is `require` semantics:
-//     it raises the floor to the requested version and never downgrades an
-//     already-higher selection — the safe choice for CVE-style "at least the
-//     fixed version" pins, and Gradle's recommended mechanism (a resolution
-//     input) rather than a brute-force override.
+//   - Version bumps become resolutionStrategy.force pins on the compile/runtime
+//     classpaths. force is used rather than a dependency constraint because it
+//     is exempt from failOnVersionConflict() — which OpenSearch plugins enable
+//     and which rejects the divergent version a `require` constraint would add
+//     to the graph. force collapses all requests for the module to the pinned
+//     version (so it can, in principle, pin below an already-higher selection).
 //   - Coordinate swaps become dependencySubstitution rules, which redirect a
 //     module (direct or transitive) to a new module at a fixed version.
 //
@@ -120,6 +122,9 @@ func renderManagedBlock(constraints map[string]string, subs []Substitution, dsl 
 	eachParam := " configuration ->"
 	eachRecv := "configuration."
 	matchExpr := "configuration.name ==~ /" + managedConfigurations + "/"
+	force := func(module, version string) string {
+		return eachRecv + "resolutionStrategy.force " + q + module + ":" + version + q
+	}
 	substitute := func(s Substitution) string {
 		return "substitute module('" + s.OldModule + "') using module('" +
 			s.NewModule + ":" + s.Version + "') because 'omnibump coordinate swap'"
@@ -131,6 +136,9 @@ func renderManagedBlock(constraints map[string]string, subs []Substitution, dsl 
 		eachParam = ""
 		eachRecv = ""
 		matchExpr = "name.matches(Regex(" + q + managedConfigurations + q + "))"
+		force = func(module, version string) string {
+			return eachRecv + "resolutionStrategy.force(" + q + module + ":" + version + q + ")"
+		}
 		substitute = func(s Substitution) string {
 			return "substitute(module(" + q + s.OldModule + q + ")).using(module(" +
 				q + s.NewModule + ":" + s.Version + q + ")).because(" + q + "omnibump coordinate swap" + q + ")"
@@ -140,23 +148,25 @@ func renderManagedBlock(constraints map[string]string, subs []Substitution, dsl 
 	var b strings.Builder
 	b.WriteString(ForceBlockBegin + "\n")
 	b.WriteString(beforeProject + "\n")
-	if len(modules) > 0 {
-		b.WriteString("    " + recv + "plugins.withId(" + q + "java" + q + ") {\n")
-		b.WriteString("        " + recv + "dependencies.constraints {\n")
-		for _, module := range modules {
-			b.WriteString("            add(" + q + "implementation" + q + ", " + q + module + ":" + constraints[module] + q + ")\n")
-		}
-		b.WriteString("        }\n")
-		b.WriteString("    }\n")
-	}
-	if len(sortedSubs) > 0 {
+	// Version pins use resolutionStrategy.force (not dependency constraints):
+	// force is exempt from failOnVersionConflict(), which OpenSearch plugins
+	// enable and which rejects the divergent version a constraint introduces.
+	// Coordinate swaps use dependencySubstitution. Both are installed via
+	// configureEach under gradle.beforeProject, so they register before any
+	// configuration resolves.
+	if len(modules) > 0 || len(sortedSubs) > 0 {
 		b.WriteString("    " + recv + "configurations.configureEach {" + eachParam + "\n")
 		b.WriteString("        if (" + matchExpr + ") {\n")
-		b.WriteString("            " + eachRecv + "resolutionStrategy.dependencySubstitution {\n")
-		for _, s := range sortedSubs {
-			b.WriteString("                " + substitute(s) + "\n")
+		for _, module := range modules {
+			b.WriteString("            " + force(module, constraints[module]) + "\n")
 		}
-		b.WriteString("            }\n")
+		if len(sortedSubs) > 0 {
+			b.WriteString("            " + eachRecv + "resolutionStrategy.dependencySubstitution {\n")
+			for _, s := range sortedSubs {
+				b.WriteString("                " + substitute(s) + "\n")
+			}
+			b.WriteString("            }\n")
+		}
 		b.WriteString("        }\n")
 		b.WriteString("    }\n")
 	}
@@ -176,7 +186,7 @@ func parseManagedBlock(content []byte) (map[string]string, []Substitution) {
 		return constraints, subs
 	}
 	block := content[sp.start:sp.end]
-	for _, m := range managedConstraintPattern.FindAllSubmatch(block, -1) {
+	for _, m := range managedForcePattern.FindAllSubmatch(block, -1) {
 		constraints[string(m[1])] = string(m[2])
 	}
 	for _, m := range managedSubstitutionPattern.FindAllSubmatch(block, -1) {
