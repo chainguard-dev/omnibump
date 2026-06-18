@@ -300,6 +300,36 @@ func TestGradle_Update_ManagedBlock_Groovy(t *testing.T) {
 	}
 }
 
+func TestGradle_Update_DeclaredBumpAlsoForcePinned(t *testing.T) {
+	dir := copyFixture(t, "kayenta-style")
+
+	// A declared literal dependency is edited in place AND force-pinned in the
+	// managed block. The force pin makes the bump apply uniformly across every
+	// subproject classpath, so a module that pulls the same coordinate
+	// transitively at the old version cannot trigger a version conflict under
+	// failOnVersionConflict() (the OpenSearch ml-commons commons-io case).
+	updateAndValidate(t, &languages.UpdateConfig{
+		RootDir: dir,
+		Dependencies: []languages.Dependency{
+			{Name: "com.netflix.kayenta:kayenta-core", Version: "1.2.0"},
+		},
+	})
+
+	if build := readFile(t, filepath.Join(dir, "build.gradle")); !strings.Contains(build,
+		"com.netflix.kayenta:kayenta-core:1.2.0") {
+		t.Errorf("declared version not edited in place:\n%s", build)
+	}
+
+	settings := filepath.Join(dir, "settings.gradle")
+	if got := readFile(t, settings); !strings.Contains(got,
+		"configuration.resolutionStrategy.force 'com.netflix.kayenta:kayenta-core:1.2.0'") {
+		t.Errorf("declared bump not also force-pinned in managed block:\n%s", got)
+	}
+	if coords := managedCoordinates(t, settings); coords["com.netflix.kayenta:kayenta-core"] != "1.2.0" {
+		t.Errorf("managed coords = %v", coords)
+	}
+}
+
 func TestGradle_Update_ManagedBlock_InExistingSettings(t *testing.T) {
 	dir := copyFixture(t, "settings-only")
 

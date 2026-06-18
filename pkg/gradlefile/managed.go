@@ -77,6 +77,15 @@ func validateManaged(constraints map[string]string, subs []Substitution) error {
 }
 
 func validateModule(module string) error {
+	return ValidateModule(module)
+}
+
+// ValidateModule reports whether module is a well-formed "group:artifact"
+// coordinate safe to embed in a managed-block rule. Callers use it to decide
+// whether a dependency can be force-pinned: aliases that are not real
+// coordinates (e.g. Spring Boot's library("Commons Lang3") display names)
+// fail this check and must not be added to the managed block.
+func ValidateModule(module string) error {
 	group, artifact, ok := strings.Cut(module, ":")
 	if !ok {
 		return fmt.Errorf("%w: %q is not in group:artifact form", ErrInvalidCoordinate, module)
