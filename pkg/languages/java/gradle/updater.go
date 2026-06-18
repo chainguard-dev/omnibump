@@ -219,15 +219,29 @@ func (p *updatePlan) applyDependency(ctx context.Context, dep languages.Dependen
 		return err
 	}
 
-	if catalogHandled || declHandled || ruleHandled {
-		return nil
+	// Pin every bump in the managed block via resolutionStrategy.force, in
+	// addition to any in-place edit. A declared coordinate edited only in the
+	// module(s) that declare it still resolves to its old version in sibling
+	// submodules that pull it transitively; under failOnVersionConflict() the
+	// two collide (e.g. commons-io 2.17.0 in ml-commons' plugin/ml-algorithms
+	// vs 2.15.1 transitively in opensearch-ml-memory). The force pin applies
+	// the bump uniformly to every subproject classpath, so a bump is never
+	// partial across a multi-module build.
+	//
+	// Only real "group:artifact" coordinates can be force-pinned. Some in-place
+	// mechanisms match by an alias that is not a coordinate (Spring Boot's
+	// library("Commons Lang3") display names); those govern versions centrally
+	// already, so skip the force pin rather than emit an invalid rule.
+	if gradlefile.ValidateModule(module) == nil {
+		if err := p.requireVersion("dependency "+module, dep.Version); err != nil {
+			return err
+		}
+		p.constraints[module] = dep.Version
 	}
 
-	clog.InfoContextf(ctx, "Dependency %s not declared in any Gradle file: pinning via managed block constraint", module)
-	if err := p.requireVersion("dependency "+module, dep.Version); err != nil {
-		return err
+	if !catalogHandled && !declHandled && !ruleHandled {
+		clog.InfoContextf(ctx, "Dependency %s not declared in any Gradle file: pinning via managed block force", module)
 	}
-	p.constraints[module] = dep.Version
 	return nil
 }
 
@@ -489,8 +503,8 @@ func writeNewManagedFile(ctx context.Context, cfg *languages.UpdateConfig, path,
 	return nil
 }
 
-// injectManagedBlock queues the managed block (dependency constraints for
-// transitive version pins, dependencySubstitution for coordinate swaps) on the
+// injectManagedBlock queues the managed block (resolutionStrategy.force for
+// version pins, dependencySubstitution for coordinate swaps) on the
 // root settings script, or prepares a new root settings script when the
 // project has none. The block runs from gradle.beforeProject so it applies
 // before any project resolves a configuration. Returns the path and content of
@@ -503,7 +517,7 @@ func (p *updatePlan) injectManagedBlock(ctx context.Context) (string, string, er
 		if err := root.EnsureManagedBlock(p.constraints, p.substitutions); err != nil {
 			return "", "", fmt.Errorf("failed to update managed block in %s: %w", root.Path(), err)
 		}
-		clog.InfoContextf(ctx, "Pinning %d transitive dependencies and %d substitutions via managed block in %s",
+		clog.InfoContextf(ctx, "Pinning %d dependencies and %d substitutions via managed block in %s",
 			len(p.constraints), len(p.substitutions), root.Path())
 		return "", "", nil
 	}
@@ -518,7 +532,7 @@ func (p *updatePlan) injectManagedBlock(ctx context.Context) (string, string, er
 		return "", "", fmt.Errorf("failed to render managed block: %w", err)
 	}
 	path := filepath.Join(p.model.rootDir, name)
-	clog.InfoContextf(ctx, "Pinning %d transitive dependencies and %d substitutions via new root settings script %s",
+	clog.InfoContextf(ctx, "Pinning %d dependencies and %d substitutions via new root settings script %s",
 		len(p.constraints), len(p.substitutions), path)
 	return path, content, nil
 }
