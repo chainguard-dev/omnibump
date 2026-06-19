@@ -58,6 +58,49 @@ func Test_findMatchingPackages(t *testing.T) {
 	}
 }
 
+// Test_targetSpec_parseTarget guards the seam where a precise-pin spec is
+// reconstructed for parseTarget. The inline-package parser splits CLI input on
+// '=', so "rand@0.9.0=0.9.3" arrives as Name="rand@0.9.0", Version="0.9.3" — the
+// (pkgName, version) pairs below mirror that parser output. targetSpec must
+// rejoin the precise form with '=' (not '@'), otherwise parseTarget reads the
+// version as "0.9.0@0.9.3", misses the precise pin, and the update is skipped.
+func Test_targetSpec_parseTarget(t *testing.T) {
+	tests := []struct {
+		name     string
+		pkgName  string
+		version  string
+		wantSpec string
+		want     target
+	}{
+		{
+			name:     "precise pin survives the round-trip",
+			pkgName:  "rand@0.9.0",
+			version:  "0.9.3",
+			wantSpec: "rand@0.9.0=0.9.3",
+			want:     target{name: "rand", version: "0.9.0", precise: "0.9.3", hasVersion: true, isPrecise: true},
+		},
+		{
+			name:     "plain versioned update",
+			pkgName:  "rand",
+			version:  "0.9.3",
+			wantSpec: "rand@0.9.3",
+			want:     target{name: "rand", version: "0.9.3", hasVersion: true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := targetSpec(tt.pkgName, tt.version)
+			if spec != tt.wantSpec {
+				t.Errorf("targetSpec(%q, %q) = %q, want %q", tt.pkgName, tt.version, spec, tt.wantSpec)
+			}
+			if diff := cmp.Diff(tt.want, parseTarget(spec), cmp.AllowUnexported(target{})); diff != "" {
+				t.Errorf("parseTarget(%q) mismatch (-want +got):\n%s", spec, diff)
+			}
+		})
+	}
+}
+
 func TestUpdate(t *testing.T) {
 	tests := []struct {
 		name   string
