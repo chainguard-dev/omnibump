@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,6 +22,10 @@ import (
 	"github.com/chainguard-dev/clog"
 	"golang.org/x/mod/semver"
 )
+
+// ErrAmbiguousTarget is returned when a bare crate name resolves to multiple
+// present versions, so the caller must pin one explicitly as name@<version>.
+var ErrAmbiguousTarget = errors.New("crate resolves to multiple versions")
 
 // GetCargoLockPath returns the path to Cargo.lock in the given cargo root directory.
 func GetCargoLockPath(cargoRoot string) (string, error) {
@@ -67,10 +72,10 @@ func GetCurrentPackages(ctx context.Context, cargoRoot string) ([]CargoPackage, 
 // reverse chain and should be picked up too. The queried package itself is
 // included in cargo's inverted-tree output; callers are responsible for
 // filtering it out.
-func queryReverseDependencies(cargoRoot string, spec string) ([]string, error) {
+func queryReverseDependencies(ctx context.Context, cargoRoot string, spec string) ([]string, error) {
 	// cargo tree -p $pkg --target all -i --prefix none
 	output := bytes.Buffer{}
-	cmd := exec.Command("cargo", "tree", "-q", "-p", spec, "--target", "all", "-i", "--prefix", "none")
+	cmd := exec.CommandContext(ctx, "cargo", "tree", "-q", "-p", spec, "--target", "all", "-i", "--prefix", "none") //nolint:gosec // spec is a cargo package spec derived from the lockfile
 	cmd.Dir = cargoRoot
 	cmd.Stdout = &output
 	cmd.Stderr = os.Stderr
@@ -107,8 +112,8 @@ func parseCargoTree(output string) []string {
 // closure in a single pass — flattened by --prefix none — so one query suffices;
 // there is no need to re-walk each discovered crate. Workspace members are kept
 // (they sit at the top of the chain); only the target itself is removed.
-func getReverseDependencies(cargoRoot string, pkgName string) ([]string, error) {
-	deps, err := queryReverseDependencies(cargoRoot, pkgName)
+func getReverseDependencies(ctx context.Context, cargoRoot string, pkgName string) ([]string, error) {
+	deps, err := queryReverseDependencies(ctx, cargoRoot, pkgName)
 	if err != nil {
 		return nil, err
 	}
@@ -137,9 +142,9 @@ func reverseDepsFromTree(deps []string, pkgName string) []string {
 
 // presentVersions returns the versions of crate `name` currently resolved in the
 // workspace, as reported by `cargo metadata`.
-func presentVersions(cargoRoot, name string) ([]string, error) {
+func presentVersions(ctx context.Context, cargoRoot, name string) ([]string, error) {
 	output := bytes.Buffer{}
-	cmd := exec.Command("cargo", "metadata", "--format-version", "1")
+	cmd := exec.CommandContext(ctx, "cargo", "metadata", "--format-version", "1")
 	cmd.Dir = cargoRoot
 	cmd.Stdout = &output
 	cmd.Stderr = os.Stderr
@@ -207,8 +212,8 @@ func resolveVersion(name, version string, hasVersion bool, present []string) (sp
 		if len(present) == 1 {
 			return name + "@" + present[0], false, "", nil
 		}
-		return "", false, "", fmt.Errorf("%s resolves to multiple versions (%s); pin one as %s@<version>",
-			name, strings.Join(present, ", "), name)
+		return "", false, "", fmt.Errorf("%w: %s (%s); pin one as %s@<version>",
+			ErrAmbiguousTarget, name, strings.Join(present, ", "), name)
 	}
 
 	// Versioned target: collect the present versions in the request's caret line,
