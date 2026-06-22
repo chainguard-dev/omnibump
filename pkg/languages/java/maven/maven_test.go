@@ -41,17 +41,17 @@ func TestSimplePoms(t *testing.T) {
 	}{{
 		name:    "simple dependency, bumped inline, type and scope unmodified",
 		in:      &gopom.Project{Dependencies: &[]gopom.Dependency{makeDep("a1", "b1", "1.0.0", "import", "jar")}},
-		patches: []Patch{{"a1", "b1", "1.0.1", "INVALID_SCOPE", "INVALID_TYPE"}},
+		patches: []Patch{{GroupID: "a1", ArtifactID: "b1", Version: "1.0.1", Scope: "INVALID_SCOPE", Type: "INVALID_TYPE"}},
 		want:    &gopom.Project{Dependencies: &[]gopom.Dependency{makeDep("a1", "b1", "1.0.1", "import", "jar")}},
 	}, {
 		name:    "simple dependencymanagement, bumped inline, type and scope unmodified",
 		in:      &gopom.Project{DependencyManagement: &gopom.DependencyManagement{Dependencies: &[]gopom.Dependency{makeDep("a2", "b2", "2.0.0", "compile", "pom")}}},
-		patches: []Patch{{"a2", "b2", "2.0.1", "INVALID_SCOPE", "INVALID_TYPE"}},
+		patches: []Patch{{GroupID: "a2", ArtifactID: "b2", Version: "2.0.1", Scope: "INVALID_SCOPE", Type: "INVALID_TYPE"}},
 		want:    &gopom.Project{DependencyManagement: &gopom.DependencyManagement{Dependencies: &[]gopom.Dependency{makeDep("a2", "b2", "2.0.1", "compile", "pom")}}},
 	}, {
 		name:    "dependencymanagement, added to dependency management",
 		in:      &gopom.Project{DependencyManagement: &gopom.DependencyManagement{Dependencies: &[]gopom.Dependency{makeDep("other", "b3", "2.0.0")}}},
-		patches: []Patch{{"added", "b", "2.0.1", "import", "somethingelse"}},
+		patches: []Patch{{GroupID: "added", ArtifactID: "b", Version: "2.0.1", Scope: "import", Type: "somethingelse"}},
 		want:    &gopom.Project{DependencyManagement: &gopom.DependencyManagement{Dependencies: &[]gopom.Dependency{makeDep("other", "b3", "2.0.0"), makeDep("added", "b", "2.0.1", "import", "somethingelse")}}},
 	}, {
 		name: "auto-resolve property: dep uses property ref, no --properties passed",
@@ -2406,4 +2406,118 @@ func TestFindMavenPoms(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPatchProjectClassifier verifies that classifier is part of the dependency
+// identity: a patch matches (and is added) only for the same classifier, so a
+// classifier'd artifact like a native netty transport can be pinned.
+func TestPatchProjectClassifier(t *testing.T) {
+	const (
+		g  = "io.netty"
+		a  = "netty-transport-native-kqueue"
+		v  = "4.1.135.Final"
+		v0 = "4.1.100.Final"
+	)
+	// cls builds the kqueue dependency with a classifier, reusing makeDep for
+	// scope/type defaults.
+	cls := func(version, classifier string, opts ...string) gopom.Dependency {
+		dep := makeDep(g, a, version, opts...)
+		dep.Classifier = classifier
+		return dep
+	}
+	testCases := []struct {
+		name    string
+		in      *gopom.Project
+		patches []Patch
+		want    *gopom.Project
+	}{{
+		name:    "missing classifier'd dep is added carrying the same classifier",
+		in:      &gopom.Project{DependencyManagement: &gopom.DependencyManagement{Dependencies: &[]gopom.Dependency{makeDep("other", "lib", "1.0")}}},
+		patches: []Patch{{GroupID: g, ArtifactID: a, Version: v, Scope: "compile", Type: "jar", Classifier: "osx-x86_64"}},
+		want: &gopom.Project{DependencyManagement: &gopom.DependencyManagement{Dependencies: &[]gopom.Dependency{
+			makeDep("other", "lib", "1.0"),
+			cls(v, "osx-x86_64", "compile", "jar"),
+		}}},
+	}, {
+		name:    "existing dep with matching classifier is bumped, classifier preserved",
+		in:      &gopom.Project{Dependencies: &[]gopom.Dependency{cls(v0, "osx-x86_64", "compile", "jar")}},
+		patches: []Patch{{GroupID: g, ArtifactID: a, Version: v, Scope: "compile", Type: "jar", Classifier: "osx-x86_64"}},
+		want:    &gopom.Project{Dependencies: &[]gopom.Dependency{cls(v, "osx-x86_64", "compile", "jar")}},
+	}, {
+		name:    "patch for one classifier does not touch a different classifier; new one is added",
+		in:      &gopom.Project{Dependencies: &[]gopom.Dependency{cls(v0, "linux-x86_64", "compile", "jar")}},
+		patches: []Patch{{GroupID: g, ArtifactID: a, Version: v, Scope: "compile", Type: "jar", Classifier: "osx-x86_64"}},
+		want: &gopom.Project{
+			Dependencies:         &[]gopom.Dependency{cls(v0, "linux-x86_64", "compile", "jar")},
+			DependencyManagement: &gopom.DependencyManagement{Dependencies: &[]gopom.Dependency{cls(v, "osx-x86_64", "compile", "jar")}},
+		},
+	}, {
+		name:    "classifier-less patch does not touch a classifier'd dep; classifier-less entry is added",
+		in:      &gopom.Project{Dependencies: &[]gopom.Dependency{cls(v0, "osx-x86_64", "compile", "jar")}},
+		patches: []Patch{{GroupID: g, ArtifactID: a, Version: v, Scope: "compile", Type: "jar"}},
+		want: &gopom.Project{
+			Dependencies:         &[]gopom.Dependency{cls(v0, "osx-x86_64", "compile", "jar")},
+			DependencyManagement: &gopom.DependencyManagement{Dependencies: &[]gopom.Dependency{makeDep(g, a, v, "compile", "jar")}},
+		},
+	}}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := PatchProject(t.Context(), tc.in, tc.patches, nil)
+			if err != nil {
+				t.Fatalf("PatchProject: %v", err)
+			}
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("PatchProject: (-want, +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestConvertDependenciesToPatchesClassifier verifies classifier flows from the
+// unified dependency into the patch, and that two classifier variants of the
+// same artifact are not treated as a version conflict.
+func TestConvertDependenciesToPatchesClassifier(t *testing.T) {
+	mkDep := func(classifier, version string) languages.Dependency {
+		return languages.Dependency{
+			Version: version,
+			Metadata: map[string]any{
+				"groupId":    "io.netty",
+				"artifactId": "netty-transport-native-kqueue",
+				"classifier": classifier,
+			},
+		}
+	}
+
+	t.Run("classifier is extracted into the patch", func(t *testing.T) {
+		patches, err := convertDependenciesToPatches([]languages.Dependency{mkDep("osx-x86_64", "4.1.135.Final")})
+		if err != nil {
+			t.Fatalf("convertDependenciesToPatches: %v", err)
+		}
+		if len(patches) != 1 || patches[0].Classifier != "osx-x86_64" {
+			t.Fatalf("expected one patch with classifier osx-x86_64, got %+v", patches)
+		}
+	})
+
+	t.Run("two classifiers of same artifact are not a conflict", func(t *testing.T) {
+		patches, err := convertDependenciesToPatches([]languages.Dependency{
+			mkDep("osx-x86_64", "4.1.135.Final"),
+			mkDep("linux-x86_64", "4.1.135.Final"),
+		})
+		if err != nil {
+			t.Fatalf("unexpected conflict error: %v", err)
+		}
+		if len(patches) != 2 {
+			t.Fatalf("expected 2 patches, got %d", len(patches))
+		}
+	})
+
+	t.Run("same classifier with differing versions still conflicts", func(t *testing.T) {
+		_, err := convertDependenciesToPatches([]languages.Dependency{
+			mkDep("osx-x86_64", "4.1.135.Final"),
+			mkDep("osx-x86_64", "4.1.100.Final"),
+		})
+		if !errors.Is(err, ErrVersionConflict) {
+			t.Fatalf("expected ErrVersionConflict, got %v", err)
+		}
+	})
 }

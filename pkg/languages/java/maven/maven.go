@@ -306,14 +306,14 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 		if dep.Name != "" {
 			searchKey = dep.Name
 		} else {
-			// Maven format: groupID:artifactID
-			searchKey = fmt.Sprintf("%s:%s", extractGroupID(dep), extractArtifactID(dep))
+			// Maven format: groupID:artifactID[:classifier]
+			searchKey = depIdentityKey(extractGroupID(dep), extractArtifactID(dep), extractClassifier(dep))
 		}
 
 		// Check in dependencies
 		if project.Dependencies != nil {
 			for _, pomDep := range *project.Dependencies {
-				key := fmt.Sprintf("%s:%s", pomDep.GroupID, pomDep.ArtifactID)
+				key := depIdentityKey(pomDep.GroupID, pomDep.ArtifactID, pomDep.Classifier)
 				if key == searchKey && resolveVersion(pomDep.Version, properties) == dep.Version {
 					found = true
 					break
@@ -324,7 +324,7 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 		// Check in dependency management
 		if !found && project.DependencyManagement != nil && project.DependencyManagement.Dependencies != nil {
 			for _, pomDep := range *project.DependencyManagement.Dependencies {
-				key := fmt.Sprintf("%s:%s", pomDep.GroupID, pomDep.ArtifactID)
+				key := depIdentityKey(pomDep.GroupID, pomDep.ArtifactID, pomDep.Classifier)
 				if key == searchKey && resolveVersion(pomDep.Version, properties) == dep.Version {
 					found = true
 					break
@@ -375,7 +375,7 @@ func applyPrecedenceRules(ctx context.Context, pomPath string, deps []languages.
 		if depKey == "" && dep.Metadata != nil {
 			if groupID, ok := dep.Metadata["groupId"].(string); ok {
 				if artifactID, ok := dep.Metadata["artifactId"].(string); ok {
-					depKey = fmt.Sprintf("%s:%s", groupID, artifactID)
+					depKey = depIdentityKey(groupID, artifactID, extractClassifier(dep))
 				}
 			}
 		}
@@ -430,6 +430,9 @@ func convertDependenciesToPatches(deps []languages.Dependency) ([]Patch, error) 
 			}
 		}
 
+		// Classifier (e.g. osx-x86_64) is part of the Maven coordinate identity.
+		patch.Classifier = extractClassifier(dep)
+
 		// Set defaults if not specified
 		if patch.Scope == "" {
 			patch.Scope = "import"
@@ -445,7 +448,9 @@ func convertDependenciesToPatches(deps []languages.Dependency) ([]Patch, error) 
 		}
 
 		if patch.Version != "" {
-			depKey := fmt.Sprintf("%s:%s", patch.GroupID, patch.ArtifactID)
+			// Key on classifier too so two variants of the same artifact (e.g.
+			// osx-x86_64 and linux-x86_64) are not flagged as a version conflict.
+			depKey := depIdentityKey(patch.GroupID, patch.ArtifactID, patch.Classifier)
 			if requestedVersion, exists := requestedVersions[depKey]; exists && requestedVersion != patch.Version {
 				return nil, fmt.Errorf("%w: dependency %s requests both %s and %s",
 					ErrVersionConflict, depKey, requestedVersion, patch.Version)
@@ -487,6 +492,15 @@ func extractArtifactID(dep languages.Dependency) string {
 		if len(parts) >= 2 {
 			return parts[1]
 		}
+	}
+	return ""
+}
+
+// extractClassifier extracts the Maven <classifier> (e.g. osx-x86_64) from a
+// dependency's metadata. Returns "" when none is set.
+func extractClassifier(dep languages.Dependency) string {
+	if classifier, ok := dep.Metadata["classifier"].(string); ok {
+		return classifier
 	}
 	return ""
 }

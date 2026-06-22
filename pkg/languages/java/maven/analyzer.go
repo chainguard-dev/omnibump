@@ -141,7 +141,8 @@ func (ma *MavenAnalyzer) RecommendStrategy(ctx context.Context, analysis *analyz
 			// Try to construct from metadata
 			if groupID, ok := dep.Metadata["groupId"].(string); ok {
 				if artifactID, ok := dep.Metadata["artifactId"].(string); ok {
-					depKey = fmt.Sprintf("%s:%s", groupID, artifactID)
+					classifier, _ := dep.Metadata["classifier"].(string)
+					depKey = depIdentityKey(groupID, artifactID, classifier)
 				}
 			}
 		}
@@ -211,7 +212,7 @@ func handleDirectPatch(log *clog.Logger, depKey string, dep analyzer.Dependency,
 func analyzeDependency(ctx context.Context, dep gopom.Dependency, result *analyzer.AnalysisResult) {
 	log := clog.FromContext(ctx)
 
-	depKey := fmt.Sprintf("%s:%s", dep.GroupID, dep.ArtifactID)
+	depKey := depIdentityKey(dep.GroupID, dep.ArtifactID, dep.Classifier)
 
 	info := &analyzer.DependencyInfo{
 		Name:     depKey,

@@ -66,6 +66,33 @@ type Patch struct {
 	Version    string `json:"version" yaml:"version"`
 	Scope      string `json:"scope,omitempty" yaml:"scope,omitempty"`
 	Type       string `json:"type,omitempty" yaml:"type,omitempty"`
+	// Classifier is the Maven <classifier> (e.g. osx-x86_64). It is part of a
+	// dependency's match identity here (groupId:artifactId:classifier), so a
+	// patch governs only a dependency declared with the same classifier.
+	Classifier string `json:"classifier,omitempty" yaml:"classifier,omitempty"`
+}
+
+// depMatchesPatch reports whether a parsed POM dependency is the same Maven
+// coordinate as a patch. Identity is groupId+artifactId+classifier: a
+// classifier-less patch matches only classifier-less dependencies, and vice
+// versa. Type and scope are not part of the match — they are written onto the
+// entry, not used to identify it. Type in particular is excluded because it
+// defaults to "jar" on a patch while a dependency that omits <type> parses as
+// empty, so matching on it would miss the common case.
+func depMatchesPatch(dep gopom.Dependency, patch Patch) bool {
+	return dep.GroupID == patch.GroupID &&
+		dep.ArtifactID == patch.ArtifactID &&
+		dep.Classifier == patch.Classifier
+}
+
+// depIdentityKey is the dedup/lookup key for a Maven coordinate. A
+// classifier-less coordinate uses the plain "group:artifact" form; a
+// classifier'd coordinate appends ":classifier".
+func depIdentityKey(groupID, artifactID, classifier string) string {
+	if classifier == "" {
+		return groupID + ":" + artifactID
+	}
+	return groupID + ":" + artifactID + ":" + classifier
 }
 
 // PatchList represents a list of patches from a YAML file.
@@ -130,7 +157,7 @@ func dependencyPropertyUpdates(ctx context.Context, pomPath string, patches []Pa
 			for _, patch := range patches {
 				// Only dependency patches matching this exact dependency can move
 				// from a direct version change to a property update.
-				if dep.ArtifactID != patch.ArtifactID || dep.GroupID != patch.GroupID {
+				if !depMatchesPatch(dep, patch) {
 					continue
 				}
 				// This patch is handled by updating the referenced property.
@@ -247,7 +274,7 @@ func applyPatchesToDeps(ctx context.Context, deps *[]gopom.Dependency, patches [
 	for i, dep := range *deps {
 		clog.DebugContextf(ctx, "Checking dependency: %s:%s @ %s", dep.GroupID, dep.ArtifactID, dep.Version)
 		for _, patch := range patches {
-			if dep.ArtifactID != patch.ArtifactID || dep.GroupID != patch.GroupID {
+			if !depMatchesPatch(dep, patch) {
 				continue
 			}
 			if isPropertyReference(dep.Version) {
@@ -321,6 +348,7 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 				Version:    md.Version,
 				Scope:      md.Scope,
 				Type:       md.Type,
+				Classifier: md.Classifier,
 			})
 		}
 	}

@@ -87,6 +87,9 @@ type Package struct {
 	ArtifactID string `json:"artifactId,omitempty" yaml:"artifactId,omitempty"`
 	Scope      string `json:"scope,omitempty" yaml:"scope,omitempty"`
 	Type       string `json:"type,omitempty" yaml:"type,omitempty"`
+	// Classifier is the Maven <classifier> (e.g. osx-x86_64). It is part of the
+	// dependency coordinate, so a pin only governs the matching classifier.
+	Classifier string `json:"classifier,omitempty" yaml:"classifier,omitempty"`
 }
 
 // Property represents a build property to update.
@@ -341,6 +344,9 @@ func (c *Config) ToUpdateConfig() *languages.UpdateConfig {
 		}
 		if pkg.ArtifactID != "" {
 			dep.Metadata["artifactId"] = pkg.ArtifactID
+		}
+		if pkg.Classifier != "" {
+			dep.Metadata["classifier"] = pkg.Classifier
 		}
 		if pkg.Reason != "" {
 			dep.Metadata["reason"] = pkg.Reason
