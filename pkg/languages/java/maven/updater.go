@@ -66,17 +66,19 @@ type Patch struct {
 	Version    string `json:"version" yaml:"version"`
 	Scope      string `json:"scope,omitempty" yaml:"scope,omitempty"`
 	Type       string `json:"type,omitempty" yaml:"type,omitempty"`
-	// Classifier is the Maven <classifier> (e.g. osx-x86_64). Maven keys
-	// dependencyManagement by groupId:artifactId:type:classifier, so a patch
-	// only governs a dependency declared with the same classifier.
+	// Classifier is the Maven <classifier> (e.g. osx-x86_64). It is part of a
+	// dependency's match identity here (groupId:artifactId:classifier), so a
+	// patch governs only a dependency declared with the same classifier.
 	Classifier string `json:"classifier,omitempty" yaml:"classifier,omitempty"`
 }
 
 // depMatchesPatch reports whether a parsed POM dependency is the same Maven
-// coordinate as a patch. The classifier is part of the identity: Maven keys
-// dependencyManagement by groupId:artifactId:type:classifier, so a
-// classifier-less patch matches only classifier-less dependencies and vice
-// versa.
+// coordinate as a patch. Identity is groupId+artifactId+classifier: a
+// classifier-less patch matches only classifier-less dependencies, and vice
+// versa. Type and scope are not part of the match — they are written onto the
+// entry, not used to identify it. Type in particular is excluded because it
+// defaults to "jar" on a patch while a dependency that omits <type> parses as
+// empty, so matching on it would miss the common case.
 func depMatchesPatch(dep gopom.Dependency, patch Patch) bool {
 	return dep.GroupID == patch.GroupID &&
 		dep.ArtifactID == patch.ArtifactID &&
