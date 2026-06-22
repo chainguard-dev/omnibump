@@ -66,23 +66,30 @@ func ExampleBuildFile_SetVariable() {
 	// ]
 }
 
-func ExampleBuildFile_EnsureForceBlock() {
-	build, _ := gradlefile.ParseBuild("build.gradle", []byte("apply plugin: 'java'\n"))
+func ExampleSettingsFile_EnsureManagedBlock() {
+	settings, _ := gradlefile.ParseSettings("settings.gradle", []byte("rootProject.name = 'demo'\n"))
 
-	if err := build.EnsureForceBlock(map[string]string{"io.netty:netty-codec": "4.1.133.Final"}); err != nil {
+	err := settings.EnsureManagedBlock(
+		map[string]string{"io.netty:netty-handler": "4.1.135.Final"},
+		[]gradlefile.Substitution{{OldModule: "org.lz4:lz4-java", NewModule: "at.yawk.lz4:lz4-java", Version: "1.10.1"}},
+	)
+	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
-	// Re-parsing the result exposes the managed block's pins.
-	pinned, _ := gradlefile.ParseBuild("build.gradle", build.Content())
-	fmt.Println(pinned.ForcedCoordinates()["io.netty:netty-codec"])
+	// Re-parsing the result exposes the managed block's effective pins: each
+	// constraint, and each substitution's new module at its target version.
+	pinned, _ := gradlefile.ParseSettings("settings.gradle", settings.Content())
+	fmt.Println(pinned.ManagedCoordinates()["io.netty:netty-handler"])
+	fmt.Println(pinned.ManagedCoordinates()["at.yawk.lz4:lz4-java"])
 	// Output:
-	// 4.1.133.Final
+	// 4.1.135.Final
+	// 1.10.1
 }
 
-func ExampleNewBuildFileContent() {
-	content, err := gradlefile.NewBuildFileContent(gradlefile.Kotlin, map[string]string{"a.b:c": "1.0"})
+func ExampleNewSettingsFileContent() {
+	content, err := gradlefile.NewSettingsFileContent(gradlefile.Kotlin, map[string]string{"a.b:c": "1.0"}, nil)
 	if err != nil {
 		fmt.Println(err)
 		return

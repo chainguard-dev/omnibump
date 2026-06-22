@@ -320,19 +320,13 @@ func TestGradle_Update_NonExistentDependency(t *testing.T) {
 		t.Fatalf("Update() error = %v", err)
 	}
 
-	// A dependency declared nowhere is pinned through the managed
-	// resolutionStrategy force block (Maven DependencyManagement parity).
-	afterContent, err := os.ReadFile(dstFile)
-	if err != nil {
-		t.Fatalf("failed to read file: %v", err)
-	}
-
-	coords, err := forceBlockCoordinates(dstFile, afterContent)
-	if err != nil {
-		t.Fatalf("forceBlockCoordinates() error = %v", err)
-	}
+	// A dependency declared nowhere is pinned through the managed block. The
+	// project had no settings script, so one is created to host it (Maven
+	// DependencyManagement parity, via a dependency constraint).
+	settingsPath := filepath.Join(tmpDir, "settings.gradle")
+	coords := managedCoordinates(t, settingsPath)
 	if coords["com.example:nonexistent"] != "1.0.0" {
-		t.Errorf("Force block should pin com.example:nonexistent at 1.0.0, got %v\nContent:\n%s", coords, afterContent)
+		t.Errorf("managed block should pin com.example:nonexistent at 1.0.0, got %v", coords)
 	}
 }
 
