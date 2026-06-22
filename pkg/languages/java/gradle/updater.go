@@ -49,9 +49,11 @@ type document interface {
 type updatePlan struct {
 	model *projectModel
 
-	// constraints maps "group:artifact" to the version to pin via a dependency
-	// constraint in the managed block (Gradle's raise-the-floor `require`).
-	constraints map[string]string
+	// forced maps "group:artifact" to the version to pin via a
+	// resolutionStrategy.force rule in the managed block. force pins to exactly
+	// this version (overriding a higher already-selected one) and is exempt from
+	// failOnVersionConflict(); see renderManagedBlock.
+	forced map[string]string
 
 	// substitutions are coordinate swaps (replace directives) applied via
 	// dependencySubstitution in the managed block.
@@ -73,10 +75,10 @@ type updatePlan struct {
 // error.
 func resolveUpdates(ctx context.Context, model *projectModel, cfg *languages.UpdateConfig) (*updatePlan, error) {
 	plan := &updatePlan{
-		model:       model,
-		constraints: make(map[string]string),
-		requested:   make(map[string]string),
-		properties:  cfg.Properties,
+		model:      model,
+		forced:     make(map[string]string),
+		requested:  make(map[string]string),
+		properties: cfg.Properties,
 	}
 
 	if err := plan.applyProperties(ctx); err != nil {
@@ -189,8 +191,8 @@ func (p *updatePlan) applyProperties(ctx context.Context) error {
 // applyDependency routes one dependency update. Every definition site found
 // for the module is updated (catalog entries, declarations, variables they
 // reference); when no site exists at all the module is recorded for the
-// managed block as a dependency constraint — the Gradle analog of Maven
-// adding the dependency to DependencyManagement.
+// managed block as a resolutionStrategy.force pin so the bumped version
+// still applies to transitive-only modules.
 func (p *updatePlan) applyDependency(ctx context.Context, dep languages.Dependency) error {
 	if dep.Version == "" {
 		clog.WarnContextf(ctx, "Skipping dependency %s: no target version", depDisplayName(dep))
@@ -236,7 +238,7 @@ func (p *updatePlan) applyDependency(ctx context.Context, dep languages.Dependen
 		if err := p.requireVersion("dependency "+module, dep.Version); err != nil {
 			return err
 		}
-		p.constraints[module] = dep.Version
+		p.forced[module] = dep.Version
 	}
 
 	if !catalogHandled && !declHandled && !ruleHandled {
@@ -510,15 +512,15 @@ func writeNewManagedFile(ctx context.Context, cfg *languages.UpdateConfig, path,
 // before any project resolves a configuration. Returns the path and content of
 // the new file to create, if any.
 func (p *updatePlan) injectManagedBlock(ctx context.Context) (string, string, error) {
-	if len(p.constraints) == 0 && len(p.substitutions) == 0 {
+	if len(p.forced) == 0 && len(p.substitutions) == 0 {
 		return "", "", nil
 	}
 	if root := p.model.rootSettingsFile(); root != nil {
-		if err := root.EnsureManagedBlock(p.constraints, p.substitutions); err != nil {
+		if err := root.EnsureManagedBlock(p.forced, p.substitutions); err != nil {
 			return "", "", fmt.Errorf("failed to update managed block in %s: %w", root.Path(), err)
 		}
 		clog.InfoContextf(ctx, "Pinning %d dependencies and %d substitutions via managed block in %s",
-			len(p.constraints), len(p.substitutions), root.Path())
+			len(p.forced), len(p.substitutions), root.Path())
 		return "", "", nil
 	}
 
@@ -527,13 +529,13 @@ func (p *updatePlan) injectManagedBlock(ctx context.Context) (string, string, er
 	if dsl == gradlefile.Kotlin {
 		name = settingsGradleKtsFile
 	}
-	content, err := gradlefile.NewSettingsFileContent(dsl, p.constraints, p.substitutions)
+	content, err := gradlefile.NewSettingsFileContent(dsl, p.forced, p.substitutions)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to render managed block: %w", err)
 	}
 	path := filepath.Join(p.model.rootDir, name)
 	clog.InfoContextf(ctx, "Pinning %d dependencies and %d substitutions via new root settings script %s",
-		len(p.constraints), len(p.substitutions), path)
+		len(p.forced), len(p.substitutions), path)
 	return path, content, nil
 }
 
