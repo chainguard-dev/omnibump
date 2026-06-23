@@ -2452,9 +2452,9 @@ func TestPatchProjectClassifier(t *testing.T) {
 			DependencyManagement: &gopom.DependencyManagement{Dependencies: &[]gopom.Dependency{cls(v, "osx-x86_64", "compile", "jar")}},
 		},
 	}, {
-		name:    "classifier-less patch does not touch a classifier'd dep; classifier-less entry is added",
+		name:    "none patch does not touch a classifier'd dep; classifier-less entry is added",
 		in:      &gopom.Project{Dependencies: &[]gopom.Dependency{cls(v0, "osx-x86_64", "compile", "jar")}},
-		patches: []Patch{{GroupID: g, ArtifactID: a, Version: v, Scope: "compile", Type: "jar"}},
+		patches: []Patch{{GroupID: g, ArtifactID: a, Version: v, Scope: "compile", Type: "jar", Classifier: classifierNone}},
 		want: &gopom.Project{
 			Dependencies:         &[]gopom.Dependency{cls(v0, "osx-x86_64", "compile", "jar")},
 			DependencyManagement: &gopom.DependencyManagement{Dependencies: &[]gopom.Dependency{makeDep(g, a, v, "compile", "jar")}},
@@ -2518,6 +2518,150 @@ func TestConvertDependenciesToPatchesClassifier(t *testing.T) {
 		})
 		if !errors.Is(err, ErrVersionConflict) {
 			t.Fatalf("expected ErrVersionConflict, got %v", err)
+		}
+	})
+}
+
+// TestPatchProjectClassifierWildcard verifies the classifier selector: an unset
+// classifier is a wildcard that bumps every variant of an artifact, "none"
+// governs only the classifier-less dependency, and a value still narrows to that
+// one classifier even when sibling variants exist.
+func TestPatchProjectClassifierWildcard(t *testing.T) {
+	const (
+		g  = "io.netty"
+		a  = "netty-transport-native-kqueue"
+		v  = "4.1.135.Final"
+		v0 = "4.1.100.Final"
+	)
+	cls := func(version, classifier string, opts ...string) gopom.Dependency {
+		dep := makeDep(g, a, version, opts...)
+		dep.Classifier = classifier
+		return dep
+	}
+	testCases := []struct {
+		name    string
+		in      *gopom.Project
+		patches []Patch
+		want    *gopom.Project
+	}{{
+		name: "unset classifier bumps every variant in place, including classifier-less",
+		in: &gopom.Project{Dependencies: &[]gopom.Dependency{
+			makeDep(g, a, v0, "compile", "jar"),
+			cls(v0, "osx-x86_64", "compile", "jar"),
+			cls(v0, "linux-x86_64", "compile", "jar"),
+		}},
+		patches: []Patch{{GroupID: g, ArtifactID: a, Version: v, Scope: "compile", Type: "jar"}},
+		want: &gopom.Project{Dependencies: &[]gopom.Dependency{
+			makeDep(g, a, v, "compile", "jar"),
+			cls(v, "osx-x86_64", "compile", "jar"),
+			cls(v, "linux-x86_64", "compile", "jar"),
+		}},
+	}, {
+		name:    "unset classifier matching nothing adds a classifier-less entry",
+		in:      &gopom.Project{Dependencies: &[]gopom.Dependency{makeDep("other", "lib", "1.0")}},
+		patches: []Patch{{GroupID: g, ArtifactID: a, Version: v, Scope: "compile", Type: "jar"}},
+		want: &gopom.Project{
+			Dependencies:         &[]gopom.Dependency{makeDep("other", "lib", "1.0")},
+			DependencyManagement: &gopom.DependencyManagement{Dependencies: &[]gopom.Dependency{makeDep(g, a, v, "compile", "jar")}},
+		},
+	}, {
+		name: "none classifier bumps only the classifier-less dep, leaving variants untouched",
+		in: &gopom.Project{Dependencies: &[]gopom.Dependency{
+			makeDep(g, a, v0, "compile", "jar"),
+			cls(v0, "osx-x86_64", "compile", "jar"),
+		}},
+		patches: []Patch{{GroupID: g, ArtifactID: a, Version: v, Scope: "compile", Type: "jar", Classifier: classifierNone}},
+		want: &gopom.Project{Dependencies: &[]gopom.Dependency{
+			makeDep(g, a, v, "compile", "jar"),
+			cls(v0, "osx-x86_64", "compile", "jar"),
+		}},
+	}, {
+		name: "specific classifier bumps only that variant even with siblings present",
+		in: &gopom.Project{Dependencies: &[]gopom.Dependency{
+			cls(v0, "osx-x86_64", "compile", "jar"),
+			cls(v0, "linux-x86_64", "compile", "jar"),
+		}},
+		patches: []Patch{{GroupID: g, ArtifactID: a, Version: v, Scope: "compile", Type: "jar", Classifier: "osx-x86_64"}},
+		want: &gopom.Project{Dependencies: &[]gopom.Dependency{
+			cls(v, "osx-x86_64", "compile", "jar"),
+			cls(v0, "linux-x86_64", "compile", "jar"),
+		}},
+	}}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := PatchProject(t.Context(), tc.in, tc.patches, nil)
+			if err != nil {
+				t.Fatalf("PatchProject: %v", err)
+			}
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("PatchProject: (-want, +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestConvertDependenciesToPatchesClassifierConflicts verifies overlap-aware
+// conflict detection: a wildcard (unset) entry overlaps every variant, so it
+// conflicts with any same-coordinate entry at a different version, while "none"
+// and a concrete classifier address disjoint members and never conflict.
+func TestConvertDependenciesToPatchesClassifierConflicts(t *testing.T) {
+	mkDep := func(classifier, version string) languages.Dependency {
+		md := languages.Dependency{
+			Version: version,
+			Metadata: map[string]any{
+				"groupId":    "io.netty",
+				"artifactId": "netty-transport-native-kqueue",
+			},
+		}
+		if classifier != "" {
+			md.Metadata["classifier"] = classifier
+		}
+		return md
+	}
+
+	t.Run("wildcard and specific classifier at different versions conflict", func(t *testing.T) {
+		_, err := convertDependenciesToPatches([]languages.Dependency{
+			mkDep("", "4.1.135.Final"),
+			mkDep("osx-x86_64", "4.1.140.Final"),
+		})
+		if !errors.Is(err, ErrVersionConflict) {
+			t.Fatalf("expected ErrVersionConflict, got %v", err)
+		}
+	})
+
+	t.Run("wildcard and specific classifier at the same version is allowed", func(t *testing.T) {
+		patches, err := convertDependenciesToPatches([]languages.Dependency{
+			mkDep("", "4.1.135.Final"),
+			mkDep("osx-x86_64", "4.1.135.Final"),
+		})
+		if err != nil {
+			t.Fatalf("unexpected conflict error: %v", err)
+		}
+		if len(patches) != 2 {
+			t.Fatalf("expected 2 patches, got %d", len(patches))
+		}
+	})
+
+	t.Run("two wildcards at different versions conflict", func(t *testing.T) {
+		_, err := convertDependenciesToPatches([]languages.Dependency{
+			mkDep("", "4.1.135.Final"),
+			mkDep("", "4.1.140.Final"),
+		})
+		if !errors.Is(err, ErrVersionConflict) {
+			t.Fatalf("expected ErrVersionConflict, got %v", err)
+		}
+	})
+
+	t.Run("none and a specific classifier are disjoint", func(t *testing.T) {
+		patches, err := convertDependenciesToPatches([]languages.Dependency{
+			mkDep("none", "4.1.135.Final"),
+			mkDep("osx-x86_64", "4.1.140.Final"),
+		})
+		if err != nil {
+			t.Fatalf("unexpected conflict error: %v", err)
+		}
+		if len(patches) != 2 {
+			t.Fatalf("expected 2 patches, got %d", len(patches))
 		}
 	})
 }

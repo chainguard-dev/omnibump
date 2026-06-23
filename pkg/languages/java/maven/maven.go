@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/chainguard-dev/clog"
+	"github.com/chainguard-dev/gopom"
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 	"github.com/chainguard-dev/omnibump/pkg/pathutil"
@@ -301,20 +302,33 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 	for _, dep := range cfg.Dependencies {
 		found := false
 
-		// Determine the key to search for
+		// Determine how to match POM dependencies. For Maven coordinates the
+		// classifier selector (unset = any variant, "none" = classifier-less,
+		// a value = that classifier) decides scope, so reuse depMatchesPatch
+		// rather than an exact key compare. searchKey is only for logging.
 		var searchKey string
+		var matches func(pomDep gopom.Dependency) bool
 		if dep.Name != "" {
 			searchKey = dep.Name
+			matches = func(pomDep gopom.Dependency) bool {
+				return depIdentityKey(pomDep.GroupID, pomDep.ArtifactID, pomDep.Classifier) == dep.Name
+			}
 		} else {
-			// Maven format: groupID:artifactID[:classifier]
-			searchKey = depIdentityKey(extractGroupID(dep), extractArtifactID(dep), extractClassifier(dep))
+			matchPatch := Patch{
+				GroupID:    extractGroupID(dep),
+				ArtifactID: extractArtifactID(dep),
+				Classifier: extractClassifier(dep),
+			}
+			searchKey = depIdentityKey(matchPatch.GroupID, matchPatch.ArtifactID, matchPatch.Classifier)
+			matches = func(pomDep gopom.Dependency) bool {
+				return depMatchesPatch(pomDep, matchPatch)
+			}
 		}
 
 		// Check in dependencies
 		if project.Dependencies != nil {
 			for _, pomDep := range *project.Dependencies {
-				key := depIdentityKey(pomDep.GroupID, pomDep.ArtifactID, pomDep.Classifier)
-				if key == searchKey && resolveVersion(pomDep.Version, properties) == dep.Version {
+				if matches(pomDep) && resolveVersion(pomDep.Version, properties) == dep.Version {
 					found = true
 					break
 				}
@@ -324,8 +338,7 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 		// Check in dependency management
 		if !found && project.DependencyManagement != nil && project.DependencyManagement.Dependencies != nil {
 			for _, pomDep := range *project.DependencyManagement.Dependencies {
-				key := depIdentityKey(pomDep.GroupID, pomDep.ArtifactID, pomDep.Classifier)
-				if key == searchKey && resolveVersion(pomDep.Version, properties) == dep.Version {
+				if matches(pomDep) && resolveVersion(pomDep.Version, properties) == dep.Version {
 					found = true
 					break
 				}
@@ -406,7 +419,6 @@ func applyPrecedenceRules(ctx context.Context, pomPath string, deps []languages.
 // convertDependenciesToPatches converts unified dependencies to Maven-specific patches.
 func convertDependenciesToPatches(deps []languages.Dependency) ([]Patch, error) {
 	patches := make([]Patch, 0, len(deps))
-	requestedVersions := make(map[string]string)
 
 	for _, dep := range deps {
 		patch := Patch{
@@ -447,21 +459,74 @@ func convertDependenciesToPatches(deps []languages.Dependency) ([]Patch, error) 
 				ErrMissingRequiredFields, patch.GroupID, patch.ArtifactID, patch.Version, dep.Name)
 		}
 
-		if patch.Version != "" {
-			// Key on classifier too so two variants of the same artifact (e.g.
-			// osx-x86_64 and linux-x86_64) are not flagged as a version conflict.
-			depKey := depIdentityKey(patch.GroupID, patch.ArtifactID, patch.Classifier)
-			if requestedVersion, exists := requestedVersions[depKey]; exists && requestedVersion != patch.Version {
-				return nil, fmt.Errorf("%w: dependency %s requests both %s and %s",
-					ErrVersionConflict, depKey, requestedVersion, patch.Version)
-			}
-			requestedVersions[depKey] = patch.Version
-		}
-
 		patches = append(patches, patch)
 	}
 
+	if err := checkClassifierConflicts(patches); err != nil {
+		return nil, err
+	}
+
 	return patches, nil
+}
+
+// checkClassifierConflicts reports an ErrVersionConflict when two patches govern
+// an overlapping set of an artifact's classifier variants at different versions.
+// A wildcard (unset classifier) overlaps every variant, so it conflicts with any
+// other patch for the same groupId:artifactId at a different version. "none" and
+// a concrete classifier target disjoint members (the classifier-less dependency
+// vs that specific classifier), so they never conflict with each other. Two
+// patches at the same version are a harmless overlap and allowed.
+func checkClassifierConflicts(patches []Patch) error {
+	// Per base coordinate (groupId:artifactId): the version requested by a
+	// wildcard patch (empty until one is seen — patches with no version are
+	// skipped, so a recorded wildcard is always non-empty), plus the version
+	// requested for each concrete member. A member key is the classifier value,
+	// or "" for the classifier-less member addressed by "none".
+	type base struct {
+		wildcard string
+		members  map[string]string
+	}
+	bases := make(map[string]*base, len(patches))
+
+	conflict := func(coord, a, b string) error {
+		return fmt.Errorf("%w: dependency %s requests both %s and %s", ErrVersionConflict, coord, a, b)
+	}
+
+	for _, p := range patches {
+		if p.Version == "" {
+			continue
+		}
+		coord := p.GroupID + ":" + p.ArtifactID
+		b := bases[coord]
+		if b == nil {
+			b = &base{members: make(map[string]string)}
+			bases[coord] = b
+		}
+
+		// Wildcard and concrete patches alike conflict with a differing wildcard.
+		if b.wildcard != "" && b.wildcard != p.Version {
+			return conflict(coord, b.wildcard, p.Version)
+		}
+
+		if p.Classifier == "" {
+			// A wildcard additionally overlaps every concrete member.
+			for _, v := range b.members {
+				if v != p.Version {
+					return conflict(coord, v, p.Version)
+				}
+			}
+			b.wildcard = p.Version
+			continue
+		}
+
+		memberKey := normalizeClassifier(p.Classifier)
+		if v, exists := b.members[memberKey]; exists && v != p.Version {
+			return conflict(coord, v, p.Version)
+		}
+		b.members[memberKey] = p.Version
+	}
+
+	return nil
 }
 
 // extractGroupID extracts groupID from a dependency.
