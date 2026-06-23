@@ -87,8 +87,10 @@ type Package struct {
 	ArtifactID string `json:"artifactId,omitempty" yaml:"artifactId,omitempty"`
 	Scope      string `json:"scope,omitempty" yaml:"scope,omitempty"`
 	Type       string `json:"type,omitempty" yaml:"type,omitempty"`
-	// Classifier is the Maven <classifier> (e.g. osx-x86_64). It is part of the
-	// dependency coordinate, so a pin only governs the matching classifier.
+	// Classifier selects which classifier variants of a Maven artifact the pin
+	// governs: unset matches every variant (the classifier-less dependency and
+	// all classifier'd ones), "none" matches only the classifier-less
+	// dependency, and a value (e.g. osx-x86_64) matches only that classifier.
 	Classifier string `json:"classifier,omitempty" yaml:"classifier,omitempty"`
 }
 

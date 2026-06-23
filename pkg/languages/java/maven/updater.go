@@ -51,6 +51,13 @@ const (
 	defaultScope = "import"
 	defaultType  = "jar"
 
+	// classifierNone is the sentinel a patch uses to target only the
+	// classifier-less variant of an artifact. An unset classifier matches every
+	// variant (including classifier-less), so "none" is how an author pins just
+	// the plain artifact when classifier'd siblings also exist. It is never
+	// written to the POM — it normalizes to an empty <classifier>.
+	classifierNone = "none"
+
 	// MaxPatchFileSize limits patch/properties file size to prevent resource exhaustion.
 	MaxPatchFileSize = 10 * 1024 * 1024 // 10 MB
 
@@ -66,23 +73,50 @@ type Patch struct {
 	Version    string `json:"version" yaml:"version"`
 	Scope      string `json:"scope,omitempty" yaml:"scope,omitempty"`
 	Type       string `json:"type,omitempty" yaml:"type,omitempty"`
-	// Classifier is the Maven <classifier> (e.g. osx-x86_64). It is part of a
-	// dependency's match identity here (groupId:artifactId:classifier), so a
-	// patch governs only a dependency declared with the same classifier.
+	// Classifier selects which classifier variants of an artifact the patch
+	// governs:
+	//   - unset/empty: every variant — the classifier-less dependency and all
+	//     classifier'd ones (e.g. all of netty's native transports at once).
+	//   - "none" (classifierNone): only the classifier-less dependency. Use this
+	//     to pin just the plain artifact when classifier'd siblings also exist.
+	//   - a value (e.g. osx-x86_64): only that exact classifier.
 	Classifier string `json:"classifier,omitempty" yaml:"classifier,omitempty"`
 }
 
-// depMatchesPatch reports whether a parsed POM dependency is the same Maven
-// coordinate as a patch. Identity is groupId+artifactId+classifier: a
-// classifier-less patch matches only classifier-less dependencies, and vice
-// versa. Type and scope are not part of the match — they are written onto the
-// entry, not used to identify it. Type in particular is excluded because it
-// defaults to "jar" on a patch while a dependency that omits <type> parses as
-// empty, so matching on it would miss the common case.
+// depMatchesPatch reports whether a parsed POM dependency is governed by a
+// patch. The groupId and artifactId must always match; the classifier field
+// then selects which variants are in scope:
+//   - unset/empty: any classifier (including classifier-less) — a wildcard.
+//   - classifierNone ("none"): only the classifier-less dependency.
+//   - any other value: only the dependency with that exact classifier.
+//
+// Type and scope are not part of the match — they are written onto the entry,
+// not used to identify it. Type in particular is excluded because it defaults
+// to "jar" on a patch while a dependency that omits <type> parses as empty, so
+// matching on it would miss the common case.
 func depMatchesPatch(dep gopom.Dependency, patch Patch) bool {
-	return dep.GroupID == patch.GroupID &&
-		dep.ArtifactID == patch.ArtifactID &&
-		dep.Classifier == patch.Classifier
+	if dep.GroupID != patch.GroupID || dep.ArtifactID != patch.ArtifactID {
+		return false
+	}
+	switch patch.Classifier {
+	case "":
+		return true
+	case classifierNone:
+		return dep.Classifier == ""
+	default:
+		return dep.Classifier == patch.Classifier
+	}
+}
+
+// normalizeClassifier resolves a patch's classifier selector to the literal
+// <classifier> it pins: the classifierNone sentinel (and the empty wildcard)
+// resolve to the classifier-less form, while a concrete classifier is itself.
+// It keeps the sentinel from ever reaching the POM.
+func normalizeClassifier(classifier string) string {
+	if classifier == classifierNone {
+		return ""
+	}
+	return classifier
 }
 
 // depIdentityKey is the dedup/lookup key for a Maven coordinate. A
@@ -342,13 +376,15 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 
 		for _, md := range missingDeps {
 			clog.InfoContextf(ctx, "Adding missing dependency: %s:%s @ %s", md.GroupID, md.ArtifactID, md.Version)
+			// A wildcard (unset) or "none" patch that matched nothing falls back to
+			// pinning the plain classifier-less artifact.
 			*project.DependencyManagement.Dependencies = append(*project.DependencyManagement.Dependencies, gopom.Dependency{
 				GroupID:    md.GroupID,
 				ArtifactID: md.ArtifactID,
 				Version:    md.Version,
 				Scope:      md.Scope,
 				Type:       md.Type,
-				Classifier: md.Classifier,
+				Classifier: normalizeClassifier(md.Classifier),
 			})
 		}
 	}

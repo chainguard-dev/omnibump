@@ -132,7 +132,46 @@ packages:
     version: 1.2.3
     scope: compile      # optional
     type: jar           # optional
+    classifier: ""      # optional: see "Classifiers" below
 ```
+
+#### Classifiers
+
+The `classifier` field selects which classifier variants of an artifact a pin
+governs. This matters for artifacts published under multiple classifiers, such as
+Netty's native transports (`osx-x86_64`, `linux-x86_64`, …).
+
+| `classifier:` value | Matches |
+| --- | --- |
+| unset / empty (default) | **every** variant — the classifier-less dependency *and* all classifier'd ones |
+| `none` | **only** the classifier-less dependency |
+| a value, e.g. `osx-x86_64` | **only** that exact classifier |
+
+So a single unset-classifier entry bumps the whole family at once:
+
+```yaml
+packages:
+  # Bumps netty-transport-native-epoll for every classifier present in the POM.
+  - groupId: io.netty
+    artifactId: netty-transport-native-epoll
+    version: 4.1.135.Final
+
+  # Pins only the macOS variant; other classifiers are left untouched.
+  - groupId: io.netty
+    artifactId: netty-transport-native-kqueue
+    version: 4.1.135.Final
+    classifier: osx-x86_64
+
+  # Pins only the plain (classifier-less) artifact, even if classifier'd
+  # siblings of the same coordinate exist.
+  - groupId: com.example
+    artifactId: library
+    version: 1.2.3
+    classifier: none
+```
+
+Combining an unset (wildcard) entry with a specific-classifier entry for the same
+`groupId:artifactId` at **different** versions is rejected as a version conflict.
 
 **Inline format:**
 ```bash
@@ -140,6 +179,9 @@ packages:
 --packages "groupId@artifactId@version@scope"
 --packages "groupId@artifactId@version@scope@type"
 ```
+
+> The inline format does not carry a classifier; use the YAML form for
+> classifier-specific pins.
 
 **Examples:**
 ```bash
