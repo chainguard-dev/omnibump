@@ -101,6 +101,10 @@ jobs:
         with:
           go-version-file: './go.mod'
           check-latest: true
+          # Don't restore the Go module/build cache in the signed-release flow:
+          # the Go build cache is trusted by input-hash (not go.sum-verified), so
+          # a cache poisoned by a less-trusted run could contaminate the release.
+          cache: false
 
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
