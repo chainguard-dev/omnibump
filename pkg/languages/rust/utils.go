@@ -27,6 +27,11 @@ import (
 // present versions, so the caller must pin one explicitly as name@<version>.
 var ErrAmbiguousTarget = errors.New("crate resolves to multiple versions")
 
+// ErrNoCompatibleVersion is returned when a crate is pinned below the requested
+// floor by a dependent's caret constraint and so cannot be upgraded to a
+// compatible version. This is a genuine failure: omnibump must not silently pass.
+var ErrNoCompatibleVersion = errors.New("no compatible version can be upgraded to")
+
 // GetCargoLockPath returns the path to Cargo.lock in the given cargo root directory.
 func GetCargoLockPath(cargoRoot string) (string, error) {
 	cargoLockPath := filepath.Join(cargoRoot, "Cargo.lock")
@@ -228,8 +233,19 @@ func resolveVersion(name, version string, hasVersion bool, present []string) (sp
 		}
 	}
 	if len(inLine) == 0 {
-		return "", true, fmt.Sprintf("no version of %s compatible with %s is present (have: %s); skipping",
-			name, version, strings.Join(present, ", ")), nil
+		// No present version shares the requested caret line. If some present
+		// version already meets or exceeds the floor (a newer, semver-incompatible
+		// release line), the requirement is satisfied — skip. Otherwise the crate
+		// is pinned below the floor by a dependent's caret constraint and cannot be
+		// upgraded; that is a genuine failure, not a warning.
+		for _, p := range present {
+			if semver.Compare("v"+p, "v"+version) >= 0 {
+				return "", true, fmt.Sprintf("%s is already at %s (a newer release line), which satisfies >= %s; skipping",
+					name, p, version), nil
+			}
+		}
+		return "", false, "", fmt.Errorf("%w: %s cannot be upgraded to %s; present version(s) %s are constrained by SemVer",
+			ErrNoCompatibleVersion, name, version, strings.Join(present, ", "))
 	}
 
 	best := inLine[0]
