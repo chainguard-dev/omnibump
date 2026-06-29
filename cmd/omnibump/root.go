@@ -32,26 +32,26 @@ import (
 )
 
 type rootFlags struct {
-	language       string
-	managers       []string
-	depsFile       string
-	propertiesFile string
-	packages       string
-	replaces       string
-	properties     string
-	rootDir        string
-	manifestFile   string
-	tidy           bool
-	tidyCompat     string
-	showDiff       bool
-	dryRun         bool
-	logLevel       string
-	logPolicy      []string
-	update         bool
-	tool           string
-	venv           string
-
+	language           string
+	managers           []string
+	depsFile           string
+	propertiesFile     string
+	packages           string
+	replaces           string
+	properties         string
+	rootDir            string
+	manifestFile       string
+	tidy               bool
+	tidyCompat         string
+	showDiff           bool
+	dryRun             bool
+	logLevel           string
+	logPolicy          []string
+	update             bool
+	tool               string
+	venv               string
 	gradleForceConfigs []string
+	gemDir             string
 }
 
 var flags rootFlags
@@ -104,6 +104,7 @@ func New() *cobra.Command {
 	f.StringVar(&flags.tool, "tool", "", "build tool override (Python: uv, pip, poetry, hatch, pdm, setuptools)")
 	f.StringVar(&flags.venv, "venv", "", "path to staged Python venv for in-place bumping (Python only)")
 	f.StringSliceVar(&flags.gradleForceConfigs, "gradle-force-configurations", nil, "extra Gradle configuration names (beyond compile/runtime classpaths) to force managed pins on, for fat-jar/packaging builds that bundle a custom configuration (Java/Gradle only). May be repeated or comma-separated.")
+	f.StringVar(&flags.gemDir, "gem-dir", "", "path to Ruby gem directory for in-place overlay bumping (Ruby only)")
 
 	// Add version command
 	cmd.AddCommand(version.WithFont("starwars"))
@@ -433,6 +434,9 @@ func buildUpdateConfig(cfg *config.Config) *languages.UpdateConfig {
 	}
 	if len(flags.gradleForceConfigs) > 0 {
 		updateCfg.GradleForceConfigurations = flags.gradleForceConfigs
+	}
+	if flags.gemDir != "" {
+		updateCfg.Options["gem-dir"] = flags.gemDir
 	}
 
 	return updateCfg

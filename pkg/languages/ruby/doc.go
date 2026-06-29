@@ -34,6 +34,18 @@ SPDX-License-Identifier: Apache-2.0
 // is replaced with the new version. Dependency constraint lines are left untouched.
 // Downgrade attempts are detected via semver comparison and skipped with a warning.
 //
+// # Gem-dir overlay mode
+//
+// When --gem-dir is specified, omnibump installs patched gems directly into
+// an existing gem directory using `gem install --install-dir`. This is used
+// for CVE remediation when a Ruby package bundles a transitive dependency
+// that needs patching without rebuilding the entire bundle.
+//
+// Overlay mode validates gem names and versions, rejects downgrades, and
+// verifies installed versions by scanning the specifications/ directory
+// (no `gem list` command needed for validation). Each gem is installed
+// individually with --force to overwrite existing versions.
+//
 // # Limitations
 //
 //   - No constraint validation: bumping a gem to a version that violates another
