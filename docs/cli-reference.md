@@ -19,6 +19,7 @@ omnibump [flags]
 | `--tidy` | | Run tidy command after update | `false` |
 | `--show-diff` | | Show diff of changes | `false` |
 | `--dry-run` | | Simulate without changes | `false` |
+| `--gradle-force-configurations` | | Extra Gradle configuration names (beyond compile/runtime classpaths) to force managed pins on, for fat-jar/packaging builds that bundle a custom configuration. Repeatable or comma-separated. | |
 | `--log-level` | | Log level (debug, info, warn, error) | `info` |
 
 ## Analyze Command

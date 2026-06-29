@@ -438,7 +438,33 @@ omnibump --packages "org.apache.commons:commons-lang3@3.18.0" \
   --dry-run --show-diff
 ```
 
-### Example 6: Gradle Wrapper Projects
+### Example 6: Fat-Jar / Shadow Builds (Bundled Configurations)
+
+omnibump's transitive version pins (the managed `resolutionStrategy.force` block)
+apply to the compile and runtime classpaths — what normally ships. A fat-jar
+build, however, can bundle an extra, custom-named configuration into the
+published artifact (e.g. a `shadowJar` whose `configurations` list adds
+`lineageImplementation`). Such a configuration ships but is not a classpath, so
+without help the old transitive version would be repackaged into the jar and the
+CVE would persist.
+
+omnibump detects this automatically: it scans packaging tasks (shadow
+`configurations = [...]`, capsule `embedConfiguration`, and generic
+`from configurations.x` / `classpath configurations.x` in `Jar`/`Copy`/`War`
+tasks) and also forces the pins on the bundled non-classpath configurations.
+Documentation/lint/static-analysis configurations (javadoc, spotless, ...) are
+excluded, since their dependencies never ship.
+
+When a bundling site references a configuration in a form omnibump cannot
+resolve to a name, it logs a warning. Pin those explicitly:
+
+```bash
+omnibump --language java \
+  --packages "com.fasterxml.jackson.core@jackson-databind@2.21.4" \
+  --gradle-force-configurations lineageImplementation
+```
+
+### Example 7: Gradle Wrapper Projects
 
 Projects using `gradlew` work automatically:
 
@@ -450,7 +476,7 @@ omnibump --deps deps.yaml
 ./gradlew build
 ```
 
-### Example 7: Both Groovy and Kotlin DSL
+### Example 8: Both Groovy and Kotlin DSL
 
 omnibump supports both DSL formats transparently:
 
@@ -465,7 +491,7 @@ Works with:
 - `build.gradle` (Groovy DSL)
 - `build.gradle.kts` (Kotlin DSL)
 
-### Example 8: Version Catalogs (libs.versions.toml)
+### Example 9: Version Catalogs (libs.versions.toml)
 
 omnibump resolves `[libraries]` entries to find the right `[versions]` key —
 you declare the Maven coordinates, omnibump finds where the version lives:
@@ -491,7 +517,7 @@ Libraries with inline versions (`version = "x"`) are updated in place, and
 inline catalogs declared in `settings.gradle(.kts)` via `version("key", "value")`
 are handled the same way.
 
-### Example 9: Version Variables (gradle.properties, ext maps, version.properties)
+### Example 10: Version Variables (gradle.properties, ext maps, version.properties)
 
 Dependencies whose version is a variable reference are bumped at the
 variable's definition site, wherever it lives:
@@ -522,7 +548,7 @@ are projects that bridge the version catalog into build scripts
 (`"g:a:${versions.log4j}"` resolves to the catalog key `log4j`) and Spring
 dependency-management `dependencySet(group: 'g', version: 'v')` blocks.
 
-### Example 10: Property Updates for Gradle
+### Example 11: Property Updates for Gradle
 
 Like Maven, properties can be updated directly. A property name matches a
 catalog `[versions]` key, a `gradle.properties` / `version.properties` entry,
@@ -545,7 +571,7 @@ omnibump --properties properties.yaml
 A property found nowhere in the project is a hard error, and explicit
 properties take precedence over dependency updates routed to the same key.
 
-### Example 11: Transitive Dependencies (Force Block)
+### Example 12: Transitive Dependencies (Force Block)
 
 A dependency that is not declared in any Gradle file — typically a vulnerable
 transitive — is pinned through an omnibump-managed `resolutionStrategy` block

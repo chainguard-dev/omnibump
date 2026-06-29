@@ -56,7 +56,7 @@ func (ga *GradleAnalyzer) Analyze(ctx context.Context, projectPath string) (*ana
 // contents instead of disk, and returns a single aggregated FileAnalysis the
 // way the Maven analyzer aggregates all pom.xml files into one.
 func (ga *GradleAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]byte) (*analyzer.RemoteAnalysisResult, error) {
-	model := buildModelFromFiles(ctx, ".", files)
+	model := buildModelFromFiles(ctx, files)
 	if len(model.sortedFiles) == 0 {
 		return nil, ErrNoBuildFiles
 	}
@@ -94,6 +94,22 @@ func analyzeModel(model *projectModel) *analyzer.AnalysisResult {
 	collectCatalogDependencies(model, result)
 	collectDeclaredDependencies(model, result)
 	countCatalogReferences(model, result)
+
+	// Surface configurations bundled into shipped artifacts beyond the
+	// compile/runtime classpaths (e.g. a shadowJar's custom configuration), so
+	// callers know the managed pins will also be forced there — and which
+	// bundling sites omnibump could not resolve to a name (operator must pin
+	// those explicitly). Carried in Metadata to keep AnalysisResult stable.
+	if ship := model.shipConfigurations(); len(ship) > 0 {
+		result.Metadata["ship_configurations"] = ship
+	}
+	if unresolved := model.unresolvedShipConfigs(); len(unresolved) > 0 {
+		raws := make([]string, 0, len(unresolved))
+		for _, ref := range unresolved {
+			raws = append(raws, ref.Raw)
+		}
+		result.Metadata["unresolved_ship_configurations"] = raws
+	}
 
 	return result
 }

@@ -32,6 +32,54 @@ type Substitution struct {
 // matched: their dependencies never ship.
 const managedConfigurations = `.*([Cc]ompileClasspath|[Rr]untimeClasspath)`
 
+// managedClasspathRE anchors managedConfigurations so callers can test a single
+// configuration name against the default managed match.
+var managedClasspathRE = regexp.MustCompile(`^(?:` + managedConfigurations + `)$`)
+
+// configNameRE bounds an extra configuration name to a safe Gradle identifier
+// before it is embedded into the synthesized managed block.
+var configNameRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
+
+// IsManagedClasspathName reports whether name is a compile/runtime classpath
+// configuration already covered by the default managed match, so it need not be
+// added to the extra ship-configuration list.
+func IsManagedClasspathName(name string) bool {
+	return managedClasspathRE.MatchString(name)
+}
+
+// filterExtraConfigs drops empty names, duplicates and any name already covered
+// by the default classpath match, returning the remainder sorted.
+func filterExtraConfigs(names []string) []string {
+	seen := make(map[string]struct{}, len(names))
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if n == "" || IsManagedClasspathName(n) {
+			continue
+		}
+		if _, dup := seen[n]; dup {
+			continue
+		}
+		seen[n] = struct{}{}
+		out = append(out, n)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// validateConfigNames rejects extra configuration names that are not safe Gradle
+// identifiers, since they are embedded verbatim into the generated block.
+func validateConfigNames(names []string) error {
+	for _, n := range names {
+		if n == "" {
+			continue
+		}
+		if !configNameRE.MatchString(n) {
+			return fmt.Errorf("%w: %q is not a valid configuration name", ErrInvalidCoordinate, n)
+		}
+	}
+	return nil
+}
+
 // managedBlockOpen opens the settings lifecycle hook. The Groovy form appends an
 // explicit closure parameter; Kotlin uses the implicit receiver.
 const managedBlockOpen = "gradle.beforeProject {"
@@ -117,10 +165,23 @@ func ValidateModule(module string) error {
 //
 // constraints maps "group:artifact" -> version. subs are coordinate swaps.
 func renderManagedBlock(constraints map[string]string, subs []Substitution, dsl DSL) string {
+	return renderManagedBlockWithConfigs(constraints, subs, dsl, nil)
+}
+
+// renderManagedBlockWithConfigs is renderManagedBlock plus extraConfigs: names
+// of configurations beyond the compile/runtime classpaths whose resolved
+// contents are bundled into a shipped artifact (a fat jar, capsule, war, ...)
+// and on which the pins must therefore also be forced. When extraConfigs is
+// empty the output is byte-identical to the classpath-only block. When it is
+// non-empty the guard widens to also match those configuration names and is
+// gated on canBeResolved, so non-resolvable bucket configurations are never
+// touched.
+func renderManagedBlockWithConfigs(constraints map[string]string, subs []Substitution, dsl DSL, extraConfigs []string) string {
 	modules := slices.Sorted(maps.Keys(constraints))
 	sortedSubs := slices.SortedFunc(slices.Values(subs), func(a, b Substitution) int {
 		return strings.Compare(a.OldModule, b.OldModule)
 	})
+	extras := filterExtraConfigs(extraConfigs)
 
 	// The block is emitted in the project's DSL. Groovy uses single quotes, an
 	// explicit closure parameter, a qualified receiver, and command syntax;
@@ -131,6 +192,9 @@ func renderManagedBlock(constraints map[string]string, subs []Substitution, dsl 
 	eachParam := " configuration ->"
 	eachRecv := "configuration."
 	matchExpr := "configuration.name ==~ /" + managedConfigurations + "/"
+	canResolvedExpr := "configuration.canBeResolved"
+	nameExpr := "configuration.name"
+	wrapList := func(items []string) string { return "[" + quoteJoin(items, "'") + "]" }
 	force := func(module, version string) string {
 		return eachRecv + "resolutionStrategy.force " + q + module + ":" + version + q
 	}
@@ -145,6 +209,9 @@ func renderManagedBlock(constraints map[string]string, subs []Substitution, dsl 
 		eachParam = ""
 		eachRecv = ""
 		matchExpr = "name.matches(Regex(" + q + managedConfigurations + q + "))"
+		canResolvedExpr = "isCanBeResolved"
+		nameExpr = "name"
+		wrapList = func(items []string) string { return "listOf(" + quoteJoin(items, "\"") + ")" }
 		force = func(module, version string) string {
 			return eachRecv + "resolutionStrategy.force(" + q + module + ":" + version + q + ")"
 		}
@@ -152,6 +219,13 @@ func renderManagedBlock(constraints map[string]string, subs []Substitution, dsl 
 			return "substitute(module(" + q + s.OldModule + q + ")).using(module(" +
 				q + s.NewModule + ":" + s.Version + q + ")).because(" + q + "omnibump coordinate swap" + q + ")"
 		}
+	}
+
+	// When extra ship configurations are present, widen the guard to also match
+	// them by name, gated on canBeResolved so non-resolvable bucket
+	// configurations are never touched.
+	if len(extras) > 0 {
+		matchExpr = canResolvedExpr + " && (" + matchExpr + " || " + nameExpr + " in " + wrapList(extras) + ")"
 	}
 
 	var b strings.Builder
@@ -222,15 +296,36 @@ func managedBlockSpan(content []byte) (span, bool) {
 	return span{begin, begin + end + len(ForceBlockEnd)}, true
 }
 
+// quoteJoin renders names as a comma-separated list of q-quoted literals, e.g.
+// quoteJoin([]string{"a","b"}, "'") == "'a', 'b'".
+func quoteJoin(names []string, q string) string {
+	parts := make([]string, len(names))
+	for i, n := range names {
+		parts[i] = q + n + q
+	}
+	return strings.Join(parts, ", ")
+}
+
 // EnsureManagedBlock queues an edit that guarantees the settings file's
 // managed block pins every constraint and applies every substitution. An
 // existing block is merged (new versions/targets win, entries deduplicated and
 // sorted); otherwise the block is appended. The operation is idempotent.
 func (f *SettingsFile) EnsureManagedBlock(constraints map[string]string, subs []Substitution) error {
+	return f.EnsureManagedBlockWithConfigs(constraints, subs, nil)
+}
+
+// EnsureManagedBlockWithConfigs is EnsureManagedBlock plus extraConfigs: the
+// names of configurations beyond the compile/runtime classpaths whose resolved
+// contents ship inside a packaged artifact (fat jar, capsule, war, ...), on
+// which the pins must also be forced.
+func (f *SettingsFile) EnsureManagedBlockWithConfigs(constraints map[string]string, subs []Substitution, extraConfigs []string) error {
 	if len(constraints) == 0 && len(subs) == 0 {
 		return nil
 	}
 	if err := validateManaged(constraints, subs); err != nil {
+		return err
+	}
+	if err := validateConfigNames(extraConfigs); err != nil {
 		return err
 	}
 
@@ -245,7 +340,7 @@ func (f *SettingsFile) EnsureManagedBlock(constraints map[string]string, subs []
 	}
 	mergedSubs = slices.Collect(maps.Values(subByOld))
 
-	block := renderManagedBlock(mergedConstraints, mergedSubs, f.dsl)
+	block := renderManagedBlockWithConfigs(mergedConstraints, mergedSubs, f.dsl, extraConfigs)
 	if sp, ok := managedBlockSpan(f.buf.original); ok {
 		return f.buf.add(sp, block)
 	}
@@ -274,8 +369,19 @@ func (f *SettingsFile) ManagedCoordinates() map[string]string {
 // NewSettingsFileContent returns the content for a brand-new root settings
 // script that exists only to host the managed block.
 func NewSettingsFileContent(dsl DSL, constraints map[string]string, subs []Substitution) (string, error) {
+	return NewSettingsFileContentWithConfigs(dsl, constraints, subs, nil)
+}
+
+// NewSettingsFileContentWithConfigs is NewSettingsFileContent plus extraConfigs:
+// the names of configurations beyond the compile/runtime classpaths whose
+// contents ship inside a packaged artifact and on which the pins must also be
+// forced.
+func NewSettingsFileContentWithConfigs(dsl DSL, constraints map[string]string, subs []Substitution, extraConfigs []string) (string, error) {
 	if err := validateManaged(constraints, subs); err != nil {
 		return "", err
 	}
-	return strings.TrimLeft(renderManagedBlock(constraints, subs, dsl), "\n") + "\n", nil
+	if err := validateConfigNames(extraConfigs); err != nil {
+		return "", err
+	}
+	return strings.TrimLeft(renderManagedBlockWithConfigs(constraints, subs, dsl, extraConfigs), "\n") + "\n", nil
 }
