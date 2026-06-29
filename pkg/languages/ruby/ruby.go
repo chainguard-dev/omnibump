@@ -30,8 +30,26 @@ var (
 	// ErrValidationFailed is returned when post-update validation detects a version mismatch.
 	ErrValidationFailed = errors.New("validation failed")
 
-	// ErrPackageNotFound is returned when a dependency is not found in the lockfile.
-	ErrPackageNotFound = errors.New("package not found in Gemfile.lock")
+	// ErrPackageNotFound is returned when a dependency is not found.
+	ErrPackageNotFound = errors.New("package not found")
+
+	// ErrGemDirNotFound is returned when the specified gem directory does not exist.
+	ErrGemDirNotFound = errors.New("gem directory not found")
+
+	// ErrGemDirDowngrade is returned when a gem overlay would downgrade a version.
+	ErrGemDirDowngrade = errors.New("downgrade rejected")
+
+	// ErrGemInstallFailed is returned when `gem install` exits with an error.
+	ErrGemInstallFailed = errors.New("gem install failed")
+
+	// ErrGemDirInvalidGemName is returned when a gem name contains invalid characters.
+	ErrGemDirInvalidGemName = errors.New("invalid gem name")
+
+	// ErrGemDirEmptyVersion is returned when a gem version is empty.
+	ErrGemDirEmptyVersion = errors.New("empty version for gem")
+
+	// ErrGemDirInvalidVersionFormat is returned when a gem version has an invalid format.
+	ErrGemDirInvalidVersionFormat = errors.New("invalid version format")
 )
 
 // Ruby implements the Language interface for Ruby projects.
@@ -67,8 +85,16 @@ func (r *Ruby) SupportsAnalysis() bool {
 }
 
 // Update performs dependency updates on a Ruby project.
+// If Options["gem-dir"] is set, uses gem-dir overlay mode (gem install into a
+// staged gem directory). Otherwise uses manifest mode (Gemfile.lock editing).
 func (r *Ruby) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	log := clog.FromContext(ctx)
+
+	// Check for gem-dir overlay mode
+	gemDirPath, _ := cfg.Options["gem-dir"].(string)
+	if gemDirPath != "" {
+		return updateGemDir(ctx, cfg, gemDirPath)
+	}
 
 	log.Infof("Updating Ruby project at: %s", cfg.RootDir)
 	log.Infof("Dependencies to update: %d", len(cfg.Dependencies))
@@ -127,8 +153,16 @@ func (r *Ruby) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 }
 
 // Validate checks if the updates were applied successfully.
+// If Options["gem-dir"] is set, validates versions in the gem directory.
+// Otherwise validates versions in Gemfile.lock.
 func (r *Ruby) Validate(ctx context.Context, cfg *languages.UpdateConfig) error {
 	log := clog.FromContext(ctx)
+
+	// Check for gem-dir overlay mode
+	gemDirPath, _ := cfg.Options["gem-dir"].(string)
+	if gemDirPath != "" {
+		return validateGemDir(ctx, cfg, gemDirPath)
+	}
 
 	gemfileLockPath := filepath.Join(cfg.RootDir, ManifestGemfileLock)
 
