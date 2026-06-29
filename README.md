@@ -8,7 +8,7 @@
 
 ## Features
 
-- **Multi-Language Support**: Go, Rust, Java (Maven, Gradle), and JavaScript (pnpm, yarn, npm, bun)
+- **Multi-Language Support**: Go, Rust, Java (Maven, Gradle), JavaScript (pnpm, yarn, npm, bun), and Python (pip, uv, Poetry, and more)
 - **Automatic Detection**: Identifies project language automatically
 - **Unified Configuration**: Single configuration format across all languages
 - **Property-Based Updates**: Smart property management for Maven
@@ -31,6 +31,7 @@
 | JavaScript | yarn | `package.json`, `yarn.lock` |
 | JavaScript | npm | `package.json`, `package-lock.json` |
 | JavaScript | bun | `package.json`, `bun.lock`, `bun.lockb` |
+| Python | pip, uv, Poetry, Hatch, PDM, and others | `pyproject.toml`, `requirements.txt`, `setup.cfg`, `Pipfile` |
 
 
 ## Installation
@@ -183,6 +184,30 @@ Run update:
 
 ```bash
 omnibump --deps deps.yaml
+```
+
+### Python Projects
+
+Create `deps.yaml`:
+
+```yaml
+packages:
+  - name: requests
+    version: 2.32.3
+  - name: cryptography
+    version: 44.0.0
+```
+
+Run update:
+
+```bash
+omnibump --deps deps.yaml
+```
+
+omnibump auto-detects the build tool (pip, uv, Poetry, Hatch, PDM, etc.) and the manifest format (`pyproject.toml`, `requirements.txt`, `setup.cfg`, or `Pipfile`). For virtual environment mode:
+
+```bash
+omnibump --deps deps.yaml --venv /path/to/staged-venv
 ```
 
 ## Documentation

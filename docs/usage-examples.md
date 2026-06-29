@@ -588,6 +588,169 @@ constraints, while the eachDependency rules (registered last) defeat plugins
 that manage versions through their own resolve rules, such as
 io.spring.dependency-management — which silently overrides a plain force.
 
+## Python Projects
+
+### Example 1: Update pyproject.toml (PEP 621 / Poetry)
+
+Create `deps.yaml`:
+
+```yaml
+# language field is optional - will auto-detect
+packages:
+  - name: requests
+    version: 2.32.3
+
+  - name: cryptography
+    version: 44.0.0
+
+  - name: pydantic
+    version: 2.10.4
+```
+
+Run update:
+
+```bash
+omnibump --deps deps.yaml
+```
+
+This updates dependencies in `pyproject.toml` regardless of whether the project uses PEP 621 (`[project]`) or Poetry (`[tool.poetry.dependencies]`) format.
+
+### Example 2: Update requirements.txt
+
+```bash
+# Auto-detects requirements.txt
+omnibump --packages "requests@2.32.3 cryptography@44.0.0"
+```
+
+This updates pinned versions in `requirements.txt`:
+
+```
+# Before
+requests==2.31.0
+cryptography==42.0.0
+
+# After
+requests==2.32.3
+cryptography==44.0.0
+```
+
+### Example 3: Update setup.cfg
+
+For projects using legacy setuptools configuration:
+
+```yaml
+packages:
+  - name: requests
+    version: 2.32.3
+```
+
+```bash
+omnibump --deps deps.yaml
+```
+
+**Note:** `setup.py` is read-only — omnibump can parse it for analysis but cannot update it in-place. Migrate to `setup.cfg` or `pyproject.toml` for update support.
+
+### Example 4: Update Pipfile
+
+For Pipenv projects:
+
+```bash
+omnibump --packages "requests@2.32.3"
+```
+
+This updates the version in `Pipfile` directly.
+
+### Example 5: Inline Package Updates
+
+```bash
+# Quick CVE fix
+omnibump --packages "cryptography@44.0.0"
+
+# Multiple packages
+omnibump --packages "requests@2.32.3 cryptography@44.0.0 pydantic@2.10.4"
+
+# Dry run with diff
+omnibump --packages "cryptography@44.0.0" --dry-run --show-diff
+```
+
+### Example 6: Virtual Environment Mode
+
+For workflows that need packages installed into a staged virtual environment (e.g. for Wolfi/melange builds):
+
+```bash
+# Install updated packages into a venv
+omnibump --deps deps.yaml --venv /path/to/staged-venv
+```
+
+In venv mode, omnibump uses `uv` or `pip` to install the specified package versions into the target environment rather than editing manifest files.
+
+### Example 7: Override Build Tool Detection
+
+omnibump auto-detects the build tool from your project files. If detection picks the wrong tool, you can override it:
+
+```bash
+# Force uv
+omnibump --deps deps.yaml --tool uv
+
+# Force pip
+omnibump --deps deps.yaml --tool pip
+```
+
+**Detected build tools** (in priority order): uv, Poetry, Hatch, PDM, Flit, Maturin, scikit-build-core, Setuptools, pip.
+
+### Example 8: Analyze Python Dependencies
+
+```bash
+# Analyze current project
+omnibump analyze .
+
+# JSON output for scripting
+omnibump analyze --output json > analysis.json
+```
+
+### Example 9: CVE Remediation (Replacing manual edits)
+
+**Old approach (manual):**
+
+```bash
+sed -i 's/cryptography==42.0.0/cryptography==44.0.0/' requirements.txt
+```
+
+**New approach (omnibump):**
+
+```bash
+omnibump --packages "cryptography@44.0.0"
+```
+
+Benefits:
+- Works across all manifest formats (`pyproject.toml`, `requirements.txt`, `setup.cfg`, `Pipfile`)
+- Handles version specifier styles (`==`, `>=`, `~=`, `^`)
+- Resolves versions from PyPI
+- Shows clear diffs with `--show-diff`
+
+### Example 10: Version Resolution
+
+omnibump resolves `@latest` by querying PyPI:
+
+```bash
+# Resolve latest version from PyPI
+omnibump --packages "requests@latest"
+```
+
+**Supported manifest files** (checked in priority order):
+
+| Format | Read | Write |
+|--------|------|-------|
+| `pyproject.toml` (PEP 621) | Yes | Yes |
+| `pyproject.toml` (Poetry) | Yes | Yes |
+| `requirements.txt` | Yes | Yes |
+| `setup.cfg` | Yes | Yes |
+| `setup.py` | Yes | **No** (read-only) |
+| `Pipfile` | Yes | Yes |
+
+**Notes:**
+- Lockfiles (`uv.lock`, `pdm.lock`) are used for build tool detection but are not modified by omnibump — re-run your lock command (`uv lock`, `pdm lock`, `poetry lock`, etc.) after updating
+
 ## Cross-Language Projects
 
 ### Example 1: Automatic Detection
@@ -606,4 +769,5 @@ omnibump --deps deps.yaml
 omnibump --language go --deps deps.yaml
 omnibump --language rust --deps deps.yaml
 omnibump --language java --deps deps.yaml
+omnibump --language python --deps deps.yaml
 ```
