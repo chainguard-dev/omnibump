@@ -82,10 +82,16 @@ func Test_resolveVersion(t *testing.T) {
 			wantSpec: "rand@0.9.0",
 		},
 		{
-			name:  "no compatible version present",
+			name:  "stuck below the floor on an incompatible line errors",
+			crate: "rand", version: "0.10.0", hasVersion: true,
+			present: []string{"0.9.3"},
+			wantErr: true,
+		},
+		{
+			name:  "newer incompatible line satisfies the floor",
 			crate: "rand", version: "0.9.0", hasVersion: true,
 			present:  []string{"0.10.1"},
-			wantSkip: true, wantMsg: "no version of rand compatible with 0.9.0",
+			wantSkip: true, wantMsg: "already at 0.10.1 (a newer release line)",
 		},
 		{
 			name:  "already satisfies the floor",
