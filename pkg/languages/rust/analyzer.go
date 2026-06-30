@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
@@ -18,7 +19,22 @@ import (
 // RustAnalyzer implements the Analyzer interface for Rust projects.
 //
 //nolint:revive // Explicit name preferred for clarity
-type RustAnalyzer struct{}
+type RustAnalyzer struct {
+	// resolveLatest resolves a crate target spec (e.g. "rand" or "rand@0.9.0")
+	// to the latest compatible published version. It defaults to
+	// LatestCrateVersion when nil; tests override it to avoid network access.
+	resolveLatest func(ctx context.Context, spec string) (string, error)
+}
+
+// latestVersion resolves spec to the latest compatible published version,
+// using the injected resolver when set and falling back to the live
+// crates.io-backed LatestCrateVersion otherwise.
+func (ra *RustAnalyzer) latestVersion(ctx context.Context, spec string) (string, error) {
+	if ra.resolveLatest != nil {
+		return ra.resolveLatest(ctx, spec)
+	}
+	return LatestCrateVersion(ctx, spec)
+}
 
 // Analyze performs dependency analysis on a Rust project.
 func (ra *RustAnalyzer) Analyze(ctx context.Context, projectPath string) (*analyzer.AnalysisResult, error) {
@@ -120,31 +136,89 @@ func (ra *RustAnalyzer) RecommendStrategy(ctx context.Context, analysis *analyze
 	}
 
 	for _, dep := range deps {
-		// Check if dependency exists
-		found := false
-		var existingVersions []string
+		// Build a target spec from the incoming dependency, which arrives in one
+		// of three shapes:
+		//   {Name: "serde", Version: ""}           bare crate -> latest published
+		//   {Name: "serde", Version: "1.2.0"}       crate + version constraint (caret line)
+		//   {Name: "serde@1.0.0", Version: "1.1.0"} precise pin of an already-pinned dep
+		spec := dep.Name
+		switch {
+		case strings.Contains(dep.Name, "@") && dep.Version != "":
+			spec += "=" + dep.Version // precise pin: name@from=to
+		case dep.Version != "":
+			spec += "@" + dep.Version // version constraint: name@version
+		}
+		target := parseTarget(spec)
 
+		// Confirm the crate is present in the lockfile, matched by base name. The
+		// analysis map is keyed name@version, so collect every locked version.
+		found := false
+		var lockedVersions []string
 		for _, depInfo := range analysis.Dependencies {
-			if depInfo.Name == dep.Name {
+			if depInfo.Name == target.name {
 				found = true
-				existingVersions = append(existingVersions, depInfo.Version)
+				lockedVersions = append(lockedVersions, depInfo.Version)
 			}
 		}
-
 		if !found {
 			strategy.Warnings = append(strategy.Warnings,
-				fmt.Sprintf("Dependency %s not found in Cargo.lock", dep.Name))
+				fmt.Sprintf("Dependency %s not found in Cargo.lock", target.name))
 			continue
 		}
 
-		// Warn if multiple versions exist
-		if len(existingVersions) > 1 {
-			strategy.Warnings = append(strategy.Warnings,
-				fmt.Sprintf("Multiple versions of %s found: %v - all will be updated", dep.Name, existingVersions))
+		// Resolve the version to update to. A precise pin already names its exact
+		// target; otherwise ask the index for the latest version within the
+		// constraint. A resolver failure (crate missing upstream, no compatible
+		// version, network error) warns and skips this dependency rather than
+		// aborting the whole strategy.
+		targetVersion := target.precise
+		if !target.isPrecise {
+			resolved, err := ra.latestVersion(ctx, spec)
+			if err != nil {
+				strategy.Warnings = append(strategy.Warnings,
+					fmt.Sprintf("Could not resolve latest version for %s: %v", target.name, err))
+				continue
+			}
+			targetVersion = resolved
 		}
 
-		strategy.DirectUpdates = append(strategy.DirectUpdates, dep)
-		log.Infof("Will update %s to %s", dep.Name, dep.Version)
+		// A bare-name target updates every locked version, so warn when more than
+		// one is present. A version-constrained or precise target acts on a single
+		// line and never triggers this warning.
+		if !target.hasVersion && len(lockedVersions) > 1 {
+			strategy.Warnings = append(strategy.Warnings,
+				fmt.Sprintf("Multiple versions of %s found: %v - all will be updated", target.name, lockedVersions))
+		}
+
+		// Record the version we're upgrading from for reporting: the locked
+		// version in the request's compatible line, falling back to the highest
+		// locked version (a cross-line bump) so output never mislabels an existing
+		// crate as new.
+		lineVersion := target.version
+		if lineVersion == "" {
+			lineVersion = targetVersion
+		}
+		fromVersion := inLineVersion(lineVersion, lockedVersions)
+		if fromVersion == "" {
+			fromVersion = maxVersion(lockedVersions)
+		}
+
+		md := make(map[string]any, len(dep.Metadata)+1)
+		for k, v := range dep.Metadata {
+			md[k] = v
+		}
+		if fromVersion != "" {
+			md[analyzer.FromVersionMetadataKey] = fromVersion
+		}
+
+		strategy.DirectUpdates = append(strategy.DirectUpdates, analyzer.Dependency{
+			Name:     target.name,
+			Version:  targetVersion,
+			Scope:    dep.Scope,
+			Type:     dep.Type,
+			Metadata: md,
+		})
+		log.Infof("Will update %s from %s to %s", target.name, fromVersion, targetVersion)
 	}
 
 	log.Infof("Strategy: %d direct updates", len(strategy.DirectUpdates))

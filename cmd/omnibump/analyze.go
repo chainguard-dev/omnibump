@@ -471,14 +471,22 @@ func printDirectUpdates(analysis *analyzer.AnalysisResult, strategy *analyzer.St
 
 // printDependencyUpdate prints a single dependency update.
 func printDependencyUpdate(analysis *analyzer.AnalysisResult, dep analyzer.Dependency) {
-	depInfo, exists := analysis.Dependencies[dep.Name]
-	if !exists {
-		fmt.Printf("  %s: (new) -> %s\n", dep.Name, dep.Version)
+	if depInfo, exists := analysis.Dependencies[dep.Name]; exists {
+		fmt.Printf("  %s: %s -> %s\n", dep.Name, depInfo.Version, dep.Version)
+		printModuleInfo(depInfo)
 		return
 	}
 
-	fmt.Printf("  %s: %s -> %s\n", dep.Name, depInfo.Version, dep.Version)
-	printModuleInfo(depInfo)
+	// Some ecosystems (e.g. Rust) key dependencies as name@version, so a
+	// bare-name lookup misses. The analyzer records the upgrade-from version in
+	// Metadata so we can still show "from -> to" instead of mislabeling an
+	// existing dependency as new.
+	if from, ok := dep.Metadata[analyzer.FromVersionMetadataKey].(string); ok && from != "" {
+		fmt.Printf("  %s: %s -> %s\n", dep.Name, from, dep.Version)
+		return
+	}
+
+	fmt.Printf("  %s: (new) -> %s\n", dep.Name, dep.Version)
 }
 
 // printModuleInfo prints module information for a dependency if available.

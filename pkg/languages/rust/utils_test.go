@@ -178,6 +178,29 @@ func Test_inLineVersion(t *testing.T) {
 	}
 }
 
+// Test_maxVersion checks selection of the highest semver across compatibility
+// lines, skipping unparseable entries, and the empty result when none parse.
+func Test_maxVersion(t *testing.T) {
+	tests := []struct {
+		name     string
+		versions []string
+		want     string
+	}{
+		{name: "none present", versions: nil, want: ""},
+		{name: "single version", versions: []string{"0.9.0"}, want: "0.9.0"},
+		{name: "picks highest across lines", versions: []string{"0.9.3", "0.10.1", "0.8.4"}, want: "0.10.1"},
+		{name: "spans major versions", versions: []string{"1.2.0", "2.0.0", "0.9.0"}, want: "2.0.0"},
+		{name: "skips unparseable", versions: []string{"notsemver", "0.9.0", ""}, want: "0.9.0"},
+		{name: "all unparseable", versions: []string{"notsemver", "abc"}, want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, maxVersion(tt.versions))
+		})
+	}
+}
+
 // Test_joinVersions checks the log-friendly rendering of a version list.
 func Test_joinVersions(t *testing.T) {
 	require.Equal(t, "none", joinVersions(nil))
