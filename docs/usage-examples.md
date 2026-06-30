@@ -751,6 +751,109 @@ omnibump --packages "requests@latest"
 **Notes:**
 - Lockfiles (`uv.lock`, `pdm.lock`) are used for build tool detection but are not modified by omnibump — re-run your lock command (`uv lock`, `pdm lock`, `poetry lock`, etc.) after updating
 
+## Ruby Projects
+
+### Example 1: Update Gemfile.lock
+
+Create `deps.yaml`:
+
+```yaml
+# language field is optional - will auto-detect
+packages:
+  - name: rack
+    version: 3.1.9
+
+  - name: nokogiri
+    version: 1.18.3
+
+  - name: actionpack
+    version: 7.2.2.1
+```
+
+Run update:
+
+```bash
+omnibump --deps deps.yaml
+```
+
+This updates versions directly in `Gemfile.lock` via text replacement — no Ruby or Bundler CLI is required at runtime.
+
+### Example 2: Inline Package Updates
+
+```bash
+# Quick CVE fix
+omnibump --packages "rack@3.1.9"
+
+# Multiple packages
+omnibump --packages "rack@3.1.9 nokogiri@1.18.3 rexml@3.4.1"
+
+# Dry run with diff
+omnibump --packages "rack@3.1.9" --dry-run --show-diff
+```
+
+### Example 3: Gem-Directory Overlay Mode
+
+For workflows that need patched gems installed into an existing gem directory (e.g. CVE remediation of bundled transitive dependencies in Wolfi/melange builds):
+
+```bash
+# Install patched gems into a gem directory
+omnibump --packages "rack-session@2.1.2 erb@6.0.4 net-imap@0.6.4.1" \
+  --gem-dir /usr/share/ruby/gems/3.4
+```
+
+In gem-dir mode, omnibump runs `gem install --install-dir` for each package, overlaying the patched version on top of the bundled one. Downgrades are rejected, and validation scans the `specifications/` directory to verify installed versions.
+
+### Example 4: CVE Remediation (Replacing manual gem install steps)
+
+**Old approach (manual shell in melange YAML):**
+
+```yaml
+- name: "Upgrade rack-session to fix GHSA-33qg-7wpp-89cq"
+  runs: |
+    gem install rack-session \
+      --install-dir ${{targets.contextdir}}/usr/share/ruby/gems/3.4 \
+      --no-document \
+      --version "2.1.2"
+```
+
+**New approach (omnibump via bump pipeline):**
+
+```yaml
+- uses: bump
+  with:
+    language: ruby
+    gem-dir: ${{targets.contextdir}}/usr/share/ruby/gems/${{vars.rubyMM}}
+    packages: "rack-session@2.1.2 erb@6.0.4 net-imap@0.6.4.1 concurrent-ruby@1.3.7"
+```
+
+Benefits:
+- Replaces N freeform `runs:` steps with a single structured pipeline call
+- Input validation and injection prevention
+- Downgrade rejection
+- Post-install verification via `specifications/` directory scanning
+
+### Example 5: Analyze Ruby Dependencies
+
+```bash
+# Analyze current project
+omnibump analyze .
+
+# JSON output for scripting
+omnibump analyze --output json > analysis.json
+```
+
+**Supported manifest files:**
+
+| Format | Read | Write |
+|--------|------|-------|
+| `Gemfile.lock` | Yes | Yes |
+| `Gemfile` | Detection only | No |
+
+**Notes:**
+- Updates are direct text replacements in `Gemfile.lock` — no constraint validation is performed
+- Downgrade attempts are detected via semver comparison and skipped with a warning
+- `AnalyzeRemote` is not yet implemented
+
 ## Cross-Language Projects
 
 ### Example 1: Automatic Detection
@@ -770,4 +873,5 @@ omnibump --language go --deps deps.yaml
 omnibump --language rust --deps deps.yaml
 omnibump --language java --deps deps.yaml
 omnibump --language python --deps deps.yaml
+omnibump --language ruby --deps deps.yaml
 ```

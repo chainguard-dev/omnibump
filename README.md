@@ -8,7 +8,7 @@
 
 ## Features
 
-- **Multi-Language Support**: Go, Rust, Java (Maven, Gradle), JavaScript (pnpm, yarn, npm, bun), and Python (pip, uv, Poetry, and more)
+- **Multi-Language Support**: Go, Rust, Java (Maven, Gradle), JavaScript (pnpm, yarn, npm, bun), Python (pip, uv, Poetry, and more), and Ruby (Bundler)
 - **Automatic Detection**: Identifies project language automatically
 - **Unified Configuration**: Single configuration format across all languages
 - **Property-Based Updates**: Smart property management for Maven
@@ -32,6 +32,7 @@
 | JavaScript | npm | `package.json`, `package-lock.json` |
 | JavaScript | bun | `package.json`, `bun.lock`, `bun.lockb` |
 | Python | pip, uv, Poetry, Hatch, PDM, and others | `pyproject.toml`, `requirements.txt`, `setup.cfg`, `Pipfile` |
+| Ruby | Bundler | `Gemfile`, `Gemfile.lock` |
 
 
 ## Installation
@@ -208,6 +209,30 @@ omnibump auto-detects the build tool (pip, uv, Poetry, Hatch, PDM, etc.) and the
 
 ```bash
 omnibump --deps deps.yaml --venv /path/to/staged-venv
+```
+
+### Ruby Projects
+
+Create `deps.yaml`:
+
+```yaml
+packages:
+  - name: rack
+    version: 3.1.9
+  - name: nokogiri
+    version: 1.18.3
+```
+
+Run update:
+
+```bash
+omnibump --deps deps.yaml
+```
+
+omnibump updates versions directly in `Gemfile.lock` without requiring Ruby or Bundler at runtime. For gem-directory overlay mode (CVE remediation of bundled transitive dependencies):
+
+```bash
+omnibump --deps deps.yaml --gem-dir /path/to/gem/directory
 ```
 
 ## Documentation
