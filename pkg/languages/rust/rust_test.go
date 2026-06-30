@@ -414,7 +414,7 @@ func TestRustAnalyzer_RecommendStrategy(t *testing.T) {
 		{Name: "missing-dep", Version: "1.0.0"},
 	}
 
-	ra := &RustAnalyzer{}
+	ra := &RustAnalyzer{resolveLatest: stubResolve("9.9.9")}
 	strategy, err := ra.RecommendStrategy(context.Background(), analysis, deps)
 	require.NoError(t, err)
 	assert.NotNil(t, strategy)
@@ -447,11 +447,15 @@ func TestRustAnalyzer_RecommendStrategy_MultipleVersions(t *testing.T) {
 		},
 	}
 
+	// A bare name (no version) targets every locked version, so the
+	// multiple-versions warning fires. Specifying a version or precise pin
+	// targets a single version and suppresses the warning (see
+	// Test_RecommendStrategy_Targets).
 	deps := []analyzer.Dependency{
-		{Name: "serde", Version: "1.2.0"},
+		{Name: "serde"},
 	}
 
-	ra := &RustAnalyzer{}
+	ra := &RustAnalyzer{resolveLatest: stubResolve("9.9.9")}
 	strategy, err := ra.RecommendStrategy(context.Background(), analysis, deps)
 	require.NoError(t, err)
 

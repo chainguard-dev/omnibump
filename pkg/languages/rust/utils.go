@@ -8,16 +8,20 @@ SPDX-License-Identifier: Apache-2.0
 package rust
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/chainguard-dev/clog"
 	"golang.org/x/mod/semver"
@@ -26,6 +30,13 @@ import (
 // ErrAmbiguousTarget is returned when a bare crate name resolves to multiple
 // present versions, so the caller must pin one explicitly as name@<version>.
 var ErrAmbiguousTarget = errors.New("crate resolves to multiple versions")
+
+// ErrCrateNotFound is returned when the crates.io index has no entry for a crate.
+var ErrCrateNotFound = errors.New("crate not found in crates.io index")
+
+// ErrNoMatchingVersion is returned when no published version of a crate
+// satisfies the requested SemVer constraint.
+var ErrNoMatchingVersion = errors.New("no published version satisfies the constraint")
 
 // GetCargoLockPath returns the path to Cargo.lock in the given cargo root directory.
 func GetCargoLockPath(cargoRoot string) (string, error) {
@@ -292,10 +303,164 @@ func inLineVersion(version string, present []string) string {
 	return best
 }
 
+// maxVersion returns the highest valid semver in versions, or "" if none parse.
+func maxVersion(versions []string) string {
+	var best string
+	for _, v := range versions {
+		if !semver.IsValid("v" + v) {
+			continue
+		}
+		if best == "" || semver.Compare("v"+v, "v"+best) > 0 {
+			best = v
+		}
+	}
+	return best
+}
+
 // joinVersions renders a version list for log messages, or "none" when empty.
 func joinVersions(versions []string) string {
 	if len(versions) == 0 {
 		return "none"
 	}
 	return strings.Join(versions, ", ")
+}
+
+// cratesIndexBaseURL is the crates.io sparse-index endpoint (the same source
+// cargo reads). Overridable via a package var so tests can point at a stub.
+var cratesIndexBaseURL = "https://index.crates.io"
+
+// indexHTTPClient is the client used for crates.io sparse-index queries.
+var indexHTTPClient = &http.Client{Timeout: 15 * time.Second}
+
+// crateIndexEntry is one newline-delimited JSON record in a crates.io
+// sparse-index file. Only the fields we need are decoded.
+type crateIndexEntry struct {
+	Version string `json:"vers"`
+	Yanked  bool   `json:"yanked"`
+}
+
+// indexPath returns the crates.io sparse-index path for a crate name, following
+// cargo's directory sharding: 1- and 2-char names live under "1/" and "2/",
+// 3-char names under "3/<first-char>/", and longer names under
+// "<first-two>/<next-two>/". The name is lowercased to match the index's
+// canonical (case-insensitive) form.
+func indexPath(name string) string {
+	name = strings.ToLower(name)
+	switch len(name) {
+	case 0:
+		return ""
+	case 1:
+		return "1/" + name
+	case 2:
+		return "2/" + name
+	case 3:
+		return "3/" + name[:1] + "/" + name
+	default:
+		return name[:2] + "/" + name[2:4] + "/" + name
+	}
+}
+
+// fetchCrateVersions queries the crates.io sparse index for `name` and returns
+// its published, non-yanked versions in index order. The index serves one JSON
+// release record per line, so it is streamed line by line.
+func fetchCrateVersions(ctx context.Context, name string) ([]string, error) {
+	path := indexPath(name)
+	if path == "" {
+		return nil, fmt.Errorf("%w: empty crate name", ErrInvalidCrateName)
+	}
+	urlStr := cratesIndexBaseURL + "/" + path
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := indexHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("querying crates.io index for %s: %w", name, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("%w: %s", ErrCrateNotFound, name)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("crates.io index returned status %d for %s", resp.StatusCode, name)
+	}
+
+	var versions []string
+	reader := bufio.NewReader(resp.Body)
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if trimmed := bytes.TrimSpace(line); len(trimmed) > 0 {
+			var entry crateIndexEntry
+			if jerr := json.Unmarshal(trimmed, &entry); jerr != nil {
+				return nil, fmt.Errorf("parsing crates.io index entry for %s: %w", name, jerr)
+			}
+			if !entry.Yanked {
+				versions = append(versions, entry.Version)
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("reading crates.io index for %s: %w", name, readErr)
+		}
+	}
+	return versions, nil
+}
+
+// latestCompatible returns the highest stable version in `versions` that
+// satisfies the Cargo caret requirement implied by `constraint`: in the same
+// compatible line as the constraint and not below it. When `constraint` is
+// empty, the highest stable version overall is returned. Pre-release and
+// unparseable versions are ignored. Returns "" when nothing qualifies.
+func latestCompatible(versions []string, constraint string) string {
+	var best string
+	for _, v := range versions {
+		sv := "v" + v
+		if !semver.IsValid(sv) || semver.Prerelease(sv) != "" {
+			continue
+		}
+		if constraint != "" {
+			if !cargoCompatible(constraint, v) {
+				continue
+			}
+			if semver.Compare(sv, "v"+constraint) < 0 {
+				continue // compatible line, but below the requested floor
+			}
+		}
+		if best == "" || semver.Compare(sv, "v"+best) > 0 {
+			best = v
+		}
+	}
+	return best
+}
+
+// LatestCrateVersion queries the crates.io index for the crate referenced by
+// `pkg` and returns its latest published version within the SemVer constraint.
+// A bare crate name ("rand") returns the highest stable version overall (e.g.
+// 0.10.1); a pinned name ("rand@0.9.0") returns the highest stable version in
+// that caret-compatible line (e.g. 0.9.4). Yanked and pre-release versions are
+// ignored. Returns ErrNoMatchingVersion when no version qualifies.
+//
+// The constraint comes from the `@version` only; any `=precise` component of a
+// "name@from=to" arg is ignored.
+func LatestCrateVersion(ctx context.Context, pkg string) (string, error) {
+	t := parseTarget(pkg)
+
+	versions, err := fetchCrateVersions(ctx, t.name)
+	if err != nil {
+		return "", err
+	}
+
+	latest := latestCompatible(versions, t.version)
+	if latest == "" {
+		if t.hasVersion {
+			return "", fmt.Errorf("%w: %s within %s", ErrNoMatchingVersion, t.name, t.version)
+		}
+		return "", fmt.Errorf("%w: %s has no published stable versions", ErrNoMatchingVersion, t.name)
+	}
+	return latest, nil
 }

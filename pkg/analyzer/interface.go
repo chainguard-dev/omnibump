@@ -98,6 +98,12 @@ type DependencyInfo struct {
 	Metadata map[string]any
 }
 
+// FromVersionMetadataKey is the Dependency.Metadata key under which an analyzer
+// records the version a direct update is upgrading from. It is used for
+// reporting when the analysis map is keyed in a form (e.g. Rust's name@version)
+// that a bare-name lookup can't resolve back to the current version.
+const FromVersionMetadataKey = "fromVersion"
+
 // Dependency represents a dependency to be analyzed or updated.
 type Dependency struct {
 	Name     string
