@@ -143,7 +143,6 @@ func TestResolveAndFilterPackages(t *testing.T) {
 		modFile      *modfile.File
 		wantFiltered int
 		wantSkipped  []string
-		skipResolver bool // Skip actual version resolution
 	}{
 		{
 			name: "package already at target version",
@@ -168,7 +167,6 @@ func TestResolveAndFilterPackages(t *testing.T) {
 			},
 			wantFiltered: 0,
 			wantSkipped:  []string{"example.com/foo"},
-			skipResolver: true,
 		},
 		{
 			name: "package needs upgrade",
@@ -193,7 +191,6 @@ func TestResolveAndFilterPackages(t *testing.T) {
 			},
 			wantFiltered: 1,
 			wantSkipped:  nil,
-			skipResolver: true,
 		},
 		{
 			name: "current version newer than requested",
@@ -218,7 +215,6 @@ func TestResolveAndFilterPackages(t *testing.T) {
 			},
 			wantFiltered: 0,
 			wantSkipped:  []string{"example.com/baz"},
-			skipResolver: true,
 		},
 		{
 			name: "package not in go.mod",
@@ -236,7 +232,6 @@ func TestResolveAndFilterPackages(t *testing.T) {
 			},
 			wantFiltered: 1,
 			wantSkipped:  nil,
-			skipResolver: true,
 		},
 		{
 			name: "package with versioned replace directive is skipped",
@@ -263,7 +258,6 @@ func TestResolveAndFilterPackages(t *testing.T) {
 			},
 			wantFiltered: 0,
 			wantSkipped:  []string{"k8s.io/apiserver"},
-			skipResolver: true,
 		},
 		{
 			name: "package with replace directive is not skipped when explicitly marked Replace",
@@ -291,7 +285,80 @@ func TestResolveAndFilterPackages(t *testing.T) {
 			},
 			wantFiltered: 1,
 			wantSkipped:  nil,
-			skipResolver: true,
+		},
+		{
+			name: "new replace directive for package at same required version is not skipped",
+			packages: map[string]*Package{
+				"example.com/pinned": {
+					OldName: "example.com/pinned",
+					Name:    "example.com/pinned",
+					Version: "v0.43.0",
+					Replace: true,
+				},
+			},
+			modFile: &modfile.File{
+				Module: &modfile.Module{
+					Mod: module.Version{Path: "test/module"},
+				},
+				Require: []*modfile.Require{
+					{Mod: module.Version{Path: "example.com/pinned", Version: "v0.43.0"}},
+				},
+				// No Replace directive — adding a new replace pin at the same version
+				// as the existing require must not be silently skipped.
+			},
+			wantFiltered: 1,
+			wantSkipped:  nil,
+		},
+		{
+			name: "self-replace already at same version is skipped",
+			packages: map[string]*Package{
+				"example.com/pinned": {
+					OldName: "example.com/pinned",
+					Name:    "example.com/pinned",
+					Version: "v0.43.0",
+					Replace: true,
+				},
+			},
+			modFile: &modfile.File{
+				Module: &modfile.Module{
+					Mod: module.Version{Path: "test/module"},
+				},
+				Require: []*modfile.Require{
+					{Mod: module.Version{Path: "example.com/pinned", Version: "v0.43.0"}},
+				},
+				Replace: []*modfile.Replace{
+					{
+						Old: module.Version{Path: "example.com/pinned"},
+						New: module.Version{Path: "example.com/pinned", Version: "v0.43.0"},
+					},
+				},
+			},
+			wantFiltered: 0,
+			wantSkipped:  []string{"example.com/pinned"},
+		},
+		{
+			name: "cross-path replace already at same version is skipped",
+			packages: map[string]*Package{
+				"example.com/new": {
+					OldName: "example.com/old",
+					Name:    "example.com/new",
+					Version: "v1.2.3",
+					Replace: true,
+				},
+			},
+			modFile: &modfile.File{
+				Module: &modfile.Module{
+					Mod: module.Version{Path: "test/module"},
+				},
+				Replace: []*modfile.Replace{
+					{
+						Old: module.Version{Path: "example.com/old"},
+						New: module.Version{Path: "example.com/new", Version: "v1.2.3"},
+					},
+				},
+			},
+			wantFiltered: 0,
+			wantSkipped:  []string{"example.com/new"},
 		},
 		{
 			name: "multiple packages mixed scenario",
@@ -336,83 +403,57 @@ func TestResolveAndFilterPackages(t *testing.T) {
 			},
 			wantFiltered: 1, // Only upgrade package
 			wantSkipped:  []string{"example.com/same", "example.com/newer"},
-			skipResolver: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// For tests that don't need actual resolution (skipResolver=true),
-			// we can test the filtering logic directly
-			if tt.skipResolver {
-				filtered := resolveAndFilterPackagesForTest(tt.packages, tt.modFile)
+			filtered := resolveAndFilterPackagesForTest(t, tt.packages, tt.modFile)
 
-				if len(filtered) != tt.wantFiltered {
-					t.Errorf("got %d filtered packages, want %d", len(filtered), tt.wantFiltered)
-				}
+			if len(filtered) != tt.wantFiltered {
+				t.Errorf("got %d filtered packages, want %d", len(filtered), tt.wantFiltered)
+			}
 
-				// Check that skipped packages are not in filtered result
-				for _, skipped := range tt.wantSkipped {
-					if _, exists := filtered[skipped]; exists {
-						t.Errorf("package %s should have been skipped but was included", skipped)
-					}
+			for _, skipped := range tt.wantSkipped {
+				if _, exists := filtered[skipped]; exists {
+					t.Errorf("package %s should have been skipped but was included", skipped)
 				}
 			}
 		})
 	}
 }
 
-// resolveAndFilterPackagesForTest is a test version that doesn't call go list.
-func resolveAndFilterPackagesForTest(packages map[string]*Package, modFile *modfile.File) map[string]*Package {
-	filtered := make(map[string]*Package)
-
-	for name, pkg := range packages {
-		// Skip version resolution for tests - use version as-is
-		resolvedVersion := pkg.Version
-
-		// Mirror the normalization in the real resolveAndFilterPackages.
-		resolvedVersion = appendIncompatibleIfNeeded(name, resolvedVersion)
-
-		// Get current version from go.mod
-		currentVersion := getVersion(modFile, name)
-
-		if currentVersion == "" {
-			// Package doesn't exist in go.mod, add it
-			pkg.Version = resolvedVersion
-			filtered[name] = pkg
-			continue
+// withFakeVersionResolver stubs resolveListCommand so that "go list -m module@version"
+// never makes external network calls. The stub echoes the requested version back as
+// the resolved version (i.e. it acts as an identity resolver).
+func withFakeVersionResolver(t *testing.T) {
+	t.Helper()
+	orig := resolveListCommand
+	resolveListCommand = func(_ context.Context, _, query string) commander {
+		// query is "module@version" — echo back "module version" so the caller's
+		// output parsing produces the same version string that was requested.
+		parts := strings.SplitN(query, "@", 2)
+		var out string
+		if len(parts) == 2 {
+			out = parts[0] + " " + parts[1]
+		} else {
+			out = query
 		}
-
-		// Skip packages pinned via replace directive unless explicitly a replace update.
-		if !pkg.Replace && hasReplaceDirective(modFile, name) {
-			continue
-		}
-
-		// Compare versions using semver (simplified for test)
-		if currentVersion == resolvedVersion {
-			// Already at target version, skip
-			continue
-		}
-
-		// Check if current version is newer
-		if isNewer(currentVersion, resolvedVersion) {
-			// Current version is newer, skip
-			continue
-		}
-
-		// Update to resolved version
-		pkg.Version = resolvedVersion
-		filtered[name] = pkg
+		return &fakeCmd{out: []byte(out)}
 	}
-
-	return filtered
+	t.Cleanup(func() { resolveListCommand = orig })
 }
 
-// isNewer is a simple version comparison helper for tests.
-func isNewer(v1, v2 string) bool {
-	// Simple string comparison for test purposes
-	// In real code, use semver.Compare
-	return v1 > v2
+// resolveAndFilterPackagesForTest calls the real resolveAndFilterPackages with the
+// go list command stubbed out so no external network calls are made.
+func resolveAndFilterPackagesForTest(t *testing.T, packages map[string]*Package, modFile *modfile.File) map[string]*Package {
+	t.Helper()
+	withFakeVersionResolver(t)
+	filtered, err := resolveAndFilterPackages(t.Context(), packages, modFile, t.TempDir())
+	if err != nil {
+		t.Fatalf("resolveAndFilterPackages() error = %v", err)
+	}
+	return filtered
 }
 
 func TestConvertDependenciesToPackages(t *testing.T) {

@@ -399,8 +399,16 @@ func resolveAndFilterPackages(ctx context.Context, packages map[string]*Package,
 		if semver.IsValid(currentVersion) && semver.IsValid(resolvedVersion) {
 			cmp := semver.Compare(currentVersion, resolvedVersion)
 			if cmp == 0 {
-				log.Debugf("Package %s is already at %s, skipping", name, currentVersion)
-				continue
+				// A replace dep without an existing replace directive must still be
+				// included: its purpose is to create the pin, not change the version.
+				// go get can upgrade a bare require past the pinned version, so the
+				// replace directive must be written before go get runs.
+				// hasReplaceDirective matches on Old.Path, which equals pkg.OldName
+				// (not name/New.Path) for cross-path replaces.
+				if !pkg.Replace || hasReplaceDirective(modFile, pkg.OldName) {
+					log.Debugf("Package %s is already at %s, skipping", name, currentVersion)
+					continue
+				}
 			} else if cmp > 0 {
 				log.Warnf("Package %s is at %s which is newer than requested %s, skipping", name, currentVersion, resolvedVersion)
 				continue
@@ -742,6 +750,18 @@ func isVersionQuery(version string) bool {
 	return slices.Contains(queries, version)
 }
 
+// resolveListCommand builds the commander for "go list -m" version queries.
+// Overridable in tests to avoid external network calls.
+var resolveListCommand = func(ctx context.Context, modroot, query string) commander {
+	//nolint:gosec // G204: query is validated by the caller before this is invoked
+	cmd := exec.CommandContext(ctx, "go", "list", "-m", query)
+	cmd.Dir = modroot
+	// Disable workspace mode and override vendor mode to allow querying.
+	// GOWORK=off is required when a go.work file exists in the tree.
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
+	return cmd
+}
+
 // resolveVersionQuery resolves a version query to an actual version using go list.
 func resolveVersionQuery(ctx context.Context, modulePath, query, modroot string) (string, error) {
 	// Validate module path before passing to command.
@@ -753,14 +773,7 @@ func resolveVersionQuery(ctx context.Context, modulePath, query, modroot string)
 		return "", fmt.Errorf("invalid version query: %w", err)
 	}
 
-	//nolint:gosec // G204: Using exec.Command with validated module path and version query
-	cmd := exec.CommandContext(ctx, "go", "list", "-m", fmt.Sprintf("%s@%s", modulePath, query))
-	cmd.Dir = modroot
-	// Disable workspace mode and override vendor mode to allow querying
-	// GOWORK=off is required when go.work file exists
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
-
-	output, err := cmd.CombinedOutput()
+	output, err := resolveListCommand(ctx, modroot, fmt.Sprintf("%s@%s", modulePath, query)).CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("go list failed: %w, output: %s", err, strings.TrimSpace(string(output)))
 	}
