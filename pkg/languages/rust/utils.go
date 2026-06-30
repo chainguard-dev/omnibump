@@ -38,6 +38,10 @@ var ErrCrateNotFound = errors.New("crate not found in crates.io index")
 // satisfies the requested SemVer constraint.
 var ErrNoMatchingVersion = errors.New("no published version satisfies the constraint")
 
+// ErrUnexpectedIndexStatus is returned when the crates.io index responds with
+// an unexpected (non-200, non-404) HTTP status.
+var ErrUnexpectedIndexStatus = errors.New("unexpected status from crates.io index")
+
 // ErrNoCompatibleVersion is returned when a crate is pinned below the requested
 // floor by a dependent's caret constraint and so cannot be upgraded to a
 // compatible version. This is a genuine failure: omnibump must not silently pass.
@@ -391,7 +395,7 @@ func fetchCrateVersions(ctx context.Context, name string) ([]string, error) {
 		return nil, err
 	}
 
-	resp, err := indexHTTPClient.Do(req)
+	resp, err := indexHTTPClient.Do(req) // #nosec G704 - scheme and host are the constant crates.io index base; only the sharded crate-name path is dynamic
 	if err != nil {
 		return nil, fmt.Errorf("querying crates.io index for %s: %w", name, err)
 	}
@@ -401,7 +405,7 @@ func fetchCrateVersions(ctx context.Context, name string) ([]string, error) {
 		return nil, fmt.Errorf("%w: %s", ErrCrateNotFound, name)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("crates.io index returned status %d for %s", resp.StatusCode, name)
+		return nil, fmt.Errorf("%w: status %d for %s", ErrUnexpectedIndexStatus, resp.StatusCode, name)
 	}
 
 	var versions []string
