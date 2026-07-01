@@ -62,6 +62,13 @@ type UpdateConfig struct {
 
 	// Options contains language-specific options as a flexible map
 	Options map[string]any
+
+	// GradleForceConfigurations names extra Gradle configurations (beyond the
+	// compile/runtime classpaths) on which managed version pins must be forced.
+	// It is the opt-in escape hatch for fat-jar/packaging builds that bundle a
+	// custom configuration omnibump's static detection cannot resolve from the
+	// build script. Names supplied here are unioned with the detected set.
+	GradleForceConfigurations []string
 }
 
 // Dependency represents a single dependency to be updated.

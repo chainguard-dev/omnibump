@@ -121,12 +121,13 @@ type ResolutionRule struct {
 
 // BuildFile is a parsed Gradle build script.
 type BuildFile struct {
-	path  string
-	dsl   DSL
-	buf   editBuffer
-	deps  []DependencyDecl
-	vars  []VarDef
-	rules []ResolutionRule
+	path        string
+	dsl         DSL
+	buf         editBuffer
+	deps        []DependencyDecl
+	vars        []VarDef
+	rules       []ResolutionRule
+	shipConfigs []ShipConfigRef
 }
 
 // ParseBuild parses a Gradle build script (build.gradle, build.gradle.kts or
@@ -140,6 +141,7 @@ func ParseBuild(path string, content []byte) (*BuildFile, error) {
 	f.scanDependencies()
 	f.scanVariables()
 	f.scanResolutionRules()
+	f.scanShipConfigs(f.buf.original)
 	return f, nil
 }
 

@@ -183,6 +183,50 @@ func (m *projectModel) finalize() {
 	m.indexDeclarations()
 }
 
+// shipConfigurations returns the names of non-classpath configurations that a
+// packaging task bundles into a shipped artifact (a fat jar, capsule, war, ...),
+// across every build file in the project. Names already covered by the managed
+// compile/runtime classpath match are omitted: the managed block forces those
+// regardless. Deduplicated and sorted.
+func (m *projectModel) shipConfigurations() []string {
+	set := make(map[string]struct{})
+	for _, path := range m.sortedFiles {
+		b, ok := m.builds[path]
+		if !ok {
+			continue
+		}
+		for _, ref := range b.ShipConfigs() {
+			if !ref.Resolved || gradlefile.IsManagedClasspathName(ref.Name) ||
+				gradlefile.IsNonShippingConfigName(ref.Name) {
+				continue
+			}
+			set[ref.Name] = struct{}{}
+		}
+	}
+	out := slices.Collect(maps.Keys(set))
+	sort.Strings(out)
+	return out
+}
+
+// unresolvedShipConfigs returns the bundling sites whose configuration could
+// not be resolved to a literal name, so the operator can be warned to pin them
+// explicitly. Each site is reported once per build file, in file order.
+func (m *projectModel) unresolvedShipConfigs() []gradlefile.ShipConfigRef {
+	var out []gradlefile.ShipConfigRef
+	for _, path := range m.sortedFiles {
+		b, ok := m.builds[path]
+		if !ok {
+			continue
+		}
+		for _, ref := range b.ShipConfigs() {
+			if !ref.Resolved {
+				out = append(out, ref)
+			}
+		}
+	}
+	return out
+}
+
 // buildProjectModel scans rootDir and parses every Gradle file into the
 // model.
 func buildProjectModel(ctx context.Context, rootDir string) (*projectModel, error) {
@@ -205,15 +249,15 @@ func buildProjectModel(ctx context.Context, rootDir string) (*projectModel, erro
 }
 
 // buildModelFromFiles parses an in-memory set of Gradle files (path -> content)
-// into a projectModel rooted at rootDir, without touching disk. It is the
-// remote counterpart of buildProjectModel: files whose basename is not a
-// recognized Gradle file are skipped, and files that fail to parse are logged
-// and skipped (mirroring how the Maven analyzer skips unparseable poms) so an
-// over-broad remote file search can never fail the whole analysis. Map keys are
-// used verbatim as file paths so PropertySources are reported relative to
-// rootDir.
-func buildModelFromFiles(ctx context.Context, rootDir string, files map[string][]byte) *projectModel {
-	m := newProjectModel(rootDir)
+// into a projectModel rooted at the current directory, without touching disk.
+// It is the remote counterpart of buildProjectModel: files whose basename is
+// not a recognized Gradle file are skipped, and files that fail to parse are
+// logged and skipped (mirroring how the Maven analyzer skips unparseable poms)
+// so an over-broad remote file search can never fail the whole analysis. Map
+// keys are used verbatim as file paths so PropertySources are reported relative
+// to the project root.
+func buildModelFromFiles(ctx context.Context, files map[string][]byte) *projectModel {
+	m := newProjectModel(".")
 	for path, content := range files {
 		if classifyFile(path) == fileKindUnknown {
 			continue

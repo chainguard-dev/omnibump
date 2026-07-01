@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/gradlefile"
@@ -66,6 +67,33 @@ type updatePlan struct {
 	// properties are the explicit property updates; they take precedence
 	// over dependency-routed updates of the same key.
 	properties map[string]string
+
+	// extraConfigs names configurations beyond the compile/runtime classpaths
+	// on which the managed pins must also be forced: those statically detected
+	// as bundled into a shipped artifact (fat jar, capsule, war, ...) plus any
+	// supplied explicitly via UpdateConfig.GradleForceConfigurations.
+	extraConfigs []string
+}
+
+// computeExtraConfigs unions the statically detected ship configurations with
+// the operator-supplied opt-in list, returning a deduplicated, sorted set.
+func computeExtraConfigs(model *projectModel, cfg *languages.UpdateConfig) []string {
+	set := make(map[string]struct{})
+	for _, n := range model.shipConfigurations() {
+		set[n] = struct{}{}
+	}
+	for _, n := range cfg.GradleForceConfigurations {
+		n = strings.TrimSpace(n)
+		if n != "" {
+			set[n] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for n := range set {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // resolveUpdates routes every property and dependency update to its best
@@ -75,10 +103,11 @@ type updatePlan struct {
 // error.
 func resolveUpdates(ctx context.Context, model *projectModel, cfg *languages.UpdateConfig) (*updatePlan, error) {
 	plan := &updatePlan{
-		model:      model,
-		forced:     make(map[string]string),
-		requested:  make(map[string]string),
-		properties: cfg.Properties,
+		model:        model,
+		forced:       make(map[string]string),
+		requested:    make(map[string]string),
+		properties:   cfg.Properties,
+		extraConfigs: computeExtraConfigs(model, cfg),
 	}
 
 	if err := plan.applyProperties(ctx); err != nil {
@@ -516,7 +545,7 @@ func (p *updatePlan) injectManagedBlock(ctx context.Context) (string, string, er
 		return "", "", nil
 	}
 	if root := p.model.rootSettingsFile(); root != nil {
-		if err := root.EnsureManagedBlock(p.forced, p.substitutions); err != nil {
+		if err := root.EnsureManagedBlockWithConfigs(p.forced, p.substitutions, p.extraConfigs); err != nil {
 			return "", "", fmt.Errorf("failed to update managed block in %s: %w", root.Path(), err)
 		}
 		clog.InfoContextf(ctx, "Pinning %d dependencies and %d substitutions via managed block in %s",
@@ -529,7 +558,7 @@ func (p *updatePlan) injectManagedBlock(ctx context.Context) (string, string, er
 	if dsl == gradlefile.Kotlin {
 		name = settingsGradleKtsFile
 	}
-	content, err := gradlefile.NewSettingsFileContent(dsl, p.forced, p.substitutions)
+	content, err := gradlefile.NewSettingsFileContentWithConfigs(dsl, p.forced, p.substitutions, p.extraConfigs)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to render managed block: %w", err)
 	}

@@ -130,6 +130,15 @@ func (g *Gradle) Update(ctx context.Context, cfg *languages.UpdateConfig) error 
 		return ErrNoBuildFiles
 	}
 
+	if extras := model.shipConfigurations(); len(extras) > 0 {
+		clog.InfoContextf(ctx, "Gradle: also forcing managed pins on bundled non-classpath configuration(s): %s",
+			strings.Join(extras, ", "))
+	}
+	for _, ref := range model.unresolvedShipConfigs() {
+		clog.WarnContextf(ctx, "Gradle: a packaging task bundles a configuration omnibump could not resolve to a name (%s: %q); if a CVE is missed, pin it explicitly via the bump pipeline's gradle-force-configurations input",
+			ref.Source, ref.Raw)
+	}
+
 	plan, err := resolveUpdates(ctx, model, cfg)
 	if err != nil {
 		return err

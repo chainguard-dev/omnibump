@@ -7,6 +7,7 @@ package gradlefile_test
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/chainguard-dev/omnibump/pkg/gradlefile"
 )
@@ -257,4 +258,69 @@ func ExampleBuildFile_ResolutionRules() {
 	// group=io.netty artifact="" catalogKey="netty" version=""
 	// group=com.signalfx.public artifact="signalfx-java" catalogKey="" version="1.0.49"
 	// changed: true
+}
+
+func ExampleBuildFile_ShipConfigs() {
+	// A shadowJar bundling a custom configuration alongside runtimeClasspath:
+	// both end up inside the fat jar, so both must be force-pinned.
+	content := []byte("shadowJar {\n    configurations = [project.configurations.runtimeClasspath, project.configurations.lineageImplementation]\n}\n")
+	build, _ := gradlefile.ParseBuild("build.gradle", content)
+
+	for _, ref := range build.ShipConfigs() {
+		fmt.Println(ref.Name)
+	}
+	// Output:
+	// runtimeClasspath
+	// lineageImplementation
+}
+
+func ExampleIsManagedClasspathName() {
+	fmt.Println(gradlefile.IsManagedClasspathName("testRuntimeClasspath"))
+	fmt.Println(gradlefile.IsManagedClasspathName("lineageImplementation"))
+	// Output:
+	// true
+	// false
+}
+
+func ExampleIsNonShippingConfigName() {
+	fmt.Println(gradlefile.IsNonShippingConfigName("groovyDoc"))
+	fmt.Println(gradlefile.IsNonShippingConfigName("lineageImplementation"))
+	// Output:
+	// true
+	// false
+}
+
+func ExampleSettingsFile_EnsureManagedBlockWithConfigs() {
+	settings, _ := gradlefile.ParseSettings("settings.gradle", []byte("rootProject.name = 'demo'\n"))
+
+	// lineageImplementation is bundled into the artifact but is not a classpath,
+	// so it is added to the managed block's guard alongside the default match.
+	err := settings.EnsureManagedBlockWithConfigs(
+		map[string]string{"a.b:c": "1.0"},
+		nil,
+		[]string{"lineageImplementation"},
+	)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(strings.Contains(string(settings.Content()), "configuration.name in ['lineageImplementation']"))
+	// Output:
+	// true
+}
+
+func ExampleNewSettingsFileContentWithConfigs() {
+	content, err := gradlefile.NewSettingsFileContentWithConfigs(
+		gradlefile.Groovy,
+		map[string]string{"a.b:c": "1.0"},
+		nil,
+		[]string{"lineageImplementation"},
+	)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(strings.Contains(content, "configuration.name in ['lineageImplementation']"))
+	// Output:
+	// true
 }

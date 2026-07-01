@@ -50,6 +50,8 @@ type rootFlags struct {
 	update         bool
 	tool           string
 	venv           string
+
+	gradleForceConfigs []string
 }
 
 var flags rootFlags
@@ -101,6 +103,7 @@ func New() *cobra.Command {
 	f.BoolVar(&flags.update, "update", false, "update all dependencies")
 	f.StringVar(&flags.tool, "tool", "", "build tool override (Python: uv, pip, poetry, hatch, pdm, setuptools)")
 	f.StringVar(&flags.venv, "venv", "", "path to staged Python venv for in-place bumping (Python only)")
+	f.StringSliceVar(&flags.gradleForceConfigs, "gradle-force-configurations", nil, "extra Gradle configuration names (beyond compile/runtime classpaths) to force managed pins on, for fat-jar/packaging builds that bundle a custom configuration (Java/Gradle only). May be repeated or comma-separated.")
 
 	// Add version command
 	cmd.AddCommand(version.WithFont("starwars"))
@@ -427,6 +430,9 @@ func buildUpdateConfig(cfg *config.Config) *languages.UpdateConfig {
 	}
 	if flags.venv != "" {
 		updateCfg.Options["venv"] = flags.venv
+	}
+	if len(flags.gradleForceConfigs) > 0 {
+		updateCfg.GradleForceConfigurations = flags.gradleForceConfigs
 	}
 
 	return updateCfg
