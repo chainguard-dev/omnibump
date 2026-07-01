@@ -59,6 +59,13 @@ var (
 	//   classpath configurations.foo
 	// Group 1 is the keyword, group 2 the expression following it (a closure or
 	// the rest of the line), parsed for configuration references.
+	//
+	// The `\{[^{}]*\}` arm matches only a single-level closure. A multiline
+	// `from {` whose configuration reference sits in a nested inner closure on a
+	// later line is not matched: the closure arm cannot cross the inner brace and
+	// the fallback `[^\n]*` captures only the opening `{`, so no ShipConfigRef
+	// (neither resolved nor unresolved) is recorded and no warning is emitted.
+	// GradleForceConfigurations is the intended escape hatch for that form.
 	shipFromPattern = regexp.MustCompile(`(?s)\b(from|classpath)\b\s*(\{[^{}]*\}|[^\n]*)`)
 
 	// configRefQuotedPattern matches configuration references whose name is a
@@ -136,6 +143,14 @@ var configContainerMethods = map[string]struct{}{
 // into a shipped artifact by a packaging task (shadow/capsule/war, or a generic
 // Jar/Copy task), so the managed block can force its pins on them in addition
 // to the compile/runtime classpaths. See ShipConfigRef.
+//
+// Detection is intentionally file-wide, not scoped to packaging-task blocks: a
+// `configurations = [...]` or `from configurations.x` outside a packaging
+// context produces a conservative false-positive ship config (an extra, harmless
+// force pin) rather than a missed one. This tradeoff is deliberate — a false
+// positive costs a redundant pin, a false negative costs a shipped CVE — so do
+// not tighten the scope to packaging blocks only, which would trade harmless
+// over-pinning for silent under-pinning.
 func (f *BuildFile) scanShipConfigs(content []byte) {
 	record := func(source string, expr []byte) {
 		names := extractConfigRefs(expr)

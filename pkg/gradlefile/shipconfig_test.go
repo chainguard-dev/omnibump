@@ -142,6 +142,20 @@ func TestScanShipConfigs_Unresolved(t *testing.T) {
 	}
 }
 
+func TestScanShipConfigs_MultilineNestedClosureSilentlyUnmatched(t *testing.T) {
+	// shipFromPattern's [^{}]* arm does not cross nested braces. A multiline
+	// from block where the config reference lives in an inner closure on a later
+	// line produces no match — use GradleForceConfigurations for this form.
+	content := "task uber(type: Jar) {\n    from {\n        configurations.shade.collect { it.isDirectory() ? it : zipTree(it) }\n    }\n}"
+	f, err := ParseBuild("build.gradle", []byte(content))
+	if err != nil {
+		t.Fatalf("ParseBuild error = %v", err)
+	}
+	if refs := f.ShipConfigs(); len(refs) != 0 {
+		t.Errorf("expected no refs for multiline nested closure, got %+v", refs)
+	}
+}
+
 func TestIsManagedClasspathName(t *testing.T) {
 	for _, n := range []string{"runtimeClasspath", "compileClasspath", "testRuntimeClasspath", "releaseRuntimeClasspath"} {
 		if !IsManagedClasspathName(n) {
