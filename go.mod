@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/aquasecurity/go-pep440-version v0.0.1
-	github.com/chainguard-dev/clog v1.8.0
+	github.com/chainguard-dev/clog v1.8.1
 	github.com/chainguard-dev/gopom v0.0.0-20250828200639-b1a78ac4b263
 	github.com/charmbracelet/log v1.0.0
 	github.com/ghodss/yaml v1.0.0
