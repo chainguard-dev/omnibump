@@ -323,6 +323,16 @@ func inLineVersion(version string, present []string) string {
 	return best
 }
 
+// isDowngrade reports whether target is a lower SemVer than current. Non-SemVer
+// versions are never considered a downgrade (there's no ordering to compare).
+func isDowngrade(current, target string) bool {
+	cv, tv := "v"+current, "v"+target
+	if !semver.IsValid(cv) || !semver.IsValid(tv) {
+		return false
+	}
+	return semver.Compare(tv, cv) < 0
+}
+
 // maxVersion returns the highest valid semver in versions, or "" if none parse.
 func maxVersion(versions []string) string {
 	var best string

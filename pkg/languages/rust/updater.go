@@ -128,7 +128,8 @@ func runCargoUpdate(ctx context.Context, cargoRoot string, specs []string, extra
 // the target itself. For name/@version the target is resolved against the lock
 // (skipping gracefully if an equal-or-newer compatible version is already there)
 // and bumped to the latest compatible version. For name@version=precise the
-// target is pinned to the exact version, even if that is a downgrade.
+// target is pinned to the exact version, unless that would be a downgrade, in
+// which case the pin is skipped with a warning.
 func upgradeReverseDependencies(ctx context.Context, cargoRoot string, arg string) error {
 	log := clog.FromContext(ctx)
 	t := parseTarget(arg)
@@ -209,7 +210,8 @@ func resolveDiscoverySpec(ctx context.Context, t target, present []string) (spec
 
 // pinPrecise pins the target crate to its exact version (t.precise). The preceding
 // batch update re-resolves dependents' subtrees and may have moved the target, so
-// re-resolve its current in-line version before pinning.
+// re-resolve its current in-line version before pinning. Refuses to pin if doing
+// so would downgrade the crate below its current version.
 func pinPrecise(ctx context.Context, cargoRoot string, t target) error {
 	log := clog.FromContext(ctx)
 
@@ -223,6 +225,11 @@ func pinPrecise(ctx context.Context, cargoRoot string, t target) error {
 			t.name, t.version, t.precise)
 		return nil
 	}
+	if isDowngrade(cur, t.precise) {
+		log.Warnf("Refusing to downgrade package %s from %s to %s", t.name, cur, t.precise)
+		return nil
+	}
+
 	spec := t.name + "@" + cur
 	log.Infof("Pinning %s precisely to %s", spec, t.precise)
 	return runCargoUpdate(ctx, cargoRoot, []string{spec}, "--precise", t.precise)
