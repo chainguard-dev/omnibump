@@ -18,7 +18,7 @@ require (
 	github.com/tidwall/sjson v1.2.5
 	golang.org/x/exp v0.0.0-20231006140011-7918f672742d
 	golang.org/x/mod v0.37.0
-	golang.org/x/tools v0.46.0
+	golang.org/x/tools v0.47.0
 	k8s.io/apimachinery v0.36.2
 	sigs.k8s.io/release-utils v0.12.4
 )
