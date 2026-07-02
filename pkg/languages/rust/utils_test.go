@@ -42,6 +42,31 @@ func Test_cargoCompatible(t *testing.T) {
 	}
 }
 
+// Test_isDowngrade covers the SemVer ordering used to refuse precise pins that
+// would move a crate backwards, plus the non-semver escape hatch (no ordering
+// to compare, so never flagged as a downgrade).
+func Test_isDowngrade(t *testing.T) {
+	tests := []struct {
+		name    string
+		current string
+		target  string
+		want    bool
+	}{
+		{name: "lower patch is a downgrade", current: "1.2.3", target: "1.2.2", want: true},
+		{name: "lower minor is a downgrade", current: "1.2.0", target: "1.1.9", want: true},
+		{name: "higher version is not a downgrade", current: "1.2.3", target: "1.3.0", want: false},
+		{name: "equal version is not a downgrade", current: "1.2.3", target: "1.2.3", want: false},
+		{name: "non-semver current", current: "notsemver", target: "1.0.0", want: false},
+		{name: "non-semver target", current: "1.0.0", target: "notsemver", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, isDowngrade(tt.current, tt.target))
+		})
+	}
+}
+
 // Test_resolveVersion covers mapping a user target onto a concrete present
 // spec, including the "upgrade to at least X" skip logic and the ambiguous
 // bare-name error.
