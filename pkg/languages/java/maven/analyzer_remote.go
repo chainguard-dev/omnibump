@@ -26,12 +26,12 @@ func (ma *MavenAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]b
 	}
 
 	result := &analyzer.AnalysisResult{
-		Language:        mavenLanguageName,
+		Language:        "java",
 		Dependencies:    make(map[string]*analyzer.DependencyInfo),
 		Properties:      make(map[string]string),
 		PropertySources: make(map[string]string),
 		PropertyUsage:   make(map[string]int),
-		Metadata:        make(map[string]any),
+		Metadata:        map[string]any{"buildTool": mavenToolName},
 	}
 
 	// Process files in deterministic order so results are reproducible.
@@ -80,11 +80,12 @@ func (ma *MavenAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]b
 	}
 
 	return &analyzer.RemoteAnalysisResult{
-		Language: mavenLanguageName,
+		Language: "java",
 		FileAnalyses: []analyzer.FileAnalysis{{
 			FilePath: "pom.xml",
 			Analysis: result,
 		}},
+		Metadata: map[string]any{"buildTool": mavenToolName},
 	}, nil
 }
 

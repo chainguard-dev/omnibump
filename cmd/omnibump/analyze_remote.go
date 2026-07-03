@@ -433,6 +433,12 @@ func outputRemoteText(result *analyzer.RemoteAnalysisResult, strategies map[stri
 	fmt.Println()
 
 	fmt.Printf("Language: %s\n", result.Language)
+
+	// Show the detected build tool, if present
+	if buildTool, ok := result.Metadata["buildTool"].(string); ok {
+		fmt.Printf("Build Tool: %s\n", buildTool)
+	}
+
 	fmt.Printf("Files analyzed: %d\n", len(result.FileAnalyses))
 	fmt.Println()
 

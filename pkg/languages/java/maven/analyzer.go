@@ -60,12 +60,12 @@ func (ma *MavenAnalyzer) Analyze(ctx context.Context, projectPath string) (*anal
 	baseDir := filepath.Dir(absPath)
 
 	result := &analyzer.AnalysisResult{
-		Language:        mavenLanguageName,
+		Language:        "java",
 		Dependencies:    make(map[string]*analyzer.DependencyInfo),
 		Properties:      make(map[string]string),
 		PropertySources: make(map[string]string),
 		PropertyUsage:   make(map[string]int),
-		Metadata:        make(map[string]any),
+		Metadata:        map[string]any{"buildTool": mavenToolName},
 	}
 
 	// Extract properties from the target POM and record their source file.
@@ -463,12 +463,12 @@ func (ma *MavenAnalyzer) analyzeAllPoms(ctx context.Context, rootDir string) (*a
 	}
 
 	result := &analyzer.AnalysisResult{
-		Language:        mavenLanguageName,
+		Language:        "java",
 		Dependencies:    make(map[string]*analyzer.DependencyInfo),
 		Properties:      make(map[string]string),
 		PropertySources: make(map[string]string),
 		PropertyUsage:   make(map[string]int),
-		Metadata:        make(map[string]any),
+		Metadata:        map[string]any{"buildTool": mavenToolName},
 	}
 
 	for _, pomPath := range pomPaths {

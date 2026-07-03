@@ -17,6 +17,9 @@ type RemoteAnalysisResult struct {
 	// FileAnalyses contains analysis results for each manifest file.
 	// Ordered list to preserve discovery order.
 	FileAnalyses []FileAnalysis
+
+	// Metadata stores language-specific analysis data
+	Metadata map[string]any
 }
 
 // FileAnalysis contains analysis for a single manifest file.
