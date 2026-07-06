@@ -229,6 +229,11 @@ func outputText(analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy) 
 
 	fmt.Printf("Language: %s\n", analysis.Language)
 
+	// Show the detected build tool, if present
+	if buildTool, ok := analysis.Metadata["buildTool"].(string); ok {
+		fmt.Printf("Build Tool: %s\n", buildTool)
+	}
+
 	// Show workspace information if applicable
 	if isWorkspace, ok := analysis.Metadata["workspace"].(bool); ok && isWorkspace {
 		if moduleCount, ok := analysis.Metadata["moduleCount"].(int); ok {

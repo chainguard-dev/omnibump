@@ -1596,8 +1596,8 @@ netty-all = { module = "io.netty:netty-all", version.ref = "netty-all" }
 	}
 
 	analysis := fa.Analysis
-	if analysis.Metadata["build_tool"] != "gradle" {
-		t.Errorf("Expected build_tool gradle, got %v", analysis.Metadata["build_tool"])
+	if analysis.Metadata["buildTool"] != "gradle" {
+		t.Errorf("Expected buildTool gradle, got %v", analysis.Metadata["buildTool"])
 	}
 
 	// Catalog version key surfaced as a property with its defining file.

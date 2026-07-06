@@ -59,7 +59,7 @@ const (
 	// DefaultManifestFile is the conventional Maven POM filename.
 	DefaultManifestFile = "pom.xml"
 
-	mavenLanguageName = "maven"
+	mavenToolName = "maven"
 )
 
 // Maven implements the BuildTool interface for Maven projects.
@@ -97,7 +97,7 @@ func IsMavenPom(path string) (bool, error) {
 
 // Name returns the build tool identifier.
 func (m *Maven) Name() string {
-	return mavenLanguageName
+	return mavenToolName
 }
 
 // Detect checks if a Maven project is present in the directory.

@@ -534,14 +534,21 @@ func TestMavenAnalyzer_AnalyzeAllPoms(t *testing.T) {
 			},
 		},
 		{
-			name: "result language is maven",
+			name: "result language is java, buildTool is maven",
 			setup: func(t *testing.T, dir string) {
 				writeFile(t, filepath.Join(dir, ".build", "parent.xml"), minimalPOM)
 			},
 			checkFunc: func(t *testing.T, result *analyzer.AnalysisResult) {
 				t.Helper()
-				if result.Language != "maven" {
-					t.Errorf("Language = %q, want maven", result.Language)
+				if result.Language != "java" {
+					t.Errorf("Language = %q, want java", result.Language)
+				}
+				if buildTool, ok := result.Metadata["buildTool"].(string); ok {
+					if buildTool != "maven" {
+						t.Errorf("buildTool = %q, want maven", buildTool)
+					}
+				} else {
+					t.Errorf("buildTool expected but not detected in metadata")
 				}
 			},
 		},

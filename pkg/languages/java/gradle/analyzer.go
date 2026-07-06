@@ -72,6 +72,7 @@ func (ga *GradleAnalyzer) AnalyzeRemote(ctx context.Context, files map[string][]
 			FilePath: remoteFilePath(model),
 			Analysis: result,
 		}},
+		Metadata: map[string]any{"buildTool": gradleToolName},
 	}, nil
 }
 
@@ -85,9 +86,7 @@ func analyzeModel(model *projectModel) *analyzer.AnalysisResult {
 		Properties:      make(map[string]string),
 		PropertySources: make(map[string]string),
 		PropertyUsage:   make(map[string]int),
-		Metadata: map[string]any{
-			"build_tool": gradleToolName,
-		},
+		Metadata:        map[string]any{"buildTool": gradleToolName},
 	}
 
 	collectProperties(model, result)
