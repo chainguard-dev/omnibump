@@ -9,9 +9,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
+
+	"github.com/chainguard-dev/clog"
 )
 
 var (
@@ -30,6 +33,40 @@ var (
 	// Allows: 1.2.3, 1.2.3-alpha, 1.2.3+build, etc.
 	versionRegex = regexp.MustCompile(`^[0-9]+(\.[0-9]+)*(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$`)
 )
+
+// cargoToolchainEnv names the environment variable that overrides the rustup
+// toolchain applied to cargo invocations.
+const cargoToolchainEnv = "OMNIBUMP_CARGO_TOOLCHAIN"
+
+// cargoToolchain returns the rustup toolchain to pin cargo to, as the bare
+// toolchain name (the "+" prefix is added by cargoCommand). Some projects pin an
+// old nightly toolchain that lacks features omnibump relies on (notably
+// `cargo add`), which fails unless cargo is run against a known-good toolchain.
+// The default is "stable"; operators can select a different toolchain, or disable
+// the override entirely with an empty value, via OMNIBUMP_CARGO_TOOLCHAIN.
+func cargoToolchain() string {
+	if tc, ok := os.LookupEnv(cargoToolchainEnv); ok {
+		return tc
+	}
+	return "stable"
+}
+
+// cargoCommand builds an *exec.Cmd for `cargo [+toolchain] args...` rooted at dir.
+// The toolchain override (see cargoToolchain) is inserted before the subcommand,
+// where rustup expects it. All cargo invocations in this package go through here
+// so the toolchain is applied consistently.
+func cargoCommand(ctx context.Context, dir string, args ...string) *exec.Cmd {
+	log := clog.FromContext(ctx)
+
+	if tc := cargoToolchain(); tc != "" {
+		args = append([]string{"+" + tc}, args...)
+	}
+
+	log.Debugf("Running: cargo %s", strings.Join(args, " "))
+	cmd := exec.CommandContext(ctx, "cargo", args...) //nolint:gosec // fixed "cargo" binary; args are cargo specs/flags derived from the lockfile and manifest
+	cmd.Dir = dir
+	return cmd
+}
 
 // validateCrateName validates a Rust crate name against the allowed character set.
 // Crate names must be alphanumeric, hyphens, or underscores per Cargo spec.
@@ -57,8 +94,7 @@ func validateVersion(version string) error {
 // CargoUpdate runs 'cargo update' to refresh the Cargo.lock file.
 // Ported from cargobump/pkg/run/cargo.go.
 func CargoUpdate(ctx context.Context, cargoRoot string) (string, error) {
-	cmd := exec.CommandContext(ctx, "cargo", "update")
-	cmd.Dir = cargoRoot
+	cmd := cargoCommand(ctx, cargoRoot, "update")
 	if bytes, err := cmd.CombinedOutput(); err != nil {
 		return strings.TrimSpace(string(bytes)), err
 	}
@@ -80,8 +116,7 @@ func CargoUpdatePackage(ctx context.Context, name, oldVersion, newVersion, cargo
 		return "", fmt.Errorf("invalid new version: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, "cargo", "update", "--precise", newVersion, "--package", fmt.Sprintf("%s@%s", name, oldVersion)) //nolint:gosec
-	cmd.Dir = cargoRoot
+	cmd := cargoCommand(ctx, cargoRoot, "update", "--precise", newVersion, "--package", fmt.Sprintf("%s@%s", name, oldVersion))
 	if bytes, err := cmd.CombinedOutput(); err != nil {
 		return strings.TrimSpace(string(bytes)), err
 	}

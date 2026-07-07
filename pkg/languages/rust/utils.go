@@ -17,12 +17,13 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/chainguard-dev/clog"
 	"golang.org/x/mod/semver"
 )
@@ -95,8 +96,7 @@ func GetCurrentPackages(ctx context.Context, cargoRoot string) ([]CargoPackage, 
 func queryReverseDependencies(ctx context.Context, cargoRoot string, spec string) ([]string, error) {
 	// cargo tree -p $pkg --target all -i --prefix none
 	output := bytes.Buffer{}
-	cmd := exec.CommandContext(ctx, "cargo", "tree", "-q", "-p", spec, "--target", "all", "-i", "--prefix", "none") //nolint:gosec // spec is a cargo package spec derived from the lockfile
-	cmd.Dir = cargoRoot
+	cmd := cargoCommand(ctx, cargoRoot, "tree", "-q", "-p", spec, "--target", "all", "-i", "--prefix", "none")
 	cmd.Stdout = &output
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -164,8 +164,7 @@ func reverseDepsFromTree(deps []string, pkgName string) []string {
 // workspace, as reported by `cargo metadata`.
 func presentVersions(ctx context.Context, cargoRoot, name string) ([]string, error) {
 	output := bytes.Buffer{}
-	cmd := exec.CommandContext(ctx, "cargo", "metadata", "--format-version", "1")
-	cmd.Dir = cargoRoot
+	cmd := cargoCommand(ctx, cargoRoot, "metadata", "--format-version", "1")
 	cmd.Stdout = &output
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -191,6 +190,244 @@ func presentVersions(ctx context.Context, cargoRoot, name string) ([]string, err
 	return versions, nil
 }
 
+// wsMember is a workspace member crate: its package name (for `cargo add
+// --package`) and the path to its Cargo.toml.
+type wsMember struct {
+	name         string
+	manifestPath string
+}
+
+// workspaceLayout reports the workspace's member crates and root directory, as
+// seen by cargo. `--no-deps` restricts the package list to workspace members
+// (not the full dependency graph), which is exactly the set whose manifests may
+// declare a direct dependency.
+func workspaceLayout(ctx context.Context, cargoRoot string) (members []wsMember, workspaceRoot string, err error) {
+	output := bytes.Buffer{}
+	cmd := cargoCommand(ctx, cargoRoot, "metadata", "--format-version", "1", "--no-deps")
+	cmd.Stdout = &output
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return nil, "", fmt.Errorf("cargo metadata --no-deps: %w", err)
+	}
+
+	var meta struct {
+		Packages []struct {
+			ID           string `json:"id"`
+			Name         string `json:"name"`
+			ManifestPath string `json:"manifest_path"`
+		} `json:"packages"`
+		WorkspaceMembers []string `json:"workspace_members"`
+		WorkspaceRoot    string   `json:"workspace_root"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &meta); err != nil {
+		return nil, "", fmt.Errorf("parsing cargo metadata: %w", err)
+	}
+
+	byID := make(map[string]int, len(meta.Packages))
+	for i, p := range meta.Packages {
+		byID[p.ID] = i
+	}
+	for _, id := range meta.WorkspaceMembers {
+		if i, ok := byID[id]; ok {
+			members = append(members, wsMember{name: meta.Packages[i].Name, manifestPath: meta.Packages[i].ManifestPath})
+		}
+	}
+	return members, meta.WorkspaceRoot, nil
+}
+
+// manifestSections finds every place `name` is declared as a direct dependency
+// across the workspace's member manifests, and returns the workspace root path
+// (where the [workspace.dependencies] table lives for inherited deps). Each
+// returned section carries what `cargo add` needs to re-target the same
+// declaration. An empty result means the crate is not declared in any member
+// manifest (i.e. it is only pulled in transitively).
+func manifestSections(ctx context.Context, cargoRoot, name string) (sections []manifestSection, workspaceRoot string, err error) {
+	members, workspaceRoot, err := workspaceLayout(ctx, cargoRoot)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, m := range members {
+		data, readErr := os.ReadFile(filepath.Clean(m.manifestPath))
+		if readErr != nil {
+			return nil, "", fmt.Errorf("reading %s: %w", m.manifestPath, readErr)
+		}
+		found, decErr := decodeManifestSections(data, m.name, name)
+		if decErr != nil {
+			return nil, "", fmt.Errorf("parsing %s: %w", m.manifestPath, decErr)
+		}
+		sections = append(sections, found...)
+	}
+	return sections, workspaceRoot, nil
+}
+
+// manifestDepTables mirrors the dependency tables of a Cargo.toml. Each map value
+// is either a bare version string or an inline table decoded as
+// map[string]interface{}.
+type manifestDepTables struct {
+	Dependencies      map[string]interface{}       `toml:"dependencies"`
+	DevDependencies   map[string]interface{}       `toml:"dev-dependencies"`
+	BuildDependencies map[string]interface{}       `toml:"build-dependencies"`
+	Target            map[string]manifestDepTables `toml:"target"`
+}
+
+// decodeManifestSections decodes a single member Cargo.toml (raw bytes) and
+// returns every section in which `name` is declared, tagged with the owning
+// member name. It is split from manifestSections so the TOML logic is unit
+// testable without invoking cargo.
+func decodeManifestSections(data []byte, member, name string) ([]manifestSection, error) {
+	var tables manifestDepTables
+	if err := toml.Unmarshal(data, &tables); err != nil {
+		return nil, err
+	}
+
+	var sections []manifestSection
+	collect := func(deps map[string]interface{}, kind, target string) {
+		val, ok := deps[name]
+		if !ok {
+			return
+		}
+		inherited, registry := classifyDepValue(val)
+		sections = append(sections, manifestSection{
+			member:    member,
+			kind:      kind,
+			target:    target,
+			inherited: inherited,
+			registry:  registry,
+		})
+	}
+
+	collect(tables.Dependencies, "", "")
+	collect(tables.DevDependencies, "dev", "")
+	collect(tables.BuildDependencies, "build", "")
+	for cfg, t := range tables.Target {
+		collect(t.Dependencies, "", cfg)
+		collect(t.DevDependencies, "dev", cfg)
+		collect(t.BuildDependencies, "build", cfg)
+	}
+	return sections, nil
+}
+
+// classifyDepValue inspects a Cargo.toml dependency value and reports whether it
+// inherits from the workspace (`workspace = true`) and whether it is a registry
+// dependency (as opposed to a git or path dependency, which has no registry
+// version to bump). A bare string value ("1.0") is a registry dependency.
+func classifyDepValue(v interface{}) (inherited, registry bool) {
+	switch val := v.(type) {
+	case string:
+		return false, true
+	case map[string]interface{}:
+		if w, ok := val["workspace"].(bool); ok && w {
+			return true, false
+		}
+		if _, ok := val["git"]; ok {
+			return false, false
+		}
+		if _, ok := val["path"]; ok {
+			return false, false
+		}
+		if _, ok := val["version"]; ok {
+			return false, true
+		}
+		return false, false
+	default:
+		return false, false
+	}
+}
+
+// workspaceDepVersionRe matches the version value inside an inline-table
+// dependency declaration, e.g. `version = "0.2"`, capturing the `version = `
+// prefix so only the quoted value is rewritten.
+var workspaceDepVersionRe = regexp.MustCompile(`(version\s*=\s*)"[^"]*"`)
+
+// quotedStringRe matches the first double-quoted string on a line, used to
+// rewrite the plain version form (`name = "0.2"`).
+var quotedStringRe = regexp.MustCompile(`"[^"]*"`)
+
+// bumpWorkspaceDependency rewrites the version constraint of `name` in the root
+// Cargo.toml's [workspace.dependencies] table to caret, editing only that one
+// value in place. It handles both the plain-string form (`name = "0.2"`) and the
+// inline-table form (`name = { version = "0.2", features = [...] }`), preserving
+// all other content, comments, and ordering. `cargo add` cannot manage the
+// [workspace.dependencies] table, so this scoped, section-anchored edit is used
+// for workspace-inherited deps.
+func bumpWorkspaceDependency(cargoTomlPath, name, caret string) error {
+	data, err := os.ReadFile(filepath.Clean(cargoTomlPath))
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", cargoTomlPath, err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	inSection := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") {
+			inSection = trimmed == "[workspace.dependencies]"
+			continue
+		}
+		if !inSection {
+			continue
+		}
+		key, ok := manifestKey(trimmed)
+		if !ok || key != name {
+			continue
+		}
+		newLine, changed := replaceManifestVersion(line, caret)
+		if !changed {
+			return fmt.Errorf("%w: could not locate a version to rewrite for %s in [workspace.dependencies] of %s",
+				ErrNoCompatibleVersion, name, cargoTomlPath)
+		}
+		lines[i] = newLine
+		if err := os.WriteFile(cargoTomlPath, []byte(strings.Join(lines, "\n")), 0o644); err != nil { //nolint:gosec // manifest is world-readable by convention
+			return fmt.Errorf("writing %s: %w", cargoTomlPath, err)
+		}
+		return nil
+	}
+	return fmt.Errorf("%w: %s not found in [workspace.dependencies] of %s", ErrNoCompatibleVersion, name, cargoTomlPath)
+}
+
+// manifestKey returns the dependency key declared on a Cargo.toml line (the part
+// before the first '=', unquoted), or ok=false for blank/comment/non-assignment
+// lines. The first '=' is always the top-level assignment; any '=' inside an
+// inline-table value comes later.
+func manifestKey(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		return "", false
+	}
+	eq := strings.Index(trimmed, "=")
+	if eq < 0 {
+		return "", false
+	}
+	return strings.Trim(strings.TrimSpace(trimmed[:eq]), `"'`), true
+}
+
+// replaceManifestVersion rewrites the version value in a single manifest line to
+// caret, returning the new line and whether a replacement was made. For an
+// inline table it rewrites the `version = "..."` field; otherwise it rewrites the
+// first quoted string (the plain version form). The key prefix before the first
+// '=' is left untouched.
+func replaceManifestVersion(line, caret string) (string, bool) {
+	eq := strings.Index(line, "=")
+	if eq < 0 {
+		return line, false
+	}
+	prefix, value := line[:eq+1], line[eq+1:]
+
+	if strings.Contains(value, "{") {
+		loc := workspaceDepVersionRe.FindStringSubmatchIndex(value)
+		if loc == nil {
+			return line, false
+		}
+		return prefix + value[:loc[0]] + value[loc[2]:loc[3]] + `"` + caret + `"` + value[loc[1]:], true
+	}
+
+	loc := quotedStringRe.FindStringIndex(value)
+	if loc == nil {
+		return line, false
+	}
+	return prefix + value[:loc[0]] + `"` + caret + `"` + value[loc[1]:], true
+}
+
 // cargoCompatible reports whether `have` falls in the same Cargo caret-compatible
 // line as `req` (both bare versions like "0.9.3"). Cargo's default caret: for
 // major>0 the major must match; for 0.minor (minor>0) the major.minor must match
@@ -212,6 +449,30 @@ func cargoCompatible(req, have string) bool {
 		}
 	}
 	return true
+}
+
+// caretConstraint reduces a concrete version to the Cargo caret token to write
+// into a Cargo.toml constraint: "major.minor" for 0.x releases (0.3.4 -> "0.3")
+// and "major" for >=1 releases (2.5.1 -> "2"). This mirrors cargoCompatible's
+// line rules and matches idiomatic hand-written manifests, so the manifest holds
+// the compatible line while Cargo.lock holds the exact pin. Pre-release/build
+// metadata is stripped; a version too short to reduce is returned unchanged.
+func caretConstraint(version string) string {
+	v := version
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	parts := strings.Split(v, ".")
+	if len(parts) == 0 || parts[0] == "" {
+		return version
+	}
+	if parts[0] == "0" {
+		if len(parts) >= 2 {
+			return parts[0] + "." + parts[1]
+		}
+		return version
+	}
+	return parts[0]
 }
 
 // resolveVersion maps a user-supplied target (a crate name and an optional pinned
@@ -321,6 +582,19 @@ func inLineVersion(version string, present []string) string {
 		}
 	}
 	return best
+}
+
+// crossesSemverBoundary reports whether target lies outside every present caret
+// line and above the highest present version — i.e. reaching it requires widening
+// the Cargo.toml constraint across a SemVer boundary, an upgrade cargo cannot make
+// on its own. A target already in a present line, or below what is present (a
+// downgrade), returns false.
+func crossesSemverBoundary(target string, present []string) bool {
+	if inLineVersion(target, present) != "" {
+		return false
+	}
+	mx := maxVersion(present)
+	return mx != "" && semver.Compare("v"+target, "v"+mx) > 0
 }
 
 // isDowngrade reports whether target is a lower SemVer than current. Non-SemVer

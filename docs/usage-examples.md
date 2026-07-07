@@ -203,6 +203,53 @@ omnibump analyze .
 omnibump analyze --output json > analysis.json
 ```
 
+### Example 6: CVE Remediation Across a SemVer Boundary (Replacing sed)
+
+When a CVE fix for a **direct** dependency only ships in a new SemVer line (e.g.
+`tracing-subscriber` `0.2` → `0.3`), the version requirement in `Cargo.toml` must
+change — `cargo update` alone cannot cross the caret boundary.
+
+**Old approach (manual sed):**
+
+```bash
+sed -i 's/tracing-subscriber = "0.2"/tracing-subscriber = "0.3"/' Cargo.toml
+cargo update -p tracing-subscriber
+```
+
+`sed` corrupts inline-table declarations (`dep = { version = "0.2", features = [...] }`),
+is blind to which section (`[dependencies]` vs `[dev-dependencies]` vs
+target-specific) the crate lives in, and cannot follow workspace inheritance.
+
+**New approach (omnibump):**
+
+```bash
+omnibump --language rust --packages "tracing-subscriber@0.3" --dir . --show-diff
+```
+
+omnibump rewrites the constraint to the new caret line via `cargo add` (preserving
+features and formatting), or edits the root `[workspace.dependencies]` table for
+workspace-inherited deps, then reconciles `Cargo.lock`. Indirect dependencies are
+still upgraded by bumping the crates that pull them in; a crate that genuinely has
+no compatible fix is reported rather than producing a broken manifest.
+
+#### Toolchain override
+
+omnibump runs every `cargo` command against the `stable` rustup toolchain (i.e.
+`cargo +stable ...`). This avoids failures when a project pins an old nightly
+toolchain that lacks features omnibump relies on (such as `cargo add`). Override
+the toolchain — or disable the override with an empty value — via an environment
+variable:
+
+```bash
+# Use a specific toolchain instead of stable
+OMNIBUMP_CARGO_TOOLCHAIN=1.82.0 omnibump --language rust --packages "rand@0.9" --dir .
+
+# Disable the override and use the project's default toolchain
+OMNIBUMP_CARGO_TOOLCHAIN= omnibump --language rust --packages "rand@0.9" --dir .
+```
+
+Requires a rustup-managed cargo with the selected toolchain installed.
+
 ## Java (Maven) Projects
 
 ### Example 1: Update Dependencies Directly
