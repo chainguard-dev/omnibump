@@ -98,6 +98,55 @@ func Test_RecommendStrategy_FromVersion(t *testing.T) {
 	}
 }
 
+// Test_Analyze_DirectIndirect verifies that Analyze classifies each locked
+// crate as the project's own crate, a direct dependency (listed in a local
+// crate's dependencies), or an indirect/transitive one, using the cargo_v3.lock
+// fixture whose root crate "app" directly depends on memchr 1.0.2, regex, and
+// regex-syntax 0.5.6.
+func Test_Analyze_DirectIndirect(t *testing.T) {
+	ra := &RustAnalyzer{}
+	result, err := ra.Analyze(context.Background(), "testdata-parser/cargo_v3.lock")
+	require.NoError(t, err)
+
+	wantDirect := map[string]bool{
+		"memchr@1.0.2":       true,
+		"regex@1.7.3":        true,
+		"regex-syntax@0.5.6": true,
+	}
+	wantIndirect := map[string]bool{
+		"aho-corasick@0.7.20": true,
+		"libc@0.2.140":        true,
+		"memchr@2.5.0":        true,
+		"regex-syntax@0.6.29": true,
+		"ucd-util@0.1.10":     true,
+	}
+
+	var direct, indirect, root []string
+	for key, info := range result.Dependencies {
+		switch {
+		case info.Metadata["root"] == true:
+			root = append(root, key)
+		case info.Transitive:
+			indirect = append(indirect, key)
+		default:
+			direct = append(direct, key)
+		}
+	}
+
+	require.Equal(t, []string{"app@0.1.0"}, root, "the local crate should be flagged root")
+	require.Len(t, direct, len(wantDirect))
+	for _, key := range direct {
+		require.True(t, wantDirect[key], "unexpected direct dependency %q", key)
+	}
+	require.Len(t, indirect, len(wantIndirect))
+	for _, key := range indirect {
+		require.True(t, wantIndirect[key], "unexpected indirect dependency %q", key)
+	}
+
+	require.Equal(t, len(wantDirect), result.Metadata["directCount"])
+	require.Equal(t, len(wantIndirect), result.Metadata["indirectCount"])
+}
+
 // Test_RecommendStrategy_Targets covers how RecommendStrategy resolves the
 // different dependency-target forms (bare name, name@version, and the precise
 // "name@version" + new version pin) against the analyzed lock graph, when the

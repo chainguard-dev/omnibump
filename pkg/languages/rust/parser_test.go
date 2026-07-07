@@ -15,39 +15,43 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// registrySource is the crates.io source string carried by every external
+// (non-local) package in the test lockfiles.
+const registrySource = "registry+https://github.com/rust-lang/crates.io-index"
+
 var (
 	cargoNormalLibs = []CargoPackage{
 		{Name: "normal", Version: "0.1.0", Dependencies: []string{"libc@0.2.54"}},
-		{Name: "libc", Version: "0.2.54"},
-		{Name: "typemap", Version: "0.3.3", Dependencies: []string{"unsafe-any@0.4.2"}},
-		{Name: "url", Version: "1.7.2", Dependencies: []string{"idna@0.1.5", "matches@0.1.8", "percent-encoding@1.0.1"}},
-		{Name: "unsafe-any", Version: "0.4.2"},
-		{Name: "matches", Version: "0.1.8"},
-		{Name: "idna", Version: "0.1.5"},
-		{Name: "percent-encoding", Version: "1.0.1"},
+		{Name: "libc", Version: "0.2.54", Source: registrySource},
+		{Name: "typemap", Version: "0.3.3", Source: registrySource, Dependencies: []string{"unsafe-any@0.4.2"}},
+		{Name: "url", Version: "1.7.2", Source: registrySource, Dependencies: []string{"idna@0.1.5", "matches@0.1.8", "percent-encoding@1.0.1"}},
+		{Name: "unsafe-any", Version: "0.4.2", Source: registrySource},
+		{Name: "matches", Version: "0.1.8", Source: registrySource},
+		{Name: "idna", Version: "0.1.5", Source: registrySource},
+		{Name: "percent-encoding", Version: "1.0.1", Source: registrySource},
 	}
 
 	cargoMixedLibs = []CargoPackage{
 		{Name: "normal", Version: "0.1.0", Dependencies: []string{"libc@0.2.54"}},
-		{Name: "libc", Version: "0.2.54"},
-		{Name: "typemap", Version: "0.3.3", Dependencies: []string{"unsafe-any@0.4.2"}},
-		{Name: "url", Version: "1.7.2", Dependencies: []string{"idna@0.1.5", "matches@0.1.8", "percent-encoding@1.0.1"}},
-		{Name: "unsafe-any", Version: "0.4.2"},
-		{Name: "matches", Version: "0.1.8"},
-		{Name: "idna", Version: "0.1.5"},
-		{Name: "percent-encoding", Version: "1.0.1"},
+		{Name: "libc", Version: "0.2.54", Source: registrySource},
+		{Name: "typemap", Version: "0.3.3", Source: registrySource, Dependencies: []string{"unsafe-any@0.4.2"}},
+		{Name: "url", Version: "1.7.2", Source: registrySource, Dependencies: []string{"idna@0.1.5", "matches@0.1.8", "percent-encoding@1.0.1"}},
+		{Name: "unsafe-any", Version: "0.4.2", Source: registrySource},
+		{Name: "matches", Version: "0.1.8", Source: registrySource},
+		{Name: "idna", Version: "0.1.5", Source: registrySource},
+		{Name: "percent-encoding", Version: "1.0.1", Source: registrySource},
 	}
 
 	cargoV3Libs = []CargoPackage{
-		{Name: "aho-corasick", Version: "0.7.20", Dependencies: []string{"memchr@2.5.0"}},
+		{Name: "aho-corasick", Version: "0.7.20", Source: registrySource, Dependencies: []string{"memchr@2.5.0"}},
 		{Name: "app", Version: "0.1.0", Dependencies: []string{"memchr@1.0.2", "regex@1.7.3", "regex-syntax@0.5.6"}},
-		{Name: "libc", Version: "0.2.140"},
-		{Name: "memchr", Version: "1.0.2", Dependencies: []string{"libc@0.2.140"}},
-		{Name: "memchr", Version: "2.5.0"},
-		{Name: "regex", Version: "1.7.3", Dependencies: []string{"aho-corasick@0.7.20", "memchr@2.5.0", "regex-syntax@0.6.29"}},
-		{Name: "regex-syntax", Version: "0.5.6", Dependencies: []string{"ucd-util@0.1.10"}},
-		{Name: "regex-syntax", Version: "0.6.29"},
-		{Name: "ucd-util", Version: "0.1.10"},
+		{Name: "libc", Version: "0.2.140", Source: registrySource},
+		{Name: "memchr", Version: "1.0.2", Source: registrySource, Dependencies: []string{"libc@0.2.140"}},
+		{Name: "memchr", Version: "2.5.0", Source: registrySource},
+		{Name: "regex", Version: "1.7.3", Source: registrySource, Dependencies: []string{"aho-corasick@0.7.20", "memchr@2.5.0", "regex-syntax@0.6.29"}},
+		{Name: "regex-syntax", Version: "0.5.6", Source: registrySource, Dependencies: []string{"ucd-util@0.1.10"}},
+		{Name: "regex-syntax", Version: "0.6.29", Source: registrySource},
+		{Name: "ucd-util", Version: "0.1.10", Source: registrySource},
 	}
 )
 

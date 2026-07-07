@@ -25,6 +25,7 @@ var ErrInvalidPackageSpec = errors.New("invalid package spec")
 type cargoLockPackage struct {
 	Name         string   `toml:"name"`
 	Version      string   `toml:"version"`
+	Source       string   `toml:"source,omitempty"`
 	Dependencies []string `toml:"dependencies,omitempty"`
 }
 
@@ -53,6 +54,7 @@ func ParseCargoLock(r io.Reader) ([]CargoPackage, error) {
 		p := CargoPackage{
 			Name:    pkg.Name,
 			Version: pkg.Version,
+			Source:  pkg.Source,
 		}
 
 		deps := parseDependencies(pkg, pkgs)
