@@ -22,6 +22,37 @@ type CargoPackage struct {
 	Dependencies []string
 }
 
+// IsLocal reports whether the package is the local/workspace crate itself
+// rather than an external dependency. Local crates have no Source in Cargo.lock,
+// whereas registry, git, and remote-path dependencies always carry one.
+func (c CargoPackage) IsLocal() bool {
+	return c.Source == ""
+}
+
+// classifyDependencies partitions Cargo.lock packages into the project's own
+// (local/workspace) crates and its direct dependencies.
+//
+// A direct dependency is one declared in Cargo.toml; in Cargo.lock this is
+// exactly the set of crates listed in a local crate's dependencies array.
+// Everything reachable only transitively is indirect. Both returned maps are
+// keyed by the "name@version" identifier produced by packageID.
+func classifyDependencies(pkgs []CargoPackage) (direct, roots map[string]bool) {
+	direct = make(map[string]bool)
+	roots = make(map[string]bool)
+
+	for _, pkg := range pkgs {
+		if !pkg.IsLocal() {
+			continue
+		}
+		roots[packageID(pkg.Name, pkg.Version)] = true
+		for _, dep := range pkg.Dependencies {
+			direct[dep] = true
+		}
+	}
+
+	return direct, roots
+}
+
 // UpdateConfig holds configuration for Rust project updates.
 type UpdateConfig struct {
 	CargoRoot string

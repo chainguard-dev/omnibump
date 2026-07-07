@@ -75,7 +75,14 @@ func (ra *RustAnalyzer) Analyze(ctx context.Context, projectPath string) (*analy
 	// Track unique package names (some packages may have multiple versions)
 	packageVersions := make(map[string][]string)
 
+	// Partition packages into the project's own crates and its direct
+	// dependencies. A direct dependency is one listed in a local crate's
+	// dependencies array (i.e. declared in Cargo.toml); everything else pulled
+	// in through the graph is indirect.
+	direct, roots := classifyDependencies(cargoPackages)
+
 	// Analyze packages
+	var directCount, indirectCount int
 	for _, pkg := range cargoPackages {
 		info := &analyzer.DependencyInfo{
 			Name:           pkg.Name,
@@ -90,11 +97,25 @@ func (ra *RustAnalyzer) Analyze(ctx context.Context, projectPath string) (*analy
 			info.Metadata["dependencies"] = pkg.Dependencies
 		}
 
+		// Use name@version as key to handle multiple versions
+		key := fmt.Sprintf("%s@%s", pkg.Name, pkg.Version)
+
+		// Classify direct vs indirect. The project's own crate(s) are neither -
+		// they are flagged root and excluded from the tallies below.
+		switch {
+		case roots[key]:
+			info.Metadata["root"] = true
+		case direct[key]:
+			directCount++
+		default:
+			info.Transitive = true
+			info.Metadata["indirect"] = true
+			indirectCount++
+		}
+
 		// Track multiple versions of same package
 		packageVersions[pkg.Name] = append(packageVersions[pkg.Name], pkg.Version)
 
-		// Use name@version as key to handle multiple versions
-		key := fmt.Sprintf("%s@%s", pkg.Name, pkg.Version)
 		result.Dependencies[key] = info
 	}
 
@@ -108,8 +129,11 @@ func (ra *RustAnalyzer) Analyze(ctx context.Context, projectPath string) (*analy
 	// Store total package count
 	result.Metadata["totalPackages"] = len(cargoPackages)
 	result.Metadata["uniquePackages"] = len(packageVersions)
+	result.Metadata["directCount"] = directCount
+	result.Metadata["indirectCount"] = indirectCount
 
-	log.Infof("Analysis complete: found %d packages (%d unique)", len(cargoPackages), len(packageVersions))
+	log.Infof("Analysis complete: found %d packages (%d unique, %d direct, %d indirect)",
+		len(cargoPackages), len(packageVersions), directCount, indirectCount)
 
 	return result, nil
 }

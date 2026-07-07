@@ -243,6 +243,9 @@ func outputText(analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy) 
 
 	fmt.Printf("Total dependencies: %d\n", len(analysis.Dependencies))
 
+	// Show direct vs indirect breakdown when the analyzer distinguishes them.
+	printDirectIndirectBreakdown(analysis)
+
 	// Count dependencies using properties
 	usingProps := 0
 	for _, dep := range analysis.Dependencies {
@@ -277,6 +280,23 @@ func outputText(analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy) 
 	}
 
 	return nil
+}
+
+// printDirectIndirectBreakdown prints the number of direct vs indirect
+// dependencies. It only renders when the analyzer reports the split (via the
+// directCount/indirectCount metadata keys), so output for languages that don't
+// distinguish transitive dependencies is left unchanged. The per-package
+// classification is available in the json/yaml output via each dependency's
+// Transitive flag.
+func printDirectIndirectBreakdown(analysis *analyzer.AnalysisResult) {
+	directCount, hasDirect := analysis.Metadata["directCount"].(int)
+	indirectCount, hasIndirect := analysis.Metadata["indirectCount"].(int)
+	if !hasDirect && !hasIndirect {
+		return
+	}
+
+	fmt.Printf("Direct dependencies: %d\n", directCount)
+	fmt.Printf("Indirect dependencies: %d\n", indirectCount)
 }
 
 func outputJSON(analysis *analyzer.AnalysisResult, strategy *analyzer.Strategy) error {
