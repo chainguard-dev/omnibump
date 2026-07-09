@@ -301,8 +301,11 @@ func pinPrecise(ctx context.Context, cargoRoot string, t target) error {
 	}
 	cur := inLineVersion(t.version, present)
 	if cur == "" {
-		log.Warnf("%s %s line is no longer present after updating dependents; cannot pin to %s",
-			t.name, t.version, t.precise)
+		// The "from" line is gone because upgrading the dependents moved the crate
+		// onto a newer line — the intended outcome for a transitive dependency, so
+		// long as it reached the requested version. Verify rather than reporting a
+		// spurious "cannot pin".
+		verifyTransitiveUpgrade(ctx, t.name, present, t.precise)
 		return nil
 	}
 	if isDowngrade(cur, t.precise) {
@@ -313,6 +316,23 @@ func pinPrecise(ctx context.Context, cargoRoot string, t target) error {
 	spec := t.name + "@" + cur
 	log.Infof("Pinning %s precisely to %s", spec, t.precise)
 	return runCargoUpdate(ctx, cargoRoot, []string{spec}, "--precise", t.precise)
+}
+
+// verifyTransitiveUpgrade reports the outcome when a precise pin's original ("from")
+// line is no longer present: the crate was moved onto a newer line by upgrading its
+// dependents. That is the expected result for a transitive dependency as long as it
+// reached the requested version, so it logs success in that case and only warns when
+// the crate is still below the requested version — signalling that the direct
+// dependency upgrade did not pull the transitive dependency forward as expected.
+func verifyTransitiveUpgrade(ctx context.Context, name string, present []string, requested string) {
+	log := clog.FromContext(ctx)
+	if satisfiesFloor(present, requested) {
+		log.Infof("%s is at %s, which satisfies the requested %s; the dependency upgrade pulled it in as expected",
+			name, maxVersion(present), requested)
+		return
+	}
+	log.Warnf("%s is at %s but %s was requested; the direct dependency upgrade did not pull in %s as expected",
+		name, joinVersions(present), requested, requested)
 }
 
 // cargoAdd rewrites the version requirement of an existing direct dependency in a

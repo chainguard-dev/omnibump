@@ -8,10 +8,12 @@ package rust
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/chainguard-dev/clog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -238,6 +240,59 @@ func Test_cargoCommand(t *testing.T) {
 		cmd := cargoCommand(context.Background(), "/tmp/demo", "update")
 		require.Equal(t, []string{"cargo", "update"}, cmd.Args)
 	})
+}
+
+// capturingHandler is a minimal slog.Handler that records the level and rendered
+// message of each log call, for asserting log behavior.
+type capturingHandler struct{ records *[]slog.Record }
+
+func (h capturingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h capturingHandler) Handle(_ context.Context, r slog.Record) error {
+	*h.records = append(*h.records, r)
+	return nil
+}
+func (h capturingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h capturingHandler) WithGroup(string) slog.Handler      { return h }
+
+// Test_verifyTransitiveUpgrade covers the outcome logging when a precise pin's
+// original line is gone: success (info) when the crate reached the requested
+// version — including when it is already exactly at it — and a warning only when it
+// remains below the request.
+func Test_verifyTransitiveUpgrade(t *testing.T) {
+	tests := []struct {
+		name      string
+		present   []string
+		requested string
+		wantLevel slog.Level
+		wantMsg   string
+	}{
+		{
+			name: "already at requested", present: []string{"0.22.3"}, requested: "0.22.3",
+			wantLevel: slog.LevelInfo, wantMsg: "satisfies the requested 0.22.3",
+		},
+		{
+			name: "above requested", present: []string{"0.22.5"}, requested: "0.22.3",
+			wantLevel: slog.LevelInfo, wantMsg: "satisfies the requested 0.22.3",
+		},
+		{
+			name: "below requested", present: []string{"0.21.12"}, requested: "0.22.3",
+			wantLevel: slog.LevelWarn, wantMsg: "did not pull in 0.22.3 as expected",
+		},
+		{
+			name: "no longer present", present: nil, requested: "0.22.3",
+			wantLevel: slog.LevelWarn, wantMsg: "did not pull in 0.22.3 as expected",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var recs []slog.Record
+			ctx := clog.WithLogger(context.Background(), clog.New(capturingHandler{&recs}))
+			verifyTransitiveUpgrade(ctx, "tract-nnef", tt.present, tt.requested)
+			require.Len(t, recs, 1)
+			require.Equal(t, tt.wantLevel, recs[0].Level)
+			require.Contains(t, recs[0].Message, tt.wantMsg)
+		})
+	}
 }
 
 // Test_satisfiesFloor covers the cheap pre-flight skip: true when a present
