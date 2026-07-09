@@ -118,7 +118,7 @@ func (c *Client) Fetch(ctx context.Context, name string) ([]IndexVersion, error)
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "omnibump")
-	resp, err := c.http.Do(req)
+	resp, err := c.http.Do(req) // #nosec G704 - scheme and host are the constant crates.io index base; only the sharded crate-name path is dynamic
 	if err != nil {
 		return nil, fmt.Errorf("fetching %s: %w", url, err)
 	}

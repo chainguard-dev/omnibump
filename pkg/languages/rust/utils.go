@@ -298,7 +298,7 @@ var quotedStringRe = regexp.MustCompile(`"[^"]*"`)
 // [workspace.dependencies] table, so this scoped, section-anchored edit is used
 // for workspace-inherited deps.
 func bumpWorkspaceDependency(cargoTomlPath, name, caret string) error {
-	data, err := os.ReadFile(filepath.Clean(cargoTomlPath))
+	data, err := os.ReadFile(filepath.Clean(cargoTomlPath)) //nolint:gosec // cargoTomlPath is the workspace-root Cargo.toml resolved from cargo metadata
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", cargoTomlPath, err)
 	}
