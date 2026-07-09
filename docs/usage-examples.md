@@ -228,9 +228,15 @@ omnibump --language rust --packages "tracing-subscriber@0.3" --dir . --show-diff
 
 omnibump rewrites the constraint to the new caret line via `cargo add` (preserving
 features and formatting), or edits the root `[workspace.dependencies]` table for
-workspace-inherited deps, then reconciles `Cargo.lock`. Indirect dependencies are
-still upgraded by bumping the crates that pull them in; a crate that genuinely has
-no compatible fix is reported rather than producing a broken manifest.
+workspace-inherited deps, then reconciles `Cargo.lock`.
+
+This works for **indirect** targets too. When the crate to remediate is pulled in
+transitively, omnibump walks the inverted dependency tree (via the crates.io index)
+to find the direct dependency that gates it, computes the **minimum** version that
+direct dependency must reach so the fix becomes available, edits that constraint,
+and pins the boundary crate precisely — cargo then resolves the transitive graph. A
+crate that genuinely has no compatible fix is reported rather than producing a
+broken manifest.
 
 Because a SemVer-breaking bump can change APIs, omnibump runs `cargo check` after
 the edit. If the project no longer compiles, the upgrade is rejected with a clear

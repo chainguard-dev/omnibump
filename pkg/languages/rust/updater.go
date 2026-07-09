@@ -7,7 +7,6 @@ package rust
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/chainguard-dev/clog"
+	"github.com/chainguard-dev/omnibump/pkg/languages/rust/revdep"
 )
 
 // checkBuild verifies the project still compiles after a SemVer-breaking edit.
@@ -41,12 +41,6 @@ func DoUpdate(ctx context.Context, packages map[string]*Package, cargoPackages [
 		}
 	}
 
-	// Partition the lockfile into direct dependencies (declared in a member's
-	// Cargo.toml) and everything reachable only transitively. A SemVer-breaking
-	// bump of a direct dep can be satisfied by editing its Cargo.toml constraint;
-	// an indirect dep can only move by upgrading its dependents.
-	direct, _ := classifyDependencies(cargoPackages)
-
 	// Order packages by index for consistent updates
 	orderedPackages := orderPackages(packages)
 
@@ -64,7 +58,7 @@ func DoUpdate(ctx context.Context, packages map[string]*Package, cargoPackages [
 			continue
 		}
 
-		if err := upgradeReverseDependencies(ctx, cfg.CargoRoot, targetSpec(pkgName, pkg.Version), direct); err != nil {
+		if err := upgradeReverseDependencies(ctx, cfg.CargoRoot, targetSpec(pkgName, pkg.Version)); err != nil {
 			return err
 		}
 	}
@@ -134,13 +128,17 @@ func runCargoUpdate(ctx context.Context, cargoRoot string, specs []string, extra
 	return nil
 }
 
-// upgradeReverseDependencies updates every crate that depends on the target, plus
-// the target itself. For name/@version the target is resolved against the lock
-// (skipping gracefully if an equal-or-newer compatible version is already there)
-// and bumped to the latest compatible version. For name@version=precise the
-// target is pinned to the exact version, unless that would be a downgrade, in
-// which case the pin is skipped with a warning.
-func upgradeReverseDependencies(ctx context.Context, cargoRoot string, arg string, direct map[string]bool) error {
+// upgradeReverseDependencies satisfies a requested crate upgrade by computing the
+// minimal reverse-dependency plan (revdep.Calculate), editing the gating direct
+// dependency's Cargo.toml, and pinning the boundary crates to their minimum
+// versions — after which cargo resolves the transitive graph. It works uniformly
+// whether the target is a direct or an indirect dependency: the calculator walks
+// up the inverted tree to the workspace member that must widen a constraint.
+//
+// The target version is a floor (">= floor") for the bare/@version forms and an
+// exact pin for the name@from=precise form. A SemVer-breaking edit is verified
+// with `cargo check`; a build failure means no upgrade is possible.
+func upgradeReverseDependencies(ctx context.Context, cargoRoot string, arg string) error {
 	log := clog.FromContext(ctx)
 	t := parseTarget(arg)
 
@@ -148,97 +146,146 @@ func upgradeReverseDependencies(ctx context.Context, cargoRoot string, arg strin
 	if err != nil {
 		return err
 	}
-
-	// A precise pin whose target version sits outside every present caret line is a
-	// SemVer-boundary crossing: `cargo update --precise` would be rejected by the
-	// existing Cargo.toml constraint, so the manifest must be widened first. The
-	// non-precise @version form reaches handleCrossSemver via ErrNoCompatibleVersion
-	// (below); the precise form is resolved against the "from" line and never
-	// surfaces that error, so detect and route it here.
-	if t.isPrecise && crossesSemverBoundary(t.precise, present) {
-		if fixed, ferr := handleCrossSemver(ctx, cargoRoot, t, direct); fixed {
-			return ferr
-		}
-	}
-
-	// Resolve the target to a concrete, present "name@version" spec to invert from.
-	log.Debug("Running resolveDiscoverySpec...")
-	discoverySpec, skip, err := resolveDiscoverySpec(ctx, t, present)
-	if err != nil {
-		log.Debug("resolveDiscoverySpec failed, checking for compatible version")
-		// The crate is pinned below the requested floor and no compatible version
-		// is present. For a direct dependency we can satisfy this by rewriting its
-		// Cargo.toml constraint across the SemVer boundary; anything else keeps the
-		// original (fatal) error.
-		if errors.Is(err, ErrNoCompatibleVersion) {
-			if fixed, ferr := handleCrossSemver(ctx, cargoRoot, t, direct); fixed {
-				return ferr
-			}
-		}
-		return err
-	}
-	if skip {
+	if len(present) == 0 {
+		log.Warnf("%s is not present in the dependency graph; nothing to update", t.name)
 		return nil
 	}
 
-	log.Infof("Calculating reverse dependencies for %s", discoverySpec)
-	deps, err := getReverseDependencies(ctx, cargoRoot, discoverySpec)
+	// Determine the concrete floor version to reach.
+	floor := t.version
+	switch {
+	case t.isPrecise:
+		floor = t.precise
+	case !t.hasVersion:
+		// Bare crate name: refuse an ambiguous bump and resolve the latest
+		// published version as the floor.
+		if len(present) > 1 {
+			return fmt.Errorf("%w: %s (%s); pin one as %s@<version>",
+				ErrAmbiguousTarget, t.name, joinVersions(present), t.name)
+		}
+		latest, lerr := LatestCrateVersion(ctx, t.name)
+		if lerr != nil {
+			return lerr
+		}
+		floor = latest
+	}
+
+	// Cheap skip: a present version already satisfies the floor. A precise pin must
+	// still run so the exact version is landed.
+	if !t.isPrecise && satisfiesFloor(present, floor) {
+		log.Infof("%s already satisfies >= %s; skipping", t.name, floor)
+		return nil
+	}
+
+	// Compute the minimal reverse-dependency upgrade plan.
+	members, _, err := workspaceLayout(ctx, cargoRoot)
+	if err != nil {
+		return err
+	}
+	memberSet := make(map[string]bool, len(members))
+	for _, m := range members {
+		memberSet[m.name] = true
+	}
+
+	plan, err := revdep.Calculate(ctx, t.name, floor, revdep.Options{
+		Tree: func(ctx context.Context, crate string) (string, error) {
+			return cargoTreeInverted(ctx, cargoRoot, crate)
+		},
+		IndexURL:         cratesIndexBaseURL + "/",
+		HTTP:             indexHTTPClient,
+		WorkspaceMembers: memberSet,
+	})
 	if err != nil {
 		return err
 	}
 
-	// Reverse deps — and, for the non-precise form, the target itself — are bumped
-	// to their latest compatible versions in a single cargo update invocation.
-	// cargo resolves all specs in one pass (no drift between updates) and loads the
-	// lockfile once.
-	batch := deps
-	if !t.isPrecise {
-		batch = append([]string{discoverySpec}, deps...)
+	changed := len(plan.Edits) > 0 || len(plan.Boundaries) > 0
+	if !changed && !t.isPrecise {
+		log.Infof("%s already satisfies >= %s; nothing to upgrade", t.name, floor)
+		return nil
 	}
-	if len(batch) > 0 {
-		log.Infof("Updating %d dependencies", len(batch))
-		if err := runCargoUpdate(ctx, cargoRoot, batch); err != nil {
+
+	// Widen each gating direct dependency's Cargo.toml constraint.
+	rootBumped := map[string]bool{}
+	for _, e := range plan.Edits {
+		log.Infof("Bumping %s (in %s) to allow >= %s", e.Dependency, e.Member, e.MinVersion)
+		if err := applyDirectEdit(ctx, cargoRoot, e, rootBumped); err != nil {
 			return err
 		}
 	}
 
-	// Pin the precise target last, so the exact version is the final state.
+	// Land the minimal versions: pin each boundary crate precisely; cargo resolves
+	// the transitive graph to satisfy the widened constraints.
+	for _, b := range plan.Boundaries {
+		log.Infof("Pinning %s to %s", b.Crate, b.To)
+		if err := runCargoUpdate(ctx, cargoRoot, []string{b.Crate}, "--precise", b.To); err != nil {
+			return fmt.Errorf("pinning %s to %s: %w", b.Crate, b.To, err)
+		}
+	}
+
+	// For the exact =precise form, guarantee the final pin.
 	if t.isPrecise {
-		return pinPrecise(ctx, cargoRoot, t)
+		if err := pinPrecise(ctx, cargoRoot, t); err != nil {
+			return err
+		}
+	}
+
+	// A bump can break the build (a SemVer-breaking edit changes APIs). Verify with
+	// `cargo check`; failure means the upgrade is not viable. Edits are left on disk
+	// for the caller to inspect or discard.
+	log.Infof("Verifying the project builds after upgrading %s to %s", t.name, floor)
+	if out, err := checkBuild(ctx, cargoRoot); err != nil {
+		log.Warnf("cargo check failed after upgrading %s to %s:\n%s", t.name, floor, out)
+		return fmt.Errorf("%w: upgrading %s to %s does not compile", ErrUpgradeBrokeBuild, t.name, floor)
 	}
 	return nil
 }
 
-// resolveDiscoverySpec resolves the target to a concrete, present "name@version"
-// spec to invert reverse dependencies from. It returns skip=true (with the reason
-// already logged) when there is nothing to act on.
-func resolveDiscoverySpec(ctx context.Context, t target, present []string) (spec string, skip bool, err error) {
-	log := clog.FromContext(ctx)
-
-	if t.isPrecise {
-		// Precise always acts (no "already satisfied" skip) — it identifies an
-		// instance to pin. Only skip if that compatibility line isn't present.
-		inv := inLineVersion(t.version, present)
-		if inv == "" {
-			log.Warnf("no version of %s compatible with %s is present (have: %s); skipping",
-				t.name, t.version, joinVersions(present))
-			return "", true, nil
-		}
-		return t.name + "@" + inv, false, nil
-	}
-
-	spec, skip, msg, err := resolveVersion(t.name, t.version, t.hasVersion, present)
+// applyDirectEdit widens the Cargo.toml constraint on e.Dependency in workspace
+// member e.Member to allow at least e.MinVersion. Registry deps are edited with
+// cargo add (lossless); workspace-inherited deps are edited in the root
+// [workspace.dependencies] table once (tracked in rootBumped). A git/path dep or
+// a crate not actually declared by the member cannot be bumped and is an error.
+func applyDirectEdit(ctx context.Context, cargoRoot string, e revdep.DirectEdit, rootBumped map[string]bool) error {
+	sections, workspaceRoot, err := manifestSections(ctx, cargoRoot, e.Dependency)
 	if err != nil {
-		return "", false, err
+		return err
 	}
-	if skip {
-		log.Warnf("%s", msg)
-		return "", true, nil
+	caret := caretConstraint(e.MinVersion)
+
+	applied := false
+	for _, sec := range sections {
+		if sec.member != e.Member {
+			continue
+		}
+		switch {
+		case sec.inherited:
+			// The constraint lives in the root [workspace.dependencies] table; edit
+			// it once no matter how many members inherit it.
+			if rootBumped[e.Dependency] {
+				applied = true
+				continue
+			}
+			if err := bumpWorkspaceDependency(filepath.Join(workspaceRoot, "Cargo.toml"), e.Dependency, caret); err != nil {
+				return err
+			}
+			rootBumped[e.Dependency] = true
+			applied = true
+		case !sec.registry:
+			return fmt.Errorf("%w: %s in %s is a git/path dependency and cannot be bumped to require %s",
+				ErrNoCompatibleVersion, e.Dependency, e.Member, e.MinVersion)
+		default:
+			if err := cargoAdd(ctx, cargoRoot, sec, e.Dependency, caret); err != nil {
+				return err
+			}
+			applied = true
+		}
 	}
-	if msg != "" {
-		log.Infof("%s", msg)
+	if !applied {
+		return fmt.Errorf("%w: %s is not declared by workspace member %s; cannot satisfy the upgrade",
+			ErrNoCompatibleVersion, e.Dependency, e.Member)
 	}
-	return spec, false, nil
+	return nil
 }
 
 // pinPrecise pins the target crate to its exact version (t.precise). The preceding
@@ -266,101 +313,6 @@ func pinPrecise(ctx context.Context, cargoRoot string, t target) error {
 	spec := t.name + "@" + cur
 	log.Infof("Pinning %s precisely to %s", spec, t.precise)
 	return runCargoUpdate(ctx, cargoRoot, []string{spec}, "--precise", t.precise)
-}
-
-// handleCrossSemver satisfies a SemVer-breaking upgrade of a DIRECT dependency by
-// rewriting its Cargo.toml constraint to the requested caret line, then
-// reconciling Cargo.lock. This is the robust replacement for the fragile
-// `sed -i 's/name = "0.2"/name = "0.3"/' Cargo.toml` hack operators fall back to.
-//
-// It returns fixed=false to signal "not handled here — propagate the caller's
-// original error" for cases that genuinely cannot be resolved by a manifest edit:
-// an indirect dependency (its version can only move by upgrading its dependents,
-// which is the reverse-dependency path's job), a git/path dependency (no registry
-// version to bump), or a crate not declared in any manifest. When fixed=true, the
-// returned error is the result of attempting the edit (nil on success).
-func handleCrossSemver(ctx context.Context, cargoRoot string, t target, direct map[string]bool) (fixed bool, err error) {
-	log := clog.FromContext(ctx)
-
-	if !isDirect(t.name, direct) {
-		return false, nil
-	}
-
-	sections, workspaceRoot, err := manifestSections(ctx, cargoRoot, t.name)
-	if err != nil {
-		return true, err
-	}
-	if len(sections) == 0 {
-		// Classified direct by the lockfile but not found in any manifest; leave it
-		// to the original error rather than guessing.
-		return false, nil
-	}
-
-	// The version the manifest must allow: the exact pin target for a precise bump,
-	// otherwise the requested floor.
-	target := t.version
-	if t.isPrecise {
-		target = t.precise
-	}
-	caret := caretConstraint(target)
-	log.Infof("%s requires a SemVer-breaking upgrade to %s; rewriting its Cargo.toml constraint to \"%s\"", t.name, target, caret)
-
-	rootBumped := false
-	for _, sec := range sections {
-		switch {
-		case sec.inherited:
-			// The constraint lives in the root [workspace.dependencies] table; edit
-			// it once no matter how many members inherit it.
-			if rootBumped {
-				continue
-			}
-			rootPath := filepath.Join(workspaceRoot, "Cargo.toml")
-			if err := bumpWorkspaceDependency(rootPath, t.name, caret); err != nil {
-				return true, err
-			}
-			rootBumped = true
-		case !sec.registry:
-			// git/path dependency: no registry version to write. Not fixable by a
-			// version bump — propagate the original error.
-			return false, nil
-		default:
-			if err := cargoAdd(ctx, cargoRoot, sec, t.name, caret); err != nil {
-				return true, err
-			}
-		}
-	}
-
-	// Reconcile Cargo.lock with the widened constraint: a precise bump pins the
-	// exact target, otherwise take the latest version in the newly-allowed line.
-	if t.isPrecise {
-		if err := runCargoUpdate(ctx, cargoRoot, []string{t.name}, "--precise", target); err != nil {
-			return true, err
-		}
-	} else if err := runCargoUpdate(ctx, cargoRoot, []string{t.name}); err != nil {
-		return true, err
-	}
-
-	// The manifest edit intentionally broke SemVer, which can leave the project
-	// unbuildable. Verify with `cargo check`; failure means the upgrade is not
-	// viable. The edits are left on disk for the caller to inspect or discard.
-	log.Infof("Verifying the project builds after upgrading %s to %s", t.name, target)
-	if out, err := checkBuild(ctx, cargoRoot); err != nil {
-		log.Warnf("cargo check failed after upgrading %s to %s:\n%s", t.name, target, out)
-		return true, fmt.Errorf("%w: upgrading %s to %s does not compile", ErrUpgradeBrokeBuild, t.name, target)
-	}
-	return true, nil
-}
-
-// isDirect reports whether crate `name` is a direct dependency. The `direct` map
-// (from classifyDependencies) is keyed "name@version", so matching is by base
-// name across every locked version.
-func isDirect(name string, direct map[string]bool) bool {
-	for key := range direct {
-		if base, _, _ := strings.Cut(key, "@"); base == name {
-			return true
-		}
-	}
-	return false
 }
 
 // cargoAdd rewrites the version requirement of an existing direct dependency in a

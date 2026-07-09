@@ -19,7 +19,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"time"
 
@@ -92,77 +91,20 @@ func GetCurrentPackages(ctx context.Context, cargoRoot string) ([]CargoPackage, 
 	return cargoPackages, nil
 }
 
-// queryReverseDependencies runs a single `cargo tree` invocation and returns the
-// reverse dependencies (crates that depend on spec) as "name@version" strings.
-// Workspace members are intentionally included — they sit at the top of the
-// reverse chain and should be picked up too. The queried package itself is
-// included in cargo's inverted-tree output; callers are responsible for
-// filtering it out.
-func queryReverseDependencies(ctx context.Context, cargoRoot string, spec string) ([]string, error) {
-	// cargo tree -p $pkg --target all -i --prefix none
+// cargoTreeInverted returns the raw `cargo tree -i` output for crate, in the
+// depth-prefixed format the revdep parser expects. The inverted tree is rooted at
+// crate with each child being a crate that depends on it. Edge kinds are limited
+// to normal+build (dev-deps do not propagate to downstream resolution); the
+// toolchain override is inherited via cargoCommand.
+func cargoTreeInverted(ctx context.Context, cargoRoot, crate string) (string, error) {
 	output := bytes.Buffer{}
-	cmd := cargoCommand(ctx, cargoRoot, "tree", "-q", "-p", spec, "--target", "all", "-i", "--prefix", "none")
+	cmd := cargoCommand(ctx, cargoRoot, "tree", "-i", crate, "-e", "normal,build", "--charset", "ascii", "--prefix", "depth")
 	cmd.Stdout = &output
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("cargo tree -p %s: %w", spec, err)
+		return "", fmt.Errorf("cargo tree -i %s: %w", crate, err)
 	}
-
-	return parseCargoTree(output.String()), nil
-}
-
-// parseCargoTree turns flattened `cargo tree --prefix none` output into a list
-// of "name@version" specs. Each line looks like "name vX.Y.Z [(/path)] [(*)]";
-// blank and malformed lines are skipped. Duplicates are preserved — a crate is
-// printed once per branch it appears in — and are de-duplicated by the caller.
-func parseCargoTree(output string) []string {
-	var deps []string
-	for line := range strings.SplitSeq(output, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		// Each line is "name vX.Y.Z [(/path)]"; strip the leading 'v' from the version.
-		parts := strings.Fields(line)
-		if len(parts) < 2 || len(parts[1]) < 2 {
-			continue
-		}
-		deps = append(deps, fmt.Sprintf("%s@%s", parts[0], parts[1][1:]))
-	}
-	return deps
-}
-
-// getReverseDependencies returns every crate that (transitively) depends on
-// pkgName. `cargo tree -i` already emits the full transitive reverse-dependency
-// closure in a single pass — flattened by --prefix none — so one query suffices;
-// there is no need to re-walk each discovered crate. Workspace members are kept
-// (they sit at the top of the chain); only the target itself is removed.
-func getReverseDependencies(ctx context.Context, cargoRoot string, pkgName string) ([]string, error) {
-	deps, err := queryReverseDependencies(ctx, cargoRoot, pkgName)
-	if err != nil {
-		return nil, err
-	}
-	return reverseDepsFromTree(deps, pkgName), nil
-}
-
-// reverseDepsFromTree filters parsed `cargo tree -i` output into the set of
-// crates to upgrade: it drops the target itself (matched by base name, since the
-// target appears in its own inverted tree, whether pkgName is bare like "rand"
-// or pinned like "rand@0.8.6") and returns a sorted, de-duplicated list.
-func reverseDepsFromTree(deps []string, pkgName string) []string {
-	targetName, _, _ := strings.Cut(pkgName, "@")
-
-	var result []string
-	for _, dep := range deps {
-		if name, _, _ := strings.Cut(dep, "@"); name == targetName {
-			continue
-		}
-		result = append(result, dep)
-	}
-
-	// Deduplicate: cargo lists a crate once per branch it appears in.
-	slices.Sort(result)
-	return slices.Compact(result)
+	return output.String(), nil
 }
 
 // presentVersions returns the versions of crate `name` currently resolved in the
@@ -480,68 +422,15 @@ func caretConstraint(version string) string {
 	return parts[0]
 }
 
-// resolveVersion maps a user-supplied target (a crate name and an optional pinned
-// version) onto a concrete "name@version" spec that actually exists in `present`.
-// It implements the "upgrade to at least version X" intent: if a compatible
-// version >= the request is already present, the requirement is satisfied and we
-// skip. It is pure (no I/O) so the version logic is unit-testable.
-//
-// Returns the spec to act on (empty when skipping), a skip flag, a human-readable
-// reason to log, and an error for genuinely unusable input (an ambiguous bare
-// name with several versions present).
-func resolveVersion(name, version string, hasVersion bool, present []string) (spec string, skip bool, msg string, err error) {
-	if len(present) == 0 {
-		return "", true, fmt.Sprintf("%s is not present in the dependency graph; nothing to update", name), nil
+// satisfiesFloor reports whether any present version is >= floor, i.e. the crate
+// is already at or above the requested version and no upgrade is needed. floor may
+// be a partial version (e.g. "0.9"), which compares as its zero-filled form.
+func satisfiesFloor(present []string, floor string) bool {
+	mx := maxVersion(present)
+	if mx == "" {
+		return false
 	}
-
-	if !hasVersion {
-		if len(present) == 1 {
-			return name + "@" + present[0], false, "", nil
-		}
-		return "", false, "", fmt.Errorf("%w: %s (%s); pin one as %s@<version>",
-			ErrAmbiguousTarget, name, strings.Join(present, ", "), name)
-	}
-
-	// Versioned target: collect the present versions in the request's caret line,
-	// short-circuiting if the exact version is still present (then just upgrade it).
-	var inLine []string
-	for _, p := range present {
-		if p == version {
-			return name + "@" + version, false, "", nil
-		}
-		if cargoCompatible(version, p) {
-			inLine = append(inLine, p)
-		}
-	}
-	if len(inLine) == 0 {
-		// No present version shares the requested caret line. If some present
-		// version already meets or exceeds the floor (a newer, semver-incompatible
-		// release line), the requirement is satisfied — skip. Otherwise the crate
-		// is pinned below the floor by a dependent's caret constraint and cannot be
-		// upgraded; that is a genuine failure, not a warning.
-		for _, p := range present {
-			if semver.Compare("v"+p, "v"+version) >= 0 {
-				return "", true, fmt.Sprintf("%s is already at %s (a newer release line), which satisfies >= %s; skipping",
-					name, p, version), nil
-			}
-		}
-		return "", false, "", fmt.Errorf("%w: %s cannot be upgraded to %s; present version(s) %s are constrained by SemVer",
-			ErrNoCompatibleVersion, name, version, strings.Join(present, ", "))
-	}
-
-	best := inLine[0]
-	for _, p := range inLine[1:] {
-		if semver.Compare("v"+p, "v"+best) > 0 {
-			best = p
-		}
-	}
-	if semver.Compare("v"+best, "v"+version) > 0 {
-		return "", true, fmt.Sprintf("%s is already at %s, which satisfies >= %s; skipping", name, best, version), nil
-	}
-	// A compatible version is present but below the requested floor; act on it and
-	// let `cargo update` advance it toward the latest in the line.
-	return name + "@" + best, false,
-		fmt.Sprintf("%s@%s not present; using compatible %s@%s", name, version, name, best), nil
+	return semver.Compare("v"+mx, "v"+floor) >= 0
 }
 
 // target is a parsed command-line argument of the form name[@version[=precise]].
@@ -587,19 +476,6 @@ func inLineVersion(version string, present []string) string {
 		}
 	}
 	return best
-}
-
-// crossesSemverBoundary reports whether target lies outside every present caret
-// line and above the highest present version — i.e. reaching it requires widening
-// the Cargo.toml constraint across a SemVer boundary, an upgrade cargo cannot make
-// on its own. A target already in a present line, or below what is present (a
-// downgrade), returns false.
-func crossesSemverBoundary(target string, present []string) bool {
-	if inLineVersion(target, present) != "" {
-		return false
-	}
-	mx := maxVersion(present)
-	return mx != "" && semver.Compare("v"+target, "v"+mx) > 0
 }
 
 // isDowngrade reports whether target is a lower SemVer than current. Non-SemVer

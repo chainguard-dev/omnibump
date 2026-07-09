@@ -39,19 +39,6 @@ func Test_caretConstraint(t *testing.T) {
 	}
 }
 
-// Test_isDirect verifies base-name matching against a classifyDependencies map,
-// which is keyed "name@version".
-func Test_isDirect(t *testing.T) {
-	direct := map[string]bool{
-		"rand@0.8.5":    true,
-		"serde@1.0.228": true,
-	}
-	require.True(t, isDirect("rand", direct))
-	require.True(t, isDirect("serde", direct))
-	require.False(t, isDirect("tokio", direct))
-	require.False(t, isDirect("ran", direct))
-}
-
 // Test_decodeManifestSections covers detection of every declaration form across
 // the dependency tables: plain string, inline table with features, git/path
 // (non-registry), workspace-inherited, dev/build sections, and a
@@ -253,26 +240,25 @@ func Test_cargoCommand(t *testing.T) {
 	})
 }
 
-// Test_crossesSemverBoundary covers the detector that routes precise pins through
-// the manifest edit: true only when the target is outside every present caret line
-// AND above the highest present version (an upgrade cargo cannot make on its own).
-func Test_crossesSemverBoundary(t *testing.T) {
+// Test_satisfiesFloor covers the cheap pre-flight skip: true when a present
+// version is at or above the requested floor.
+func Test_satisfiesFloor(t *testing.T) {
 	tests := []struct {
 		name    string
-		target  string
 		present []string
+		floor   string
 		want    bool
 	}{
-		{name: "0.x cross-boundary upgrade", target: "0.9.0", present: []string{"0.8.5"}, want: true},
-		{name: "0.x in-line patch", target: "0.8.6", present: []string{"0.8.5"}, want: false},
-		{name: "0.x downgrade across boundary", target: "0.7.0", present: []string{"0.8.5"}, want: false},
-		{name: "major cross-boundary upgrade", target: "2.0.0", present: []string{"1.5.0"}, want: true},
-		{name: "major same line", target: "1.6.0", present: []string{"1.5.0"}, want: false},
-		{name: "nothing present", target: "0.9.0", present: nil, want: false},
+		{name: "above floor", present: []string{"0.9.4"}, floor: "0.9.0", want: true},
+		{name: "at floor", present: []string{"0.9.0"}, floor: "0.9.0", want: true},
+		{name: "below floor", present: []string{"0.8.5"}, floor: "0.9.0", want: false},
+		{name: "partial floor satisfied", present: []string{"0.9.4"}, floor: "0.9", want: true},
+		{name: "newer major satisfies", present: []string{"2.0.0"}, floor: "1.5.0", want: true},
+		{name: "nothing present", present: nil, floor: "0.9.0", want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, crossesSemverBoundary(tt.target, tt.present))
+			require.Equal(t, tt.want, satisfiesFloor(tt.present, tt.floor))
 		})
 	}
 }
@@ -328,7 +314,7 @@ func Test_CrossSemverDirect(t *testing.T) {
 
 	updated, err := GetCurrentPackages(context.Background(), cargoRoot)
 	require.NoError(t, err)
-	require.True(t, hasVersionInLine(updated, "rand", "0.9"), "expected rand 0.9.x in Cargo.lock")
+	require.True(t, cargoCompatible("0.9", lockedVersion(updated, "rand")), "expected rand 0.9.x in Cargo.lock")
 }
 
 // Test_CrossSemverWorkspaceInherited checks that a SemVer-breaking bump of a
@@ -367,28 +353,34 @@ rand = { workspace = true }
 
 	updated, err := GetCurrentPackages(context.Background(), cargoRoot)
 	require.NoError(t, err)
-	require.True(t, hasVersionInLine(updated, "rand", "0.9"), "expected rand 0.9.x in Cargo.lock")
+	require.True(t, cargoCompatible("0.9", lockedVersion(updated, "rand")), "expected rand 0.9.x in Cargo.lock")
 }
 
-// Test_CrossSemverIndirectHardFails confirms scope decision #1: a SemVer-breaking
-// bump of an INDIRECT dependency is not satisfied by a manifest edit (there is
-// nothing to edit — it is not declared in Cargo.toml) and keeps the pre-existing
-// hard failure. Only direct deps get the constraint rewrite. Needs network access.
-func Test_CrossSemverIndirectHardFails(t *testing.T) {
+// Test_CrossSemverIndirectResolves exercises the reverse-dependency engine on an
+// INDIRECT target: rand_core is pulled in transitively by rand ^0.8 (locked in the
+// 0.6 line). Requesting rand_core 0.9 is satisfied by bumping the direct dependency
+// rand to 0.9 (which requires rand_core 0.9) and editing demo's Cargo.toml — not by
+// adding rand_core directly. Needs network access.
+func Test_CrossSemverIndirectResolves(t *testing.T) {
 	cargoRoot := scaffoldRandCrate(t)
 
-	// rand_core is pulled in transitively by rand ^0.8 (locked at 0.6.x); it is
-	// not a direct dependency, so requesting a cross-line 0.9 must fail.
 	packages := map[string]*Package{"rand_core": {Name: "rand_core", Version: "0.9", Index: 0}}
 	original, err := GetCurrentPackages(context.Background(), cargoRoot)
 	require.NoError(t, err)
 
 	err = DoUpdate(context.Background(), packages, original, &UpdateConfig{CargoRoot: cargoRoot})
-	require.ErrorIs(t, err, ErrNoCompatibleVersion)
+	require.NoError(t, err)
 
+	// The gating direct dependency (rand) is the one edited, not the indirect target.
 	manifest, err := os.ReadFile(filepath.Join(cargoRoot, "Cargo.toml"))
 	require.NoError(t, err)
+	require.Contains(t, string(manifest), `rand = "0.9"`)
 	require.NotContains(t, string(manifest), "rand_core", "indirect dep must not be added to Cargo.toml")
+
+	updated, err := GetCurrentPackages(context.Background(), cargoRoot)
+	require.NoError(t, err)
+	require.True(t, cargoCompatible("0.9", lockedVersion(updated, "rand")), "expected rand 0.9.x in Cargo.lock")
+	require.True(t, cargoCompatible("0.9", lockedVersion(updated, "rand_core")), "expected rand_core 0.9.x in Cargo.lock")
 }
 
 // Test_CargoCheck_ReportsFailure verifies CargoCheck surfaces a compile failure
@@ -470,17 +462,6 @@ func generateLockfile(t *testing.T, cargoRoot string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("cargo generate-lockfile: %v\n%s", err, out)
 	}
-}
-
-// hasVersionInLine reports whether any locked instance of name falls in the same
-// caret line as want.
-func hasVersionInLine(pkgs []CargoPackage, name, want string) bool {
-	for _, p := range pkgs {
-		if p.Name == name && cargoCompatible(want, p.Version) {
-			return true
-		}
-	}
-	return false
 }
 
 // lockedVersion returns the version of the first locked instance of name, or ""
