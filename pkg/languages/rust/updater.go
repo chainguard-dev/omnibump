@@ -17,6 +17,10 @@ import (
 	"github.com/chainguard-dev/clog"
 )
 
+// checkBuild verifies the project still compiles after a SemVer-breaking edit.
+// It is a package var so tests can substitute a stub instead of invoking cargo.
+var checkBuild = CargoCheck
+
 // DoUpdate performs the actual update of Rust package dependencies.
 // Ported from cargobump/pkg/update.go.
 func DoUpdate(ctx context.Context, packages map[string]*Package, cargoPackages []CargoPackage, cfg *UpdateConfig) error {
@@ -332,10 +336,17 @@ func handleCrossSemver(ctx context.Context, cargoRoot string, t target, direct m
 		if err := runCargoUpdate(ctx, cargoRoot, []string{t.name}, "--precise", target); err != nil {
 			return true, err
 		}
-		return true, nil
-	}
-	if err := runCargoUpdate(ctx, cargoRoot, []string{t.name}); err != nil {
+	} else if err := runCargoUpdate(ctx, cargoRoot, []string{t.name}); err != nil {
 		return true, err
+	}
+
+	// The manifest edit intentionally broke SemVer, which can leave the project
+	// unbuildable. Verify with `cargo check`; failure means the upgrade is not
+	// viable. The edits are left on disk for the caller to inspect or discard.
+	log.Infof("Verifying the project builds after upgrading %s to %s", t.name, target)
+	if out, err := checkBuild(ctx, cargoRoot); err != nil {
+		log.Warnf("cargo check failed after upgrading %s to %s:\n%s", t.name, target, out)
+		return true, fmt.Errorf("%w: upgrading %s to %s does not compile", ErrUpgradeBrokeBuild, t.name, target)
 	}
 	return true, nil
 }

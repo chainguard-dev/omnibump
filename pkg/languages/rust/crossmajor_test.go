@@ -7,6 +7,7 @@ package rust
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -282,14 +283,7 @@ func Test_crossesSemverBoundary(t *testing.T) {
 // Without the manifest edit, `cargo update --precise` is rejected by the old
 // constraint. Needs network access.
 func Test_CrossSemverDirectPrecise(t *testing.T) {
-	cargoRoot := scaffoldCrate(t, `[package]
-name = "demo"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-rand = "0.8"
-`)
+	cargoRoot := scaffoldRandCrate(t)
 
 	original, err := GetCurrentPackages(context.Background(), cargoRoot)
 	require.NoError(t, err)
@@ -318,14 +312,7 @@ rand = "0.8"
 // hack) and moves Cargo.lock onto the new line. It scaffolds a minimal crate and
 // invokes real cargo, so it needs network/registry access.
 func Test_CrossSemverDirect(t *testing.T) {
-	cargoRoot := scaffoldCrate(t, `[package]
-name = "demo"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-rand = "0.8"
-`)
+	cargoRoot := scaffoldRandCrate(t)
 
 	packages := map[string]*Package{"rand": {Name: "rand", Version: "0.9", Index: 0}}
 	original, err := GetCurrentPackages(context.Background(), cargoRoot)
@@ -388,14 +375,7 @@ rand = { workspace = true }
 // nothing to edit — it is not declared in Cargo.toml) and keeps the pre-existing
 // hard failure. Only direct deps get the constraint rewrite. Needs network access.
 func Test_CrossSemverIndirectHardFails(t *testing.T) {
-	cargoRoot := scaffoldCrate(t, `[package]
-name = "demo"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-rand = "0.8"
-`)
+	cargoRoot := scaffoldRandCrate(t)
 
 	// rand_core is pulled in transitively by rand ^0.8 (locked at 0.6.x); it is
 	// not a direct dependency, so requesting a cross-line 0.9 must fail.
@@ -411,12 +391,68 @@ rand = "0.8"
 	require.NotContains(t, string(manifest), "rand_core", "indirect dep must not be added to Cargo.toml")
 }
 
-// scaffoldCrate writes a single-crate project (manifest + empty lib) into a temp
-// dir and generates its Cargo.lock, returning the crate root.
-func scaffoldCrate(t *testing.T, manifest string) string {
+// Test_CargoCheck_ReportsFailure verifies CargoCheck surfaces a compile failure
+// (error plus captured output). It uses a crate with invalid Rust so the check
+// fails deterministically without network access.
+func Test_CargoCheck_ReportsFailure(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "Cargo.toml"), `[package]
+name = "demo"
+version = "0.1.0"
+edition = "2021"
+`)
+	writeFile(t, filepath.Join(root, "src", "lib.rs"), "fn broken( { this is not valid rust")
+
+	out, err := CargoCheck(context.Background(), root)
+	require.Error(t, err)
+	require.NotEmpty(t, out, "expected cargo check to surface compiler output")
+}
+
+// errStubCheckFailed is the failure returned by the stubbed build check in
+// Test_CrossSemver_CheckFailureReturnsError.
+var errStubCheckFailed = errors.New("cargo check exit 101")
+
+// Test_CrossSemver_CheckFailureReturnsError verifies that when the post-edit
+// cargo check fails, the SemVer-breaking upgrade is rejected with
+// ErrUpgradeBrokeBuild and the edits are left on disk for the caller to discard.
+// The check is stubbed so the failure is deterministic. Needs network access for
+// the manifest edit / lock reconcile.
+func Test_CrossSemver_CheckFailureReturnsError(t *testing.T) {
+	cargoRoot := scaffoldRandCrate(t)
+
+	orig := checkBuild
+	checkBuild = func(_ context.Context, _ string) (string, error) {
+		return "simulated compile error", errStubCheckFailed
+	}
+	defer func() { checkBuild = orig }()
+
+	packages := map[string]*Package{"rand": {Name: "rand", Version: "0.9", Index: 0}}
+	original, err := GetCurrentPackages(context.Background(), cargoRoot)
+	require.NoError(t, err)
+
+	err = DoUpdate(context.Background(), packages, original, &UpdateConfig{CargoRoot: cargoRoot})
+	require.ErrorIs(t, err, ErrUpgradeBrokeBuild)
+
+	// Per the "leave edits in place" contract, the widened constraint remains.
+	manifest, rerr := os.ReadFile(filepath.Join(cargoRoot, "Cargo.toml"))
+	require.NoError(t, rerr)
+	require.Contains(t, string(manifest), `rand = "0.9"`)
+}
+
+// scaffoldRandCrate writes a single-crate project pinned at `rand = "0.8"` (the
+// shared cross-SemVer fixture: 0.8 -> 0.9 is a boundary-crossing bump) plus an
+// empty lib, generates its Cargo.lock, and returns the crate root.
+func scaffoldRandCrate(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "Cargo.toml"), manifest)
+	writeFile(t, filepath.Join(root, "Cargo.toml"), `[package]
+name = "demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = "0.8"
+`)
 	writeFile(t, filepath.Join(root, "src", "lib.rs"), "")
 	generateLockfile(t, root)
 	return root

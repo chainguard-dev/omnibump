@@ -232,6 +232,11 @@ workspace-inherited deps, then reconciles `Cargo.lock`. Indirect dependencies ar
 still upgraded by bumping the crates that pull them in; a crate that genuinely has
 no compatible fix is reported rather than producing a broken manifest.
 
+Because a SemVer-breaking bump can change APIs, omnibump runs `cargo check` after
+the edit. If the project no longer compiles, the upgrade is rejected with a clear
+"no compatible upgrade is possible" error instead of emitting a broken manifest.
+(The edited `Cargo.toml`/`Cargo.lock` are left in place for inspection.)
+
 #### Toolchain override
 
 omnibump runs every `cargo` command against the `stable` rustup toolchain (i.e.

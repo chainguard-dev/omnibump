@@ -48,6 +48,11 @@ var ErrUnexpectedIndexStatus = errors.New("unexpected status from crates.io inde
 // compatible version. This is a genuine failure: omnibump must not silently pass.
 var ErrNoCompatibleVersion = errors.New("no compatible version can be upgraded to")
 
+// ErrUpgradeBrokeBuild is returned when a SemVer-breaking manifest edit was
+// applied but `cargo check` then failed: the upgrade leaves the project
+// unbuildable, so no upgrade is possible.
+var ErrUpgradeBrokeBuild = errors.New("upgrade broke the build; no compatible upgrade is possible")
+
 // GetCargoLockPath returns the path to Cargo.lock in the given cargo root directory.
 func GetCargoLockPath(cargoRoot string) (string, error) {
 	cargoLockPath := filepath.Join(cargoRoot, "Cargo.lock")

@@ -62,7 +62,7 @@ func cargoCommand(ctx context.Context, dir string, args ...string) *exec.Cmd {
 		args = append([]string{"+" + tc}, args...)
 	}
 
-	log.Debugf("Running: cargo %s", strings.Join(args, " "))
+	log.Debugf("Running: cargo %s in %s", strings.Join(args, " "), dir)
 	cmd := exec.CommandContext(ctx, "cargo", args...) //nolint:gosec // fixed "cargo" binary; args are cargo specs/flags derived from the lockfile and manifest
 	cmd.Dir = dir
 	return cmd
@@ -89,6 +89,18 @@ func validateVersion(version string) error {
 		return fmt.Errorf("%w: %q (must be valid semver)", ErrInvalidVersion, version)
 	}
 	return nil
+}
+
+// CargoCheck runs `cargo check --workspace` to verify the project still compiles.
+// It returns the combined output (so compiler errors can be surfaced) and an error
+// if the check fails. Used to gate SemVer-breaking upgrades, which can leave the
+// project unbuildable.
+func CargoCheck(ctx context.Context, cargoRoot string) (string, error) {
+	cmd := cargoCommand(ctx, cargoRoot, "check", "--workspace")
+	if bytes, err := cmd.CombinedOutput(); err != nil {
+		return strings.TrimSpace(string(bytes)), err
+	}
+	return "", nil
 }
 
 // CargoUpdate runs 'cargo update' to refresh the Cargo.lock file.
