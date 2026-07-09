@@ -245,21 +245,24 @@ the edit. If the project no longer compiles, the upgrade is rejected with a clea
 
 #### Toolchain override
 
-omnibump runs every `cargo` command against the `stable` rustup toolchain (i.e.
-`cargo +stable ...`). This avoids failures when a project pins an old nightly
-toolchain that lacks features omnibump relies on (such as `cargo add`). Override
-the toolchain — or disable the override with an empty value — via an environment
-variable:
+When available, omnibump runs every `cargo` command against the `stable` rustup
+toolchain (i.e. `cargo +stable ...`). This avoids failures when a project pins an
+old nightly toolchain that lacks features omnibump relies on (such as `cargo add`).
+
+The override is applied only when this `cargo` actually supports the `+toolchain`
+syntax and the toolchain is installed — omnibump probes once and, if it isn't a
+rustup-managed cargo (or the toolchain is missing), silently runs `cargo` without
+the override rather than failing with `no such command: +stable`. Select a
+different toolchain, or disable the override with an empty value, via an
+environment variable:
 
 ```bash
 # Use a specific toolchain instead of stable
 OMNIBUMP_CARGO_TOOLCHAIN=1.82.0 omnibump --language rust --packages "rand@0.9" --dir .
 
-# Disable the override and use the project's default toolchain
+# Disable the override and always use the cargo on PATH as-is
 OMNIBUMP_CARGO_TOOLCHAIN= omnibump --language rust --packages "rand@0.9" --dir .
 ```
-
-Requires a rustup-managed cargo with the selected toolchain installed.
 
 ## Java (Maven) Projects
 

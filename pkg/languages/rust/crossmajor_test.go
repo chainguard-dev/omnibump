@@ -225,18 +225,42 @@ func Test_cargoToolchain(t *testing.T) {
 	})
 }
 
+// withToolchainProbe overrides the cargo toolchain-support probe and resets its
+// cached result for the duration of a test, restoring both afterward.
+func withToolchainProbe(t *testing.T, probe func(context.Context, string) bool) {
+	t.Helper()
+	toolchainMu.Lock()
+	origProbe, origArg, origDone := toolchainProbe, toolchainArg, toolchainDone
+	toolchainProbe, toolchainArg, toolchainDone = probe, "", false
+	toolchainMu.Unlock()
+	t.Cleanup(func() {
+		toolchainMu.Lock()
+		toolchainProbe, toolchainArg, toolchainDone = origProbe, origArg, origDone
+		toolchainMu.Unlock()
+	})
+}
+
 // Test_cargoCommand verifies the toolchain is inserted as a leading "+<toolchain>"
-// argument (before the subcommand) and omitted when disabled.
+// argument only when cargo supports it, and omitted when unsupported or disabled.
 func Test_cargoCommand(t *testing.T) {
-	t.Run("prepends toolchain override", func(t *testing.T) {
+	t.Run("prepends toolchain when supported", func(t *testing.T) {
 		t.Setenv(cargoToolchainEnv, "stable")
+		withToolchainProbe(t, func(context.Context, string) bool { return true })
 		cmd := cargoCommand(context.Background(), "/tmp/demo", "metadata", "--no-deps")
 		require.Equal(t, []string{"cargo", "+stable", "metadata", "--no-deps"}, cmd.Args)
 		require.Equal(t, "/tmp/demo", cmd.Dir)
 	})
 
-	t.Run("omits override when disabled", func(t *testing.T) {
+	t.Run("omits toolchain when cargo does not support it", func(t *testing.T) {
+		t.Setenv(cargoToolchainEnv, "stable")
+		withToolchainProbe(t, func(context.Context, string) bool { return false })
+		cmd := cargoCommand(context.Background(), "/tmp/demo", "update")
+		require.Equal(t, []string{"cargo", "update"}, cmd.Args)
+	})
+
+	t.Run("omits toolchain when disabled", func(t *testing.T) {
 		t.Setenv(cargoToolchainEnv, "")
+		withToolchainProbe(t, func(context.Context, string) bool { return true })
 		cmd := cargoCommand(context.Background(), "/tmp/demo", "update")
 		require.Equal(t, []string{"cargo", "update"}, cmd.Args)
 	})

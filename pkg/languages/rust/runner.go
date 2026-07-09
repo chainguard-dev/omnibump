@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/chainguard-dev/clog"
 )
@@ -51,15 +52,59 @@ func cargoToolchain() string {
 	return "stable"
 }
 
+// toolchainProbe reports whether `cargo +<toolchain>` is accepted by the cargo on
+// PATH. Only a rustup proxy (with the toolchain installed) understands the
+// `+toolchain` syntax; a plain cargo binary fails with
+// "error: no such command: +<toolchain>", and a rustup proxy missing the toolchain
+// fails with "toolchain '<toolchain>' is not installed". Overridable in tests.
+var toolchainProbe = func(ctx context.Context, toolchain string) bool {
+	// Output is discarded (nil Stdout/Stderr); this is a capability check only.
+	cmd := exec.CommandContext(ctx, "cargo", "+"+toolchain, "--version") //nolint:gosec // toolchain is from OMNIBUMP_CARGO_TOOLCHAIN or the "stable" default
+	return cmd.Run() == nil
+}
+
+var (
+	toolchainMu   sync.Mutex
+	toolchainArg  string
+	toolchainDone bool
+)
+
+// cargoToolchainArg returns the leading "+<toolchain>" argument to prepend to cargo
+// invocations, or "" when no override should be applied. The configured toolchain
+// (cargoToolchain) is used only when this cargo actually supports the `+toolchain`
+// syntax and that toolchain is available — otherwise cargo would fail with
+// "no such command: +<toolchain>". The support check is probed at most once and
+// cached for the process.
+func cargoToolchainArg(ctx context.Context) string {
+	toolchainMu.Lock()
+	defer toolchainMu.Unlock()
+	if toolchainDone {
+		return toolchainArg
+	}
+	toolchainDone = true
+
+	tc := cargoToolchain()
+	if tc == "" {
+		return ""
+	}
+	if !toolchainProbe(ctx, tc) {
+		clog.FromContext(ctx).Debugf("cargo does not support the +%s toolchain override; running without it", tc)
+		return ""
+	}
+	toolchainArg = "+" + tc
+	return toolchainArg
+}
+
 // cargoCommand builds an *exec.Cmd for `cargo [+toolchain] args...` rooted at dir.
-// The toolchain override (see cargoToolchain) is inserted before the subcommand,
-// where rustup expects it. All cargo invocations in this package go through here
-// so the toolchain is applied consistently.
+// The toolchain override (see cargoToolchainArg) is inserted before the subcommand,
+// where rustup expects it, and only when this cargo supports it. All cargo
+// invocations in this package go through here so the toolchain is applied
+// consistently.
 func cargoCommand(ctx context.Context, dir string, args ...string) *exec.Cmd {
 	log := clog.FromContext(ctx)
 
-	if tc := cargoToolchain(); tc != "" {
-		args = append([]string{"+" + tc}, args...)
+	if arg := cargoToolchainArg(ctx); arg != "" {
+		args = append([]string{arg}, args...)
 	}
 
 	log.Debugf("Running: cargo %s in %s", strings.Join(args, " "), dir)
