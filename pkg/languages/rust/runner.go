@@ -54,7 +54,7 @@ func cargoToolchain() string {
 
 // toolchainProbe reports whether `cargo +<toolchain>` is accepted by the cargo on
 // PATH. Only a rustup proxy (with the toolchain installed) understands the
-// `+toolchain` syntax; a plain cargo binary fails with
+// `+toolchain` syntax; a plain cargo binary (or a wrapper like cargo auditable) fails with
 // "error: no such command: +<toolchain>", and a rustup proxy missing the toolchain
 // fails with "toolchain '<toolchain>' is not installed". Overridable in tests.
 var toolchainProbe = func(ctx context.Context, toolchain string) bool {

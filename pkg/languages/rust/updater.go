@@ -80,6 +80,24 @@ func targetSpec(pkgName, version string) string {
 	return pkgName + "@" + version
 }
 
+// invertedTreeSpec returns the cargo pkgid to root `cargo tree -i` at. cargo emits
+// one inverted tree per locked version of a crate, and the parser requires a single
+// root, so when several versions are locked this scopes the query to the specific
+// instance in the requested line (t.version — the caret line for @version, the
+// "from" line for =precise). A request that doesn't match any locked line is
+// ambiguous. A single locked version needs no scoping and returns the bare name.
+func invertedTreeSpec(name string, t target, present []string) (string, error) {
+	if len(present) <= 1 {
+		return name, nil
+	}
+	instance := inLineVersion(t.version, present)
+	if instance == "" {
+		return "", fmt.Errorf("%w: %s is locked at multiple versions (%s), none matching %s; pin one as %s@<version>",
+			ErrAmbiguousTarget, name, joinVersions(present), t.version, name)
+	}
+	return name + "@" + instance, nil
+}
+
 // findMatchingPackages finds all packages in Cargo.lock that match the given name.
 // This handles cases where a package name can have @version appended for specific version updates.
 func findMatchingPackages(name string, cargoPackages []CargoPackage) []CargoPackage {
@@ -187,9 +205,16 @@ func upgradeReverseDependencies(ctx context.Context, cargoRoot string, arg strin
 		memberSet[m.name] = true
 	}
 
+	// Scope the inverted-tree query so cargo emits a single tree even when the
+	// crate is locked at multiple versions (see invertedTreeSpec).
+	treeSpec, err := invertedTreeSpec(t.name, t, present)
+	if err != nil {
+		return err
+	}
+
 	plan, err := revdep.Calculate(ctx, t.name, floor, revdep.Options{
-		Tree: func(ctx context.Context, crate string) (string, error) {
-			return cargoTreeInverted(ctx, cargoRoot, crate)
+		Tree: func(ctx context.Context, _ string) (string, error) {
+			return cargoTreeInverted(ctx, cargoRoot, treeSpec)
 		},
 		IndexURL:         cratesIndexBaseURL + "/",
 		HTTP:             indexHTTPClient,

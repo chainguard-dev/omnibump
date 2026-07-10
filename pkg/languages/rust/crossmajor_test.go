@@ -319,6 +319,34 @@ func Test_verifyTransitiveUpgrade(t *testing.T) {
 	}
 }
 
+// Test_invertedTreeSpec covers scoping the `cargo tree -i` query when a crate is
+// locked at multiple versions: single version needs no scoping, a multi-version
+// request scopes to the in-line instance, and one that matches no line is ambiguous.
+func Test_invertedTreeSpec(t *testing.T) {
+	t.Run("single version uses the bare name", func(t *testing.T) {
+		spec, err := invertedTreeSpec("rand", parseTarget("rand@0.9.0"), []string{"0.8.5"})
+		require.NoError(t, err)
+		require.Equal(t, "rand", spec)
+	})
+
+	t.Run("multiple versions scope to the requested line (@version)", func(t *testing.T) {
+		spec, err := invertedTreeSpec("rand", parseTarget("rand@0.8.6"), []string{"0.7.3", "0.8.5"})
+		require.NoError(t, err)
+		require.Equal(t, "rand@0.8.5", spec)
+	})
+
+	t.Run("multiple versions scope to the from line (=precise)", func(t *testing.T) {
+		spec, err := invertedTreeSpec("rand", parseTarget("rand@0.7.3=0.7.9"), []string{"0.7.3", "0.8.5"})
+		require.NoError(t, err)
+		require.Equal(t, "rand@0.7.3", spec)
+	})
+
+	t.Run("multiple versions matching no line is ambiguous", func(t *testing.T) {
+		_, err := invertedTreeSpec("rand", parseTarget("rand@0.9.0"), []string{"0.7.3", "0.8.5"})
+		require.ErrorIs(t, err, ErrAmbiguousTarget)
+	})
+}
+
 // Test_satisfiesFloor covers the cheap pre-flight skip: true when a present
 // version is at or above the requested floor.
 func Test_satisfiesFloor(t *testing.T) {

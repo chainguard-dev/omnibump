@@ -5,7 +5,10 @@ SPDX-License-Identifier: Apache-2.0
 
 package revdep
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestRequirementMatches(t *testing.T) {
 	cases := []struct {
@@ -85,6 +88,16 @@ func TestParseTreeASCII(t *testing.T) {
 	gix := root.Children[0].Children
 	if len(gix) != 1 || gix[0].Name != "gix" || gix[0].Version != "0.72.1" {
 		t.Fatalf("bad grandchild: %+v", gix)
+	}
+}
+
+func TestParseTreeMultipleRoots(t *testing.T) {
+	// cargo tree -i for a crate locked at two versions emits two depth-0 roots.
+	// This must be refused, not silently reduced to the first tree.
+	in := "0rand v0.7.3\n1foo v1.0.0\n0rand v0.8.5\n1bar v2.0.0\n"
+	_, err := ParseTree(in)
+	if !errors.Is(err, errMultipleRoots) {
+		t.Fatalf("expected errMultipleRoots, got %v", err)
 	}
 }
 

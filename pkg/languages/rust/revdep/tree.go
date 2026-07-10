@@ -7,10 +7,14 @@ package revdep
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 )
 
-var errNoRoot = errors.New("could not find a root crate in the tree output")
+var (
+	errNoRoot        = errors.New("could not find a root crate in the tree output")
+	errMultipleRoots = errors.New("multiple inverted-tree roots (crate locked at several versions)")
+)
 
 // TreeNode is a node in an inverted dependency tree. In `cargo tree -i` output
 // the root is the queried crate and each child is a crate that depends on it.
@@ -41,9 +45,14 @@ func ParseTree(text string) (*TreeNode, error) {
 		node := &TreeNode{Name: pl.name, Version: pl.version, Path: pl.path}
 
 		if depth == 0 {
-			if root == nil {
-				root = node
+			// A second depth-0 line means cargo emitted more than one inverted tree
+			// (the crate is locked at several versions). Refuse it rather than
+			// silently keeping only the first; callers must scope the query to a
+			// single version.
+			if root != nil {
+				return nil, fmt.Errorf("%w: %s", errMultipleRoots, node.Name)
 			}
+			root = node
 			stack = []*TreeNode{node}
 			continue
 		}
