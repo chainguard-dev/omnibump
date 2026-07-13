@@ -182,6 +182,14 @@ func runUpdate(t *testing.T, update bool) (original, updated []CargoPackage) {
 		Update:    update,
 	}
 
+	// This fixture is a manifest + lockfile only (no crate source), so the
+	// post-upgrade `cargo check` gate cannot compile it. This test verifies
+	// lockfile mutation, not compilation; the check gate is covered separately by
+	// compilable scaffolds (see crossmajor_test.go). Stub it to a no-op.
+	restore := checkBuild
+	checkBuild = func(context.Context, string) (string, error) { return "", nil }
+	defer func() { checkBuild = restore }()
+
 	if err = DoUpdate(context.Background(), patches, original, cfg); err != nil {
 		t.Errorf("failed to update packages: %v", err)
 	}

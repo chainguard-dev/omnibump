@@ -59,3 +59,16 @@ type UpdateConfig struct {
 	Update    bool // Run 'cargo update' before updating packages
 	ShowDiff  bool
 }
+
+// manifestSection records one place a crate is declared in a Cargo.toml manifest.
+// A crate can be declared in several sections (e.g. both [dependencies] and
+// [dev-dependencies], or under a [target.'cfg(...)'.dependencies] table), so a
+// cross-SemVer bump must edit every one of them. The fields carry exactly what a
+// `cargo add` invocation needs to target the same declaration.
+type manifestSection struct {
+	member    string // owning workspace member's package name, for `cargo add --package`
+	kind      string // "" (normal), "dev", or "build"
+	target    string // cfg/target string for a [target.'...'.dependencies] entry; "" otherwise
+	inherited bool   // the member declares `dep.workspace = true`; the constraint lives in the root [workspace.dependencies]
+	registry  bool   // a registry (crates.io) dependency; false for git/path deps, which cannot be bumped by version
+}

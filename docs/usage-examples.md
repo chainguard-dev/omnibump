@@ -203,6 +203,67 @@ omnibump analyze .
 omnibump analyze --output json > analysis.json
 ```
 
+### Example 6: CVE Remediation Across a SemVer Boundary (Replacing sed)
+
+When a CVE fix for a **direct** dependency only ships in a new SemVer line (e.g.
+`tracing-subscriber` `0.2` → `0.3`), the version requirement in `Cargo.toml` must
+change — `cargo update` alone cannot cross the caret boundary.
+
+**Old approach (manual sed):**
+
+```bash
+sed -i 's/tracing-subscriber = "0.2"/tracing-subscriber = "0.3"/' Cargo.toml
+cargo update -p tracing-subscriber
+```
+
+`sed` corrupts inline-table declarations (`dep = { version = "0.2", features = [...] }`),
+is blind to which section (`[dependencies]` vs `[dev-dependencies]` vs
+target-specific) the crate lives in, and cannot follow workspace inheritance.
+
+**New approach (omnibump):**
+
+```bash
+omnibump --language rust --packages "tracing-subscriber@0.3" --dir . --show-diff
+```
+
+omnibump rewrites the constraint to the new caret line via `cargo add` (preserving
+features and formatting), or edits the root `[workspace.dependencies]` table for
+workspace-inherited deps, then reconciles `Cargo.lock`.
+
+This works for **indirect** targets too. When the crate to remediate is pulled in
+transitively, omnibump walks the inverted dependency tree (via the crates.io index)
+to find the direct dependency that gates it, computes the **minimum** version that
+direct dependency must reach so the fix becomes available, edits that constraint,
+and pins the boundary crate precisely — cargo then resolves the transitive graph. A
+crate that genuinely has no compatible fix is reported rather than producing a
+broken manifest.
+
+Because a SemVer-breaking bump can change APIs, omnibump runs `cargo check` after
+the edit. If the project no longer compiles, the upgrade is rejected with a clear
+"no compatible upgrade is possible" error instead of emitting a broken manifest.
+(The edited `Cargo.toml`/`Cargo.lock` are left in place for inspection.)
+
+#### Toolchain override
+
+When available, omnibump runs every `cargo` command against the `stable` rustup
+toolchain (i.e. `cargo +stable ...`). This avoids failures when a project pins an
+old nightly toolchain that lacks features omnibump relies on (such as `cargo add`).
+
+The override is applied only when this `cargo` actually supports the `+toolchain`
+syntax and the toolchain is installed — omnibump probes once and, if it isn't a
+rustup-managed cargo (or the toolchain is missing), silently runs `cargo` without
+the override rather than failing with `no such command: +stable`. Select a
+different toolchain, or disable the override with an empty value, via an
+environment variable:
+
+```bash
+# Use a specific toolchain instead of stable
+OMNIBUMP_CARGO_TOOLCHAIN=1.82.0 omnibump --language rust --packages "rand@0.9" --dir .
+
+# Disable the override and always use the cargo on PATH as-is
+OMNIBUMP_CARGO_TOOLCHAIN= omnibump --language rust --packages "rand@0.9" --dir .
+```
+
 ## Java (Maven) Projects
 
 ### Example 1: Update Dependencies Directly
