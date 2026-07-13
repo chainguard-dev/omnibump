@@ -98,6 +98,25 @@ func invertedTreeSpec(name string, t target, present []string) (string, error) {
 	return name + "@" + instance, nil
 }
 
+// floorSatisfiedInLine reports whether the crate already meets the floor, so the
+// upgrade can be skipped. When the requested line (t.version's caret line) is
+// present, it is judged on its own: a crate locked at several incompatible lines
+// (e.g. rand 0.9.0 and 0.10.1, required by different crates) must not have a stale
+// target line masked by a higher unrelated line. When the requested line is
+// absent, the crate only exists on other lines, so the global check applies — if
+// a higher line already meets the floor there is nothing to bump, and forcing the
+// crate down onto the requested line would be a cross-line downgrade that breaks
+// its dependents. A bare name (no @version) always uses the global check; its
+// single present version is guaranteed (multiple are rejected as ambiguous first).
+func floorSatisfiedInLine(t target, present []string, floor string) bool {
+	if t.hasVersion {
+		if inLine := inLineVersion(t.version, present); inLine != "" {
+			return satisfiesFloor([]string{inLine}, floor)
+		}
+	}
+	return satisfiesFloor(present, floor)
+}
+
 // findMatchingPackages finds all packages in Cargo.lock that match the given name.
 // This handles cases where a package name can have @version appended for specific version updates.
 func findMatchingPackages(name string, cargoPackages []CargoPackage) []CargoPackage {
@@ -188,9 +207,9 @@ func upgradeReverseDependencies(ctx context.Context, cargoRoot string, arg strin
 		floor = latest
 	}
 
-	// Cheap skip: a present version already satisfies the floor. A precise pin must
-	// still run so the exact version is landed.
-	if !t.isPrecise && satisfiesFloor(present, floor) {
+	// Cheap skip: the crate already satisfies the floor within the target's SemVer
+	// line. A precise pin must still run so the exact version is landed.
+	if !t.isPrecise && floorSatisfiedInLine(t, present, floor) {
 		log.Infof("%s already satisfies >= %s; skipping", t.name, floor)
 		return nil
 	}

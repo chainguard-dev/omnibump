@@ -404,6 +404,115 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 	}
 }
 
+// TestRust_Validate_AboveFloorSameLine covers floor semantics within a line: a
+// crate ahead of the requested version but in the same caret line (tokio 1.50.0
+// for a 1.43.1 request) satisfies the ">= 1.43.1" contract and must not warn.
+func TestRust_Validate_AboveFloorSameLine(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cargoLockContent := `
+version = 3
+
+[[package]]
+name = "tokio"
+version = "1.50.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+`
+	cargoLockPath := filepath.Join(tmpDir, "Cargo.lock")
+	require.NoError(t, os.WriteFile(cargoLockPath, []byte(cargoLockContent), 0o600))
+
+	r := &Rust{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "tokio", Version: "1.43.1"},
+		},
+	}
+
+	var recs []slog.Record
+	ctx := clog.WithLogger(context.Background(), clog.New(capturingHandler{&recs}))
+	require.NoError(t, r.Validate(ctx, cfg))
+
+	for _, rec := range recs {
+		require.NotContainsf(t, rec.Message, "expected", "unexpected warning: %q", rec.Message)
+		require.NotContainsf(t, rec.Message, "not found", "unexpected warning: %q", rec.Message)
+	}
+}
+
+// TestRust_Validate_MovedToHigherLine covers a crate whose requested line is
+// absent because a dependent pulled it onto a higher line (anstream 0.6.8
+// requested, but only 1.0.0 is locked). 1.0.0 satisfies the >= 0.6.8 floor, so
+// the update correctly left it alone and Validate must not warn "not found".
+func TestRust_Validate_MovedToHigherLine(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cargoLockContent := `
+version = 3
+
+[[package]]
+name = "anstream"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+`
+	cargoLockPath := filepath.Join(tmpDir, "Cargo.lock")
+	require.NoError(t, os.WriteFile(cargoLockPath, []byte(cargoLockContent), 0o600))
+
+	r := &Rust{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "anstream", Version: "0.6.8"},
+		},
+	}
+
+	var recs []slog.Record
+	ctx := clog.WithLogger(context.Background(), clog.New(capturingHandler{&recs}))
+	require.NoError(t, r.Validate(ctx, cfg))
+
+	for _, rec := range recs {
+		require.NotContainsf(t, rec.Message, "not found", "unexpected not-found warning: %q", rec.Message)
+		require.NotContainsf(t, rec.Message, "expected", "unexpected mismatch warning: %q", rec.Message)
+	}
+}
+
+// TestRust_Validate_BelowFloorNoLine covers the genuine failure: the requested
+// line is absent and every present instance is below the requested version, so a
+// warning must still fire.
+func TestRust_Validate_BelowFloorNoLine(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cargoLockContent := `
+version = 3
+
+[[package]]
+name = "anstream"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+`
+	cargoLockPath := filepath.Join(tmpDir, "Cargo.lock")
+	require.NoError(t, os.WriteFile(cargoLockPath, []byte(cargoLockContent), 0o600))
+
+	r := &Rust{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "anstream", Version: "0.6.8"},
+		},
+	}
+
+	var recs []slog.Record
+	ctx := clog.WithLogger(context.Background(), clog.New(capturingHandler{&recs}))
+	require.NoError(t, r.Validate(ctx, cfg))
+
+	found := false
+	for _, rec := range recs {
+		if strings.Contains(rec.Message, "expected >= 0.6.8") {
+			found = true
+		}
+	}
+	require.True(t, found, "expected a below-floor warning, got %v", recs)
+}
+
 func TestRustAnalyzer_Analyze(t *testing.T) {
 	tmpDir := t.TempDir()
 

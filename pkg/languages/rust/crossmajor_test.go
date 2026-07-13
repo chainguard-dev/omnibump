@@ -370,6 +370,65 @@ func Test_satisfiesFloor(t *testing.T) {
 	}
 }
 
+// Test_floorSatisfiedInLine covers the skip decision when a crate is locked at
+// several SemVer-incompatible lines: the target's own line must be judged on its
+// own, so a higher unrelated line cannot mask a stale target line.
+func Test_floorSatisfiedInLine(t *testing.T) {
+	tests := []struct {
+		name    string
+		target  target
+		present []string
+		floor   string
+		want    bool
+	}{
+		{
+			name:    "unrelated higher line does not satisfy target line",
+			target:  target{name: "rand", version: "0.9.4", hasVersion: true},
+			present: []string{"0.9.0", "0.10.1"}, floor: "0.9.4", want: false,
+		},
+		{
+			name:    "target line at floor",
+			target:  target{name: "rand", version: "0.9.4", hasVersion: true},
+			present: []string{"0.9.4", "0.10.1"}, floor: "0.9.4", want: true,
+		},
+		{
+			name:    "target line above floor",
+			target:  target{name: "rand", version: "0.9.4", hasVersion: true},
+			present: []string{"0.9.6", "0.10.1"}, floor: "0.9.4", want: true,
+		},
+		{
+			// The requested line is gone (the crate moved to a higher line, e.g.
+			// anstream 0.6 -> 1.0 pulled up by a dependent). A higher line already
+			// meets the floor, so skip rather than force a cross-line downgrade.
+			name:    "target line absent, higher line satisfies",
+			target:  target{name: "anstream", version: "0.6.8", hasVersion: true},
+			present: []string{"1.0.1"}, floor: "0.6.8", want: true,
+		},
+		{
+			// The requested line is gone and only a lower line remains: a genuine
+			// cross-line upgrade is still needed, so do not skip.
+			name:    "target line absent, only lower line",
+			target:  target{name: "anstream", version: "0.6.8", hasVersion: true},
+			present: []string{"0.5.0"}, floor: "0.6.8", want: false,
+		},
+		{
+			name:    "bare name single present at floor",
+			target:  target{name: "rand"},
+			present: []string{"0.9.4"}, floor: "0.9.4", want: true,
+		},
+		{
+			name:    "bare name single present below floor",
+			target:  target{name: "rand"},
+			present: []string{"0.9.0"}, floor: "0.9.4", want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, floorSatisfiedInLine(tt.target, tt.present, tt.floor))
+		})
+	}
+}
+
 // Test_CrossSemverDirectPrecise is an end-to-end check that a precise-pin bump
 // (name@from=to) of a DIRECT dependency across a SemVer boundary rewrites the
 // Cargo.toml constraint before pinning, then lands the exact target in Cargo.lock.

@@ -150,25 +150,41 @@ func (r *Rust) Validate(ctx context.Context, cfg *languages.UpdateConfig) error 
 
 	for _, dep := range cfg.Dependencies {
 		baseName, _, _ := strings.Cut(dep.Name, "@")
-		found := false
-		for _, pkg := range packageMap[baseName] {
-			// A crate can be locked at multiple SemVer-incompatible versions in one
-			// Cargo.lock (e.g. rand 0.9.0 and 0.10.1, each required by a different
-			// crate). Only the instance in the same Cargo caret line as the target
-			// belongs to this update; instances in other lines are unrelated and must
-			// not be validated against dep.Version. This also handles pinned names:
-			// the stale version embedded in "name@old" sits in a line the caret
-			// filter excludes once the target lands in another.
-			if !cargoCompatible(dep.Version, pkg.Version) {
-				continue
-			}
-			found = true
-			if pkg.Version != dep.Version {
-				log.Warnf("Dependency %s: expected %s, got %s", baseName, dep.Version, pkg.Version)
+		instances := packageMap[baseName]
+		if len(instances) == 0 {
+			log.Warnf("Dependency not found in Cargo.lock: %s", dep.Name)
+			continue
+		}
+
+		// The request names a SemVer line (dep.Version's Cargo caret line) and a
+		// floor within it; the updater's contract is ">= dep.Version", so Validate
+		// checks the floor, not exact equality (e.g. tokio 1.50.0 satisfies a
+		// request for 1.43.1).
+		var versions, inLine []string
+		for _, pkg := range instances {
+			versions = append(versions, pkg.Version)
+			if cargoCompatible(dep.Version, pkg.Version) {
+				inLine = append(inLine, pkg.Version)
 			}
 		}
-		if !found {
-			log.Warnf("Dependency not found in Cargo.lock: %s", dep.Name)
+
+		// When the requested line is present, its instance must have reached the
+		// floor. A crate locked at several incompatible lines (rand 0.9.0 and
+		// 0.10.1, required by different crates) is judged on its own line, so a
+		// higher unrelated line cannot mask a stale target line.
+		if len(inLine) > 0 {
+			if !satisfiesFloor(inLine, dep.Version) {
+				log.Warnf("Dependency %s: expected >= %s, got %s", baseName, dep.Version, joinVersions(inLine))
+			}
+			continue
+		}
+
+		// The requested line is absent: the crate may have been pulled onto a higher
+		// line by a dependent (e.g. anstream 0.6 -> 1.0), which still satisfies the
+		// floor — the update correctly left it alone. Warn only when every present
+		// instance is below the requested version.
+		if !satisfiesFloor(versions, dep.Version) {
+			log.Warnf("Dependency %s: expected >= %s, got %s", baseName, dep.Version, joinVersions(versions))
 		}
 	}
 
