@@ -226,7 +226,16 @@ func upgradeReverseDependencies(ctx context.Context, cargoRoot string, arg strin
 
 	changed := len(plan.Edits) > 0 || len(plan.Boundaries) > 0
 	if !changed && !t.isPrecise {
-		log.Infof("%s already satisfies >= %s; nothing to upgrade", t.name, floor)
+		// An empty plan here (we are past the satisfiesFloor skip, so the floor is
+		// not yet met) means no manifest constraint needs widening: the graph
+		// already permits the floor, but the lock is still pinned below it. This
+		// happens for a transitively-pulled crate whose every dependent already
+		// allows the target. Advance the lock within the already-permitted range;
+		// no SemVer constraint is being broken, so no cargo check is needed.
+		log.Infof("%s: constraints already permit >= %s; refreshing the lock", t.name, floor)
+		if err := runCargoUpdate(ctx, cargoRoot, []string{treeSpec}, "--precise", floor); err != nil {
+			return err
+		}
 		return nil
 	}
 

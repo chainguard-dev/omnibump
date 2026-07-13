@@ -490,6 +490,38 @@ func Test_CrossSemverIndirectResolves(t *testing.T) {
 	require.True(t, cargoCompatible("0.9", lockedVersion(updated, "rand_core")), "expected rand_core 0.9.x in Cargo.lock")
 }
 
+// Test_InRangeIndirectRefreshesLock covers the empty-plan case: a transitively
+// pulled crate (rand_core, via rand ^0.8) whose dependents already permit the
+// requested version, so revdep computes no manifest edit or boundary pin. The lock
+// is nonetheless stale (pinned below the target), so the upgrade must still advance
+// it via `cargo update --precise` rather than reporting "nothing to upgrade". Needs
+// network access.
+func Test_InRangeIndirectRefreshesLock(t *testing.T) {
+	cargoRoot := scaffoldRandCrate(t)
+
+	// Force the transitive rand_core lock entry behind the latest 0.6.x so an
+	// in-range upgrade is available without any manifest constraint change.
+	require.NoError(t, runCargoUpdate(context.Background(), cargoRoot, []string{"rand_core"}, "--precise", "0.6.3"))
+
+	original, err := GetCurrentPackages(context.Background(), cargoRoot)
+	require.NoError(t, err)
+	require.Equal(t, "0.6.3", lockedVersion(original, "rand_core"), "expected rand_core pinned behind the target")
+
+	// rand's ^0.6 requirement already permits 0.6.4, so the revdep plan is empty.
+	packages := map[string]*Package{"rand_core": {Name: "rand_core", Version: "0.6.4", Index: 0}}
+	err = DoUpdate(context.Background(), packages, original, &UpdateConfig{CargoRoot: cargoRoot})
+	require.NoError(t, err)
+
+	updated, err := GetCurrentPackages(context.Background(), cargoRoot)
+	require.NoError(t, err)
+	require.Equal(t, "0.6.4", lockedVersion(updated, "rand_core"), "in-range lock must be advanced, not left stale")
+
+	// The upgrade needed no manifest edit; the indirect target must not be added.
+	manifest, err := os.ReadFile(filepath.Join(cargoRoot, "Cargo.toml"))
+	require.NoError(t, err)
+	require.NotContains(t, string(manifest), "rand_core", "in-range upgrade must not edit Cargo.toml")
+}
+
 // Test_CargoCheck_ReportsFailure verifies CargoCheck surfaces a compile failure
 // (error plus captured output). It uses a crate with invalid Rust so the check
 // fails deterministically without network access.

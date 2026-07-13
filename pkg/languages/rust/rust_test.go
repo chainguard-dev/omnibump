@@ -7,11 +7,13 @@ package rust
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 	"github.com/stretchr/testify/assert"
@@ -356,6 +358,50 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 	// Validate logs warnings but doesn't return error for missing packages
 	err = r.Validate(context.Background(), cfg)
 	require.NoError(t, err)
+}
+
+// TestRust_Validate_MultipleVersions guards against the misleading warning that
+// fired when a crate was legitimately locked at two SemVer-incompatible versions
+// (rand 0.9.0 and 0.10.1, each required by a different crate). Validation must
+// only assert the target against the instance in its own caret line, not compare
+// 0.9.0 against the unrelated 0.10.1 instance.
+func TestRust_Validate_MultipleVersions(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cargoLockContent := `
+version = 3
+
+[[package]]
+name = "rand"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "rand"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+`
+	cargoLockPath := filepath.Join(tmpDir, "Cargo.lock")
+	require.NoError(t, os.WriteFile(cargoLockPath, []byte(cargoLockContent), 0o600))
+
+	r := &Rust{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "rand", Version: "0.9.0"},
+		},
+	}
+
+	var recs []slog.Record
+	ctx := clog.WithLogger(context.Background(), clog.New(capturingHandler{&recs}))
+	require.NoError(t, r.Validate(ctx, cfg))
+
+	// The 0.9.0 target landed in its line and the 0.10.1 instance is a separate
+	// line, so neither a version-mismatch nor a not-found warning should fire.
+	for _, rec := range recs {
+		require.NotContainsf(t, rec.Message, "expected", "unexpected mismatch warning: %q", rec.Message)
+		require.NotContainsf(t, rec.Message, "not found", "unexpected not-found warning: %q", rec.Message)
+	}
 }
 
 func TestRustAnalyzer_Analyze(t *testing.T) {

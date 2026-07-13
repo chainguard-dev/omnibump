@@ -149,14 +149,17 @@ func (r *Rust) Validate(ctx context.Context, cfg *languages.UpdateConfig) error 
 	}
 
 	for _, dep := range cfg.Dependencies {
-		baseName, _, pinned := strings.Cut(dep.Name, "@")
+		baseName, _, _ := strings.Cut(dep.Name, "@")
 		found := false
 		for _, pkg := range packageMap[baseName] {
-			// Validation runs against the post-update Cargo.lock, so the version
-			// embedded in a pinned name (the old/current version) is gone. For a
-			// pinned dependency the relevant instance is the one now at the target
-			// version, so match against dep.Version rather than the stale pin.
-			if pinned && pkg.Version != dep.Version {
+			// A crate can be locked at multiple SemVer-incompatible versions in one
+			// Cargo.lock (e.g. rand 0.9.0 and 0.10.1, each required by a different
+			// crate). Only the instance in the same Cargo caret line as the target
+			// belongs to this update; instances in other lines are unrelated and must
+			// not be validated against dep.Version. This also handles pinned names:
+			// the stale version embedded in "name@old" sits in a line the caret
+			// filter excludes once the target lands in another.
+			if !cargoCompatible(dep.Version, pkg.Version) {
 				continue
 			}
 			found = true
