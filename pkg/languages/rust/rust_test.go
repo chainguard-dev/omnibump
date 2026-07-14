@@ -513,6 +513,65 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 	require.True(t, found, "expected a below-floor warning, got %v", recs)
 }
 
+// TestRust_Validate_PrecisePin covers the @-suffixed precise-pin form
+// (name@from=to), where ParseInlinePackages keeps the "@from" in dep.Name and
+// puts the exact target in dep.Version. Validate judges it on its caret line with
+// floor (>=) semantics, exactly like every other request — the "@from" marker only
+// contributes the base name. Landing at or above the exact target in the same line
+// is satisfied (the exact-match/refused-downgrade failure mode is owned by
+// pinPrecise/verifyTransitiveUpgrade in the updater); a below-floor lock still warns.
+func TestRust_Validate_PrecisePin(t *testing.T) {
+	tests := []struct {
+		name        string
+		lockVersion string
+		wantWarn    bool
+	}{
+		{name: "exact target satisfied", lockVersion: "0.9.3", wantWarn: false},
+		{name: "above target same line satisfied", lockVersion: "0.9.5", wantWarn: false},
+		{name: "below target warns", lockVersion: "0.9.1", wantWarn: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+
+			cargoLockContent := `
+version = 3
+
+[[package]]
+name = "rand"
+version = "` + tt.lockVersion + `"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+`
+			cargoLockPath := filepath.Join(tmpDir, "Cargo.lock")
+			require.NoError(t, os.WriteFile(cargoLockPath, []byte(cargoLockContent), 0o600))
+
+			r := &Rust{}
+			cfg := &languages.UpdateConfig{
+				RootDir: tmpDir,
+				Dependencies: []languages.Dependency{
+					// Precise pin: the "@0.9.0" from-line marker survives in the name,
+					// the exact target (0.9.3) is the version.
+					{Name: "rand@0.9.0", Version: "0.9.3"},
+				},
+			}
+
+			var recs []slog.Record
+			ctx := clog.WithLogger(context.Background(), clog.New(capturingHandler{&recs}))
+			require.NoError(t, r.Validate(ctx, cfg))
+
+			warned := false
+			for _, rec := range recs {
+				if strings.Contains(rec.Message, "expected >= 0.9.3") {
+					warned = true
+				}
+				require.NotContainsf(t, rec.Message, "not found", "unexpected not-found warning: %q", rec.Message)
+			}
+			require.Equal(t, tt.wantWarn, warned, "warning mismatch, got %v", recs)
+		})
+	}
+}
+
 func TestRustAnalyzer_Analyze(t *testing.T) {
 	tmpDir := t.TempDir()
 
