@@ -505,6 +505,28 @@ func (m *projectModel) variableSitesFor(name string) []variableSite {
 	return sites
 }
 
+// visibleVariableSites returns the definition sites of varPath that are
+// visible to a declaration in build b. Script-local variables (Groovy
+// def/var/String and Kotlin val) are file-scoped in Gradle: a local declared
+// in another build file is not in scope, so it must not be rewritten on behalf
+// of a reference elsewhere. Shared definitions -- ext properties, extra
+// properties, version maps and gradle.properties -- are project-global and
+// always visible. b == nil (no known requesting file) keeps every site.
+func (m *projectModel) visibleVariableSites(varPath string, b *gradlefile.BuildFile) []variableSite {
+	all := m.variableSites[varPath]
+	if b == nil {
+		return all
+	}
+	var visible []variableSite
+	for _, s := range all {
+		if s.build != nil && s.varDef.Local && s.build != b {
+			continue
+		}
+		visible = append(visible, s)
+	}
+	return visible
+}
+
 // resolveCatalogValue returns the effective version of a catalog library:
 // the referenced version key's value, or the inline version.
 func (m *projectModel) resolveCatalogValue(library gradlefile.CatalogLibrary) string {

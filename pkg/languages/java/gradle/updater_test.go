@@ -250,6 +250,38 @@ func TestGradle_Update_ElasticsearchStyle_TypedVarsAndMapAppend(t *testing.T) {
 	}
 }
 
+func TestGradle_Update_KotlinValCrossModuleAliasing(t *testing.T) {
+	// Code-review finding #1: the widened Kotlin `val` capture treats every
+	// string-valued `val` as a version source, and variableSites is keyed by
+	// bare name across the whole project. The `app` module's unrelated
+	// `val nettyVersion` (its own artifact version) shares a name with the
+	// dependency version declared in `lib`. Bumping io.netty:netty-codec routes
+	// through applyVariableRef, which sets EVERY site of the shared name --
+	// clobbering the app module's unrelated declaration.
+	dir := copyFixture(t, "kotlin-val-collision")
+
+	g := &Gradle{}
+	if err := g.Update(t.Context(), &languages.UpdateConfig{
+		RootDir: dir,
+		Dependencies: []languages.Dependency{
+			{Name: "io.netty:netty-codec", Version: "4.1.118.Final"},
+		},
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	lib := readFile(t, filepath.Join(dir, "lib", "build.gradle.kts"))
+	if !strings.Contains(lib, `val nettyVersion = "4.1.118.Final"`) {
+		t.Errorf("lib nettyVersion not bumped:\n%s", lib)
+	}
+
+	// The app module's unrelated artifact version must NOT have been rewritten.
+	app := readFile(t, filepath.Join(dir, "app", "build.gradle.kts"))
+	if !strings.Contains(app, `val nettyVersion = "9.9.9"`) {
+		t.Errorf("app module's unrelated `val nettyVersion` was clobbered by the cross-module bump:\n%s", app)
+	}
+}
+
 func TestGradle_Update_Substitution(t *testing.T) {
 	dir := copyFixture(t, "kayenta-style")
 

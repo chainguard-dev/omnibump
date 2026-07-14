@@ -77,6 +77,13 @@ type VarDef struct {
 	// Value is the current value.
 	Value string
 
+	// Local reports that this definition is a script-local variable (a Groovy
+	// def/var/String or a Kotlin val) rather than a shared ext/extra property,
+	// version map, or gradle.properties entry. Locals are visible only within
+	// their own build script; consumers must not resolve a reference in one
+	// build file to a local declaration in another.
+	Local bool
+
 	valueSpan span
 }
 
@@ -379,17 +386,21 @@ func (f *BuildFile) scanCatalogRefs(content []byte) {
 
 var (
 	// groovyTypedAssignPattern matches Groovy local version declarations in
-	// def, var, and typed String forms, with optional leading modifiers:
+	// def, var, and typed String forms, with optional leading annotations
+	// (e.g. @Field) and modifiers:
 	//   def x = '...'          String x = "..."
 	//   final String x = '...' var x = "..."
-	// Group 1: name, group 2: value.
-	groovyTypedAssignPattern = regexp.MustCompile(`(?m)^\s*(?:(?:final|static|public|private|protected)\s+)*(?:def|var|String)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']([^"']*)["']\s*$`)
+	//   @Field String x = '...'
+	// Group 1: name, group 2: value. Applied only to Groovy scripts.
+	groovyTypedAssignPattern = regexp.MustCompile(`(?m)^\s*(?:@[\w.]+(?:\([^)]*\))?\s+)*(?:(?:final|static|public|private|protected)\s+)*(?:def|var|String)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']([^"']*)["']\s*$`)
 
-	// kotlinValAssignPattern matches Kotlin val version declarations, with an
-	// optional String type annotation and optional leading modifiers:
+	// kotlinValAssignPattern matches Kotlin val version declarations, with
+	// optional leading annotations (e.g. @JvmStatic), an optional String type
+	// annotation, and optional leading modifiers:
 	//   val x = "..."   val x: String = "..."   const val x = "..."
-	// Group 1: name, group 2: value.
-	kotlinValAssignPattern = regexp.MustCompile(`(?m)^\s*(?:(?:const|private|internal|public|protected)\s+)*val\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*String\s*)?=\s*"([^"]*)"\s*$`)
+	//   @JvmStatic const val x = "..."
+	// Group 1: name, group 2: value. Applied only to Kotlin scripts.
+	kotlinValAssignPattern = regexp.MustCompile(`(?m)^\s*(?:@[\w.]+(?:\([^)]*\))?\s+)*(?:(?:const|private|internal|public|protected)\s+)*val\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*String\s*)?=\s*"([^"]*)"\s*$`)
 
 	extBlockPattern = regexp.MustCompile(`(?m)^\s*ext\s*\{`)
 )
@@ -493,21 +504,34 @@ func (f *BuildFile) scanFlatAssignments(content []byte) {
 			valueSpan: span{m[6], m[7]},
 		})
 	}
-	for _, pattern := range []*regexp.Regexp{groovyTypedAssignPattern, kotlinValAssignPattern} {
-		for _, m := range pattern.FindAllSubmatchIndex(content, -1) {
-			if lineIsComment(content, m[0]) {
-				continue
-			}
-			name := string(content[m[2]:m[3]])
-			if _, reserved := reservedVarNames[name]; reserved {
-				continue
-			}
-			f.addVar(VarDef{
-				Name:      name,
-				Value:     string(content[m[4]:m[5]]),
-				valueSpan: span{m[4], m[5]},
-			})
+	// Script-local declarations are DSL-specific: Groovy uses def/var/String,
+	// Kotlin uses val. Applying only the matching dialect's pattern avoids
+	// mining a construct that has no meaning in the other DSL.
+	typedPattern := groovyTypedAssignPattern
+	if f.dsl == Kotlin {
+		typedPattern = kotlinValAssignPattern
+	}
+	for _, m := range typedPattern.FindAllSubmatchIndex(content, -1) {
+		if lineIsComment(content, m[0]) {
+			continue
 		}
+		name := string(content[m[2]:m[3]])
+		if _, reserved := reservedVarNames[name]; reserved {
+			continue
+		}
+		value := string(content[m[4]:m[5]])
+		// A ':'-bearing value is a Maven coordinate (or other non-version
+		// string), not a version literal; the coordinate-literal scan records
+		// the dependency itself. Mirrors the guard in scanExtMaps.
+		if strings.Contains(value, ":") {
+			continue
+		}
+		f.addVar(VarDef{
+			Name:      name,
+			Value:     value,
+			valueSpan: span{m[4], m[5]},
+			Local:     true,
+		})
 	}
 }
 

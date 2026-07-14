@@ -41,6 +41,16 @@ func findVar(t *testing.T, f *BuildFile, path string) VarDef {
 	return VarDef{}
 }
 
+// lookupVar returns the variable with the given path, if recorded.
+func lookupVar(f *BuildFile, path string) (VarDef, bool) {
+	for _, v := range f.Variables() {
+		if v.Path() == path {
+			return v, true
+		}
+	}
+	return VarDef{}, false
+}
+
 func TestParseBuild_StringNotation(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -504,6 +514,80 @@ dependencies {
 	}
 	if !strings.Contains(string(f.Content()), `'azureReactorNetty': '1.0.48',`) {
 		t.Errorf("updated content missing new map-append entry value:\n%s", f.Content())
+	}
+}
+
+// --- Over-broad / edge-case characterization tests (code-review findings) ---
+//
+// These tests document the boundaries of the widened typed-variable and `<<`
+// map-append matching. Each asserts the behavior a careful reviewer would
+// expect; a failure means the reviewed diff over- or under-matches there.
+
+// Finding #2 (accepted limitation): `<<` is Groovy's generic collection-append
+// operator, so a plain list append whose elements are map literals is mined as
+// if it were a versions map. This is the same syntactic ambiguity the existing
+// `+=` / `=` map forms carry and is treated identically: harmless because such
+// entries are only ever rewritten if a dependency coordinate interpolates them
+// by path (e.g. "${releaseNotes.build}"), which real collection appends never
+// do. This test documents the boundary rather than asserting a fix.
+func TestParseBuild_LeftShiftListAppendIsAcceptedOverCapture(t *testing.T) {
+	content := `releaseNotes << [
+    title: 'Initial',
+    build: '1.2.3',
+]`
+	f := mustParseBuild(t, "build.gradle", content)
+	if _, ok := lookupVar(f, "releaseNotes.build"); !ok {
+		t.Errorf("expected `<<` map entries to be captured (consistent with `+=`): %v", f.Variables())
+	}
+}
+
+// Finding #3: the Kotlin `val` pattern and the Groovy `def/var/String` pattern
+// must be gated by DSL, so a Kotlin `val` is not captured in a Groovy build
+// file where it has no meaning as a version declaration.
+func TestParseBuild_CrossDSLValInGroovyFile(t *testing.T) {
+	content := `val someConstant = "not-a-version"`
+	f := mustParseBuild(t, "build.gradle", content) // Groovy DSL
+	if _, ok := lookupVar(f, "someConstant"); ok {
+		t.Errorf("Kotlin `val` captured in a Groovy build file: %v", f.Variables())
+	}
+}
+
+// Finding #4: a typed String whose value is a full Maven coordinate is a
+// coordinate, not a version, so it must not be recorded as a redundant version
+// variable (scanFlatAssignments now guards `:`-bearing values, mirroring
+// scanExtMaps). The coordinate-literal scan still records the dependency
+// itself, so the version remains editable in place.
+func TestParseBuild_TypedStringWithCoordinateValue(t *testing.T) {
+	content := `String lz4 = "org.lz4:lz4-java:1.8.0"`
+	f := mustParseBuild(t, "build.gradle", content)
+	if v, ok := lookupVar(f, "lz4"); ok {
+		t.Errorf("coordinate-valued String captured as a version variable: value=%q", v.Value)
+	}
+	// The dependency is still recognized with an editable literal version.
+	d := findDecl(t, f, "org.lz4", "lz4-java", StringNotation)
+	if d.Version != "1.8.0" {
+		t.Errorf("coordinate version = %q, want 1.8.0", d.Version)
+	}
+	if err := f.SetDependencyVersion(d, "1.8.1"); err != nil {
+		t.Fatalf("SetDependencyVersion() error = %v", err)
+	}
+	if !strings.Contains(string(f.Content()), `"org.lz4:lz4-java:1.8.1"`) {
+		t.Errorf("coordinate version not editable in place:\n%s", f.Content())
+	}
+}
+
+// Finding #5: annotation-prefixed declarations are missed. A Groovy script
+// field annotated with @Field is a real version source; failing to capture it
+// means a bump leaves the source literal stale.
+func TestParseBuild_AnnotationPrefixedDeclarationCaptured(t *testing.T) {
+	content := `@Field String nettyVersion = '4.1.100.Final'
+
+dependencies {
+    implementation "io.netty:netty-codec:${nettyVersion}"
+}`
+	f := mustParseBuild(t, "build.gradle", content)
+	if _, ok := lookupVar(f, "nettyVersion"); !ok {
+		t.Errorf("@Field-annotated version declaration not captured; bump would leave it stale: %v", f.Variables())
 	}
 }
 

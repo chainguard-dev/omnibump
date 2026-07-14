@@ -238,7 +238,7 @@ func effectiveVersions(model *projectModel, module, group, artifact string) []ef
 				desc:    fmt.Sprintf("has version %s", site.decl.Version),
 			})
 		case site.decl.VarRef != "":
-			versions = append(versions, variableEffectiveVersions(model, site.decl.VarRef)...)
+			versions = append(versions, variableEffectiveVersions(model, site.decl.VarRef, site.build)...)
 		}
 	}
 	for _, site := range model.libraryFnSites[artifact] {
@@ -261,7 +261,7 @@ func effectiveVersions(model *projectModel, module, group, artifact string) []ef
 				})
 			}
 		case rule.VarRef != "":
-			versions = append(versions, variableEffectiveVersions(model, rule.VarRef)...)
+			versions = append(versions, variableEffectiveVersions(model, rule.VarRef, site.build)...)
 		case rule.Version != "":
 			versions = append(versions, effectiveVersion{
 				version: rule.Version,
@@ -281,8 +281,8 @@ func effectiveVersions(model *projectModel, module, group, artifact string) []ef
 // variableEffectiveVersions resolves a variable reference the same way the
 // updater routes it: definition sites first, then the catalog-accessor
 // bridge ("${versions.x}" resolving to the catalog version key x).
-func variableEffectiveVersions(model *projectModel, varPath string) []effectiveVersion {
-	varSites := model.variableSites[varPath]
+func variableEffectiveVersions(model *projectModel, varPath string, from *gradlefile.BuildFile) []effectiveVersion {
+	varSites := model.visibleVariableSites(varPath, from)
 	if len(varSites) == 0 {
 		if key, ok := model.catalogKeyForVarPath(varPath); ok {
 			versions := make([]effectiveVersion, 0, len(model.catalogVersionSites[key]))
