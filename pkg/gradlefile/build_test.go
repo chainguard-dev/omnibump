@@ -396,6 +396,117 @@ val jacksonVersion by extra("2.17.2")`
 	}
 }
 
+func TestParseBuild_TypedVariableDeclarations(t *testing.T) {
+	// Elasticsearch libs/x-content/impl/build.gradle style: a typed String
+	// declaration interpolated into coordinates.
+	content := `String jacksonVersion = "2.17.2"
+final String slf4jVersion = '2.0.9'
+var log4jVersion = "2.25.1"
+
+dependencies {
+    implementation "com.fasterxml.jackson.core:jackson-core:${jacksonVersion}"
+}`
+	f := mustParseBuild(t, "build.gradle", content)
+
+	if findVar(t, f, "jacksonVersion").Value != "2.17.2" {
+		t.Error("jacksonVersion not parsed from String declaration")
+	}
+	if findVar(t, f, "slf4jVersion").Value != "2.0.9" {
+		t.Error("slf4jVersion not parsed from final String declaration")
+	}
+	if findVar(t, f, "log4jVersion").Value != "2.25.1" {
+		t.Error("log4jVersion not parsed from var declaration")
+	}
+
+	// The coordinate resolves its version through the typed variable.
+	d := findDecl(t, f, "com.fasterxml.jackson.core", "jackson-core", StringNotation)
+	if d.VarRef != "jacksonVersion" {
+		t.Errorf("coordinate VarRef = %q, want jacksonVersion", d.VarRef)
+	}
+
+	// The typed declaration is editable in place.
+	if err := f.SetVariable(findVar(t, f, "jacksonVersion"), "2.18.0"); err != nil {
+		t.Fatalf("SetVariable() error = %v", err)
+	}
+	if !strings.Contains(string(f.Content()), `String jacksonVersion = "2.18.0"`) {
+		t.Errorf("updated content missing new String value:\n%s", f.Content())
+	}
+}
+
+func TestParseBuild_KotlinValDeclarations(t *testing.T) {
+	content := `val jacksonVersion = "2.17.2"
+val nettyVersion: String = "4.1.100.Final"
+const val log4jVersion = "2.25.1"`
+	f := mustParseBuild(t, "build.gradle.kts", content)
+
+	if findVar(t, f, "jacksonVersion").Value != "2.17.2" {
+		t.Error("jacksonVersion not parsed from bare val declaration")
+	}
+	if findVar(t, f, "nettyVersion").Value != "4.1.100.Final" {
+		t.Error("nettyVersion not parsed from typed val declaration")
+	}
+	if findVar(t, f, "log4jVersion").Value != "2.25.1" {
+		t.Error("log4jVersion not parsed from const val declaration")
+	}
+
+	if err := f.SetVariable(findVar(t, f, "nettyVersion"), "4.1.133.Final"); err != nil {
+		t.Fatalf("SetVariable() error = %v", err)
+	}
+	if !strings.Contains(string(f.Content()), `val nettyVersion: String = "4.1.133.Final"`) {
+		t.Errorf("updated content missing new val value:\n%s", f.Content())
+	}
+}
+
+func TestParseBuild_TypedDeclarationsSkipReservedNames(t *testing.T) {
+	content := `String version = "9.9.9"
+val group = "com.example"`
+	groovy := mustParseBuild(t, "build.gradle", content)
+	for _, v := range groovy.Variables() {
+		if v.Name == "version" {
+			t.Error("reserved name 'version' must not be recorded from String declaration")
+		}
+	}
+	kotlin := mustParseBuild(t, "build.gradle.kts", content)
+	for _, v := range kotlin.Variables() {
+		if v.Name == "group" {
+			t.Error("reserved name 'group' must not be recorded from val declaration")
+		}
+	}
+}
+
+func TestParseBuild_ExtVersionMapLeftShiftAppend(t *testing.T) {
+	// Elasticsearch modules/repository-azure/build.gradle style: a `<<` append
+	// to an existing versions map, interpolated into coordinates.
+	content := `versions << [
+  'azureReactorNetty': '1.0.45',
+]
+
+dependencies {
+    api "io.projectreactor.netty:reactor-netty-core:${versions.azureReactorNetty}"
+}`
+	f := mustParseBuild(t, "build.gradle", content)
+
+	v := findVar(t, f, "versions.azureReactorNetty")
+	if v.Value != "1.0.45" {
+		t.Errorf("versions.azureReactorNetty = %q, want 1.0.45", v.Value)
+	}
+	if v.MapName != "versions" || v.Name != "azureReactorNetty" {
+		t.Errorf("MapName/Name = %q/%q, want versions/azureReactorNetty", v.MapName, v.Name)
+	}
+
+	d := findDecl(t, f, "io.projectreactor.netty", "reactor-netty-core", StringNotation)
+	if d.VarRef != "versions.azureReactorNetty" {
+		t.Errorf("coordinate VarRef = %q, want versions.azureReactorNetty", d.VarRef)
+	}
+
+	if err := f.SetVariable(v, "1.0.48"); err != nil {
+		t.Fatalf("SetVariable() error = %v", err)
+	}
+	if !strings.Contains(string(f.Content()), `'azureReactorNetty': '1.0.48',`) {
+		t.Errorf("updated content missing new map-append entry value:\n%s", f.Content())
+	}
+}
+
 func TestParseBuild_SkipsComments(t *testing.T) {
 	content := `dependencies {
     // implementation("io.netty:netty-codec:4.1.0.Final")

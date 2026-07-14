@@ -206,6 +206,50 @@ func TestGradle_Update_ElasticsearchStyle_VersionProperties(t *testing.T) {
 	}
 }
 
+func TestGradle_Update_ElasticsearchStyle_TypedVarsAndMapAppend(t *testing.T) {
+	dir := copyFixture(t, "elasticsearch-typed-vars-style")
+
+	// Bumps whose coordinates interpolate a typed `String x = "..."` variable
+	// and a `versions << [...]` map-append entry (AUTO-761). Both source
+	// literals must be rewritten in place, not left stale, in addition to the
+	// managed-block force pin.
+	updateAndValidate(t, &languages.UpdateConfig{
+		RootDir: dir,
+		Dependencies: []languages.Dependency{
+			{Name: "com.fasterxml.jackson.core:jackson-core", Version: "2.18.6"},
+			{Name: "io.projectreactor.netty:reactor-netty-core", Version: "1.0.48"},
+		},
+	})
+
+	build := readFile(t, filepath.Join(dir, "build.gradle"))
+	for _, want := range []string{
+		`String jacksonVersion = "2.18.6"`, // typed String literal edited in place
+		`'azureReactorNetty': '1.0.48',`,   // `<<` map-append entry edited in place
+	} {
+		if !strings.Contains(build, want) {
+			t.Errorf("build.gradle missing in-place edit %q:\n%s", want, build)
+		}
+	}
+	// The interpolations are preserved (only the variable definitions changed).
+	for _, want := range []string{
+		`jackson-core:${jacksonVersion}`,
+		`reactor-netty-core:${versions.azureReactorNetty}`,
+	} {
+		if !strings.Contains(build, want) {
+			t.Errorf("build.gradle interpolation not preserved %q:\n%s", want, build)
+		}
+	}
+
+	// The bumps are also force-pinned in the managed block.
+	coords := managedCoordinates(t, filepath.Join(dir, "settings.gradle"))
+	if coords["com.fasterxml.jackson.core:jackson-core"] != "2.18.6" {
+		t.Errorf("jackson-core not force-pinned: %v", coords)
+	}
+	if coords["io.projectreactor.netty:reactor-netty-core"] != "1.0.48" {
+		t.Errorf("reactor-netty-core not force-pinned: %v", coords)
+	}
+}
+
 func TestGradle_Update_Substitution(t *testing.T) {
 	dir := copyFixture(t, "kayenta-style")
 

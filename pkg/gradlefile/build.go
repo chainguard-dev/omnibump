@@ -378,8 +378,20 @@ func (f *BuildFile) scanCatalogRefs(content []byte) {
 }
 
 var (
-	defAssignPattern = regexp.MustCompile(`(?m)^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']([^"']*)["']\s*$`)
-	extBlockPattern  = regexp.MustCompile(`(?m)^\s*ext\s*\{`)
+	// groovyTypedAssignPattern matches Groovy local version declarations in
+	// def, var, and typed String forms, with optional leading modifiers:
+	//   def x = '...'          String x = "..."
+	//   final String x = '...' var x = "..."
+	// Group 1: name, group 2: value.
+	groovyTypedAssignPattern = regexp.MustCompile(`(?m)^\s*(?:(?:final|static|public|private|protected)\s+)*(?:def|var|String)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']([^"']*)["']\s*$`)
+
+	// kotlinValAssignPattern matches Kotlin val version declarations, with an
+	// optional String type annotation and optional leading modifiers:
+	//   val x = "..."   val x: String = "..."   const val x = "..."
+	// Group 1: name, group 2: value.
+	kotlinValAssignPattern = regexp.MustCompile(`(?m)^\s*(?:(?:const|private|internal|public|protected)\s+)*val\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*String\s*)?=\s*"([^"]*)"\s*$`)
+
+	extBlockPattern = regexp.MustCompile(`(?m)^\s*ext\s*\{`)
 )
 
 // reservedVarNames are bare assignment names that describe the project
@@ -460,8 +472,9 @@ func (f *BuildFile) scanExtBlocks(content []byte) {
 	}
 }
 
-// scanFlatAssignments records ext.name = 'value' assignments and Groovy def
-// assignments anywhere in the script.
+// scanFlatAssignments records ext.name = 'value' assignments and local
+// version declarations (Groovy def/var/String, Kotlin val) anywhere in the
+// script.
 func (f *BuildFile) scanFlatAssignments(content []byte) {
 	for _, m := range extFlatAssignPattern.FindAllSubmatchIndex(content, -1) {
 		if m[2] < 0 { // bare assignment outside an ext block: too ambiguous
@@ -480,15 +493,21 @@ func (f *BuildFile) scanFlatAssignments(content []byte) {
 			valueSpan: span{m[6], m[7]},
 		})
 	}
-	for _, m := range defAssignPattern.FindAllSubmatchIndex(content, -1) {
-		if lineIsComment(content, m[0]) {
-			continue
+	for _, pattern := range []*regexp.Regexp{groovyTypedAssignPattern, kotlinValAssignPattern} {
+		for _, m := range pattern.FindAllSubmatchIndex(content, -1) {
+			if lineIsComment(content, m[0]) {
+				continue
+			}
+			name := string(content[m[2]:m[3]])
+			if _, reserved := reservedVarNames[name]; reserved {
+				continue
+			}
+			f.addVar(VarDef{
+				Name:      name,
+				Value:     string(content[m[4]:m[5]]),
+				valueSpan: span{m[4], m[5]},
+			})
 		}
-		f.addVar(VarDef{
-			Name:      string(content[m[2]:m[3]]),
-			Value:     string(content[m[4]:m[5]]),
-			valueSpan: span{m[4], m[5]},
-		})
 	}
 }
 
