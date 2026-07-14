@@ -370,6 +370,65 @@ func Test_satisfiesFloor(t *testing.T) {
 	}
 }
 
+// Test_floorSatisfiedInLine covers the skip decision when a crate is locked at
+// several SemVer-incompatible lines: the target's own line must be judged on its
+// own, so a higher unrelated line cannot mask a stale target line.
+func Test_floorSatisfiedInLine(t *testing.T) {
+	tests := []struct {
+		name    string
+		target  target
+		present []string
+		floor   string
+		want    bool
+	}{
+		{
+			name:    "unrelated higher line does not satisfy target line",
+			target:  target{name: "rand", version: "0.9.4", hasVersion: true},
+			present: []string{"0.9.0", "0.10.1"}, floor: "0.9.4", want: false,
+		},
+		{
+			name:    "target line at floor",
+			target:  target{name: "rand", version: "0.9.4", hasVersion: true},
+			present: []string{"0.9.4", "0.10.1"}, floor: "0.9.4", want: true,
+		},
+		{
+			name:    "target line above floor",
+			target:  target{name: "rand", version: "0.9.4", hasVersion: true},
+			present: []string{"0.9.6", "0.10.1"}, floor: "0.9.4", want: true,
+		},
+		{
+			// The requested line is gone (the crate moved to a higher line, e.g.
+			// anstream 0.6 -> 1.0 pulled up by a dependent). A higher line already
+			// meets the floor, so skip rather than force a cross-line downgrade.
+			name:    "target line absent, higher line satisfies",
+			target:  target{name: "anstream", version: "0.6.8", hasVersion: true},
+			present: []string{"1.0.1"}, floor: "0.6.8", want: true,
+		},
+		{
+			// The requested line is gone and only a lower line remains: a genuine
+			// cross-line upgrade is still needed, so do not skip.
+			name:    "target line absent, only lower line",
+			target:  target{name: "anstream", version: "0.6.8", hasVersion: true},
+			present: []string{"0.5.0"}, floor: "0.6.8", want: false,
+		},
+		{
+			name:    "bare name single present at floor",
+			target:  target{name: "rand"},
+			present: []string{"0.9.4"}, floor: "0.9.4", want: true,
+		},
+		{
+			name:    "bare name single present below floor",
+			target:  target{name: "rand"},
+			present: []string{"0.9.0"}, floor: "0.9.4", want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, floorSatisfiedInLine(tt.target, tt.present, tt.floor))
+		})
+	}
+}
+
 // Test_CrossSemverDirectPrecise is an end-to-end check that a precise-pin bump
 // (name@from=to) of a DIRECT dependency across a SemVer boundary rewrites the
 // Cargo.toml constraint before pinning, then lands the exact target in Cargo.lock.
@@ -488,6 +547,38 @@ func Test_CrossSemverIndirectResolves(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, cargoCompatible("0.9", lockedVersion(updated, "rand")), "expected rand 0.9.x in Cargo.lock")
 	require.True(t, cargoCompatible("0.9", lockedVersion(updated, "rand_core")), "expected rand_core 0.9.x in Cargo.lock")
+}
+
+// Test_InRangeIndirectRefreshesLock covers the empty-plan case: a transitively
+// pulled crate (rand_core, via rand ^0.8) whose dependents already permit the
+// requested version, so revdep computes no manifest edit or boundary pin. The lock
+// is nonetheless stale (pinned below the target), so the upgrade must still advance
+// it via `cargo update --precise` rather than reporting "nothing to upgrade". Needs
+// network access.
+func Test_InRangeIndirectRefreshesLock(t *testing.T) {
+	cargoRoot := scaffoldRandCrate(t)
+
+	// Force the transitive rand_core lock entry behind the latest 0.6.x so an
+	// in-range upgrade is available without any manifest constraint change.
+	require.NoError(t, runCargoUpdate(context.Background(), cargoRoot, []string{"rand_core"}, "--precise", "0.6.3"))
+
+	original, err := GetCurrentPackages(context.Background(), cargoRoot)
+	require.NoError(t, err)
+	require.Equal(t, "0.6.3", lockedVersion(original, "rand_core"), "expected rand_core pinned behind the target")
+
+	// rand's ^0.6 requirement already permits 0.6.4, so the revdep plan is empty.
+	packages := map[string]*Package{"rand_core": {Name: "rand_core", Version: "0.6.4", Index: 0}}
+	err = DoUpdate(context.Background(), packages, original, &UpdateConfig{CargoRoot: cargoRoot})
+	require.NoError(t, err)
+
+	updated, err := GetCurrentPackages(context.Background(), cargoRoot)
+	require.NoError(t, err)
+	require.Equal(t, "0.6.4", lockedVersion(updated, "rand_core"), "in-range lock must be advanced, not left stale")
+
+	// The upgrade needed no manifest edit; the indirect target must not be added.
+	manifest, err := os.ReadFile(filepath.Join(cargoRoot, "Cargo.toml"))
+	require.NoError(t, err)
+	require.NotContains(t, string(manifest), "rand_core", "in-range upgrade must not edit Cargo.toml")
 }
 
 // Test_CargoCheck_ReportsFailure verifies CargoCheck surfaces a compile failure

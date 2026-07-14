@@ -7,11 +7,13 @@ package rust
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
 	"github.com/stretchr/testify/assert"
@@ -356,6 +358,218 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 	// Validate logs warnings but doesn't return error for missing packages
 	err = r.Validate(context.Background(), cfg)
 	require.NoError(t, err)
+}
+
+// TestRust_Validate_MultipleVersions guards against the misleading warning that
+// fired when a crate was legitimately locked at two SemVer-incompatible versions
+// (rand 0.9.0 and 0.10.1, each required by a different crate). Validation must
+// only assert the target against the instance in its own caret line, not compare
+// 0.9.0 against the unrelated 0.10.1 instance.
+func TestRust_Validate_MultipleVersions(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cargoLockContent := `
+version = 3
+
+[[package]]
+name = "rand"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "rand"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+`
+	cargoLockPath := filepath.Join(tmpDir, "Cargo.lock")
+	require.NoError(t, os.WriteFile(cargoLockPath, []byte(cargoLockContent), 0o600))
+
+	r := &Rust{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "rand", Version: "0.9.0"},
+		},
+	}
+
+	var recs []slog.Record
+	ctx := clog.WithLogger(context.Background(), clog.New(capturingHandler{&recs}))
+	require.NoError(t, r.Validate(ctx, cfg))
+
+	// The 0.9.0 target landed in its line and the 0.10.1 instance is a separate
+	// line, so neither a version-mismatch nor a not-found warning should fire.
+	for _, rec := range recs {
+		require.NotContainsf(t, rec.Message, "expected", "unexpected mismatch warning: %q", rec.Message)
+		require.NotContainsf(t, rec.Message, "not found", "unexpected not-found warning: %q", rec.Message)
+	}
+}
+
+// TestRust_Validate_AboveFloorSameLine covers floor semantics within a line: a
+// crate ahead of the requested version but in the same caret line (tokio 1.50.0
+// for a 1.43.1 request) satisfies the ">= 1.43.1" contract and must not warn.
+func TestRust_Validate_AboveFloorSameLine(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cargoLockContent := `
+version = 3
+
+[[package]]
+name = "tokio"
+version = "1.50.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+`
+	cargoLockPath := filepath.Join(tmpDir, "Cargo.lock")
+	require.NoError(t, os.WriteFile(cargoLockPath, []byte(cargoLockContent), 0o600))
+
+	r := &Rust{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "tokio", Version: "1.43.1"},
+		},
+	}
+
+	var recs []slog.Record
+	ctx := clog.WithLogger(context.Background(), clog.New(capturingHandler{&recs}))
+	require.NoError(t, r.Validate(ctx, cfg))
+
+	for _, rec := range recs {
+		require.NotContainsf(t, rec.Message, "expected", "unexpected warning: %q", rec.Message)
+		require.NotContainsf(t, rec.Message, "not found", "unexpected warning: %q", rec.Message)
+	}
+}
+
+// TestRust_Validate_MovedToHigherLine covers a crate whose requested line is
+// absent because a dependent pulled it onto a higher line (anstream 0.6.8
+// requested, but only 1.0.0 is locked). 1.0.0 satisfies the >= 0.6.8 floor, so
+// the update correctly left it alone and Validate must not warn "not found".
+func TestRust_Validate_MovedToHigherLine(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cargoLockContent := `
+version = 3
+
+[[package]]
+name = "anstream"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+`
+	cargoLockPath := filepath.Join(tmpDir, "Cargo.lock")
+	require.NoError(t, os.WriteFile(cargoLockPath, []byte(cargoLockContent), 0o600))
+
+	r := &Rust{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "anstream", Version: "0.6.8"},
+		},
+	}
+
+	var recs []slog.Record
+	ctx := clog.WithLogger(context.Background(), clog.New(capturingHandler{&recs}))
+	require.NoError(t, r.Validate(ctx, cfg))
+
+	for _, rec := range recs {
+		require.NotContainsf(t, rec.Message, "not found", "unexpected not-found warning: %q", rec.Message)
+		require.NotContainsf(t, rec.Message, "expected", "unexpected mismatch warning: %q", rec.Message)
+	}
+}
+
+// TestRust_Validate_BelowFloorNoLine covers the genuine failure: the requested
+// line is absent and every present instance is below the requested version, so a
+// warning must still fire.
+func TestRust_Validate_BelowFloorNoLine(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cargoLockContent := `
+version = 3
+
+[[package]]
+name = "anstream"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+`
+	cargoLockPath := filepath.Join(tmpDir, "Cargo.lock")
+	require.NoError(t, os.WriteFile(cargoLockPath, []byte(cargoLockContent), 0o600))
+
+	r := &Rust{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "anstream", Version: "0.6.8"},
+		},
+	}
+
+	var recs []slog.Record
+	ctx := clog.WithLogger(context.Background(), clog.New(capturingHandler{&recs}))
+	require.NoError(t, r.Validate(ctx, cfg))
+
+	found := false
+	for _, rec := range recs {
+		if strings.Contains(rec.Message, "expected >= 0.6.8") {
+			found = true
+		}
+	}
+	require.True(t, found, "expected a below-floor warning, got %v", recs)
+}
+
+// TestRust_Validate_PrecisePin covers the @-suffixed precise-pin form
+// (name@from=to), where ParseInlinePackages keeps the "@from" in dep.Name and
+// puts the exact target in dep.Version. Validate judges it on its caret line with
+// floor (>=) semantics, exactly like every other request — the "@from" marker only
+// contributes the base name. Landing at or above the exact target in the same line
+// is satisfied (the exact-match/refused-downgrade failure mode is owned by
+// pinPrecise/verifyTransitiveUpgrade in the updater); a below-floor lock still warns.
+func TestRust_Validate_PrecisePin(t *testing.T) {
+	tests := []struct {
+		name        string
+		lockVersion string
+		wantWarn    bool
+	}{
+		{name: "exact target satisfied", lockVersion: "0.9.3", wantWarn: false},
+		{name: "above target same line satisfied", lockVersion: "0.9.5", wantWarn: false},
+		{name: "below target warns", lockVersion: "0.9.1", wantWarn: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+
+			cargoLockContent := `
+version = 3
+
+[[package]]
+name = "rand"
+version = "` + tt.lockVersion + `"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+`
+			cargoLockPath := filepath.Join(tmpDir, "Cargo.lock")
+			require.NoError(t, os.WriteFile(cargoLockPath, []byte(cargoLockContent), 0o600))
+
+			r := &Rust{}
+			cfg := &languages.UpdateConfig{
+				RootDir: tmpDir,
+				Dependencies: []languages.Dependency{
+					// Precise pin: the "@0.9.0" from-line marker survives in the name,
+					// the exact target (0.9.3) is the version.
+					{Name: "rand@0.9.0", Version: "0.9.3"},
+				},
+			}
+
+			var recs []slog.Record
+			ctx := clog.WithLogger(context.Background(), clog.New(capturingHandler{&recs}))
+			require.NoError(t, r.Validate(ctx, cfg))
+
+			warned := false
+			for _, rec := range recs {
+				if strings.Contains(rec.Message, "expected >= 0.9.3") {
+					warned = true
+				}
+				require.NotContainsf(t, rec.Message, "not found", "unexpected not-found warning: %q", rec.Message)
+			}
+			require.Equal(t, tt.wantWarn, warned, "warning mismatch, got %v", recs)
+		})
+	}
 }
 
 func TestRustAnalyzer_Analyze(t *testing.T) {
