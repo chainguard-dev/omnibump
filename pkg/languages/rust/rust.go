@@ -120,7 +120,32 @@ func (r *Rust) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	return nil
 }
 
-// Validate checks if the updates were applied successfully.
+// Validate checks that each requested update landed in the updated Cargo.lock.
+//
+// A request is judged against the updater's contract — a floor (">= dep.Version")
+// within the crate's Cargo caret line — not by exact equality. This is required
+// because a single Cargo.lock legitimately locks one crate at several
+// SemVer-incompatible versions at once (e.g. rand 0.9.0 and 0.10.1, each required
+// by a different dependent). The earlier exact-equality check compared the request
+// against *every* locked instance, so it emitted spurious warnings ("expected
+// 0.9.0, got 0.10.1") against the unrelated line and reported a crate that had
+// legitimately moved to a higher line as "not found".
+//
+// The floor-and-line rules below mirror the updater (upgradeReverseDependencies /
+// pinPrecise) so the two agree on what "satisfied" means:
+//   - the requested line is present: that instance must be >= the floor;
+//   - the requested line is absent but a higher line exists (a dependent pulled
+//     the crate up, e.g. anstream 0.6 -> 1.0): the floor is still met, so the
+//     update correctly left it alone;
+//   - only lower instances remain: genuinely stale, so warn.
+//
+// The precise-pin form (name@from=to) reaches here with the "@from" marker still
+// on dep.Name and the exact target in dep.Version. It is judged on the same
+// floor-and-line basis: a crate locked *above* its exact target — because a
+// dependent requires the newer version, so pinPrecise refused to downgrade it —
+// still satisfies the floor. That exact-match / refused-downgrade case is owned by
+// pinPrecise and verifyTransitiveUpgrade in the updater (which warn at update
+// time), so Validate defers to them rather than emitting a redundant warning.
 func (r *Rust) Validate(ctx context.Context, cfg *languages.UpdateConfig) error {
 	log := clog.FromContext(ctx)
 
@@ -149,6 +174,9 @@ func (r *Rust) Validate(ctx context.Context, cfg *languages.UpdateConfig) error 
 	}
 
 	for _, dep := range cfg.Dependencies {
+		// A precise pin (name@from=to) keeps its "@from" marker on dep.Name; strip
+		// it to the base crate name. The marker only records the pin's from-line for
+		// the updater — Validate judges every request on dep.Version's line below.
 		baseName, _, _ := strings.Cut(dep.Name, "@")
 		instances := packageMap[baseName]
 		if len(instances) == 0 {
