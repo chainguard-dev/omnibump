@@ -356,7 +356,7 @@ func (p *updatePlan) applyRuleTier(ctx context.Context, module, group, artifact,
 			}
 			handled = handled || ok
 		case rule.VarRef != "":
-			ok, err := p.applyVariableOrCatalogRef(ctx, module, rule.VarRef, version)
+			ok, err := p.applyVariableOrCatalogRef(ctx, module, rule.VarRef, version, site.build)
 			if err != nil {
 				return false, err
 			}
@@ -376,23 +376,24 @@ func (p *updatePlan) applyRuleTier(ctx context.Context, module, group, artifact,
 	return handled, nil
 }
 
-// applyVariableOrCatalogRef routes a variable reference: definition sites
-// (ext properties, ext maps, properties files) win; otherwise paths shaped
-// like catalog version accessors (versions.x / libs.versions.x) fall back to
-// the catalog version key they bridge to.
-func (p *updatePlan) applyVariableOrCatalogRef(ctx context.Context, module, varPath, version string) (bool, error) {
-	if _, explicit := p.properties[varPath]; !explicit && len(p.model.variableSites[varPath]) == 0 {
+// applyVariableOrCatalogRef routes a variable reference on behalf of a
+// declaration in build from: definition sites visible to that build (ext
+// properties, ext maps, properties files, and same-file locals) win;
+// otherwise paths shaped like catalog version accessors (versions.x /
+// libs.versions.x) fall back to the catalog version key they bridge to.
+func (p *updatePlan) applyVariableOrCatalogRef(ctx context.Context, module, varPath, version string, from *gradlefile.BuildFile) (bool, error) {
+	if _, explicit := p.properties[varPath]; !explicit && len(p.model.visibleVariableSites(varPath, from)) == 0 {
 		if key, ok := p.model.catalogKeyForVarPath(varPath); ok {
 			return p.applyCatalogRef(ctx, module, key, version)
 		}
 	}
-	return p.applyVariableRef(ctx, module, varPath, version)
+	return p.applyVariableRef(ctx, module, varPath, version, from)
 }
 
-// applyVariableRef updates all definition sites of a version variable on
-// behalf of module, honouring explicit-property precedence.
-func (p *updatePlan) applyVariableRef(ctx context.Context, module, varPath, version string) (bool, error) {
-	return p.applyKeyedSites(ctx, module, "variable", varPath, version, toEditSites(p.model.variableSites[varPath]))
+// applyVariableRef updates the definition sites of a version variable visible
+// to build from, on behalf of module, honouring explicit-property precedence.
+func (p *updatePlan) applyVariableRef(ctx context.Context, module, varPath, version string, from *gradlefile.BuildFile) (bool, error) {
+	return p.applyKeyedSites(ctx, module, "variable", varPath, version, toEditSites(p.model.visibleVariableSites(varPath, from)))
 }
 
 // applyKeyedSites updates every definition site of a named key on behalf of
@@ -435,7 +436,7 @@ func (p *updatePlan) applyDeclarationTier(ctx context.Context, module, artifact,
 		decl := site.decl
 		switch {
 		case decl.VarRef != "":
-			ok, err := p.applyVariableOrCatalogRef(ctx, module, decl.VarRef, version)
+			ok, err := p.applyVariableOrCatalogRef(ctx, module, decl.VarRef, version, site.build)
 			if err != nil {
 				return false, err
 			}

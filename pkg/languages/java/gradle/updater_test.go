@@ -206,6 +206,82 @@ func TestGradle_Update_ElasticsearchStyle_VersionProperties(t *testing.T) {
 	}
 }
 
+func TestGradle_Update_ElasticsearchStyle_TypedVarsAndMapAppend(t *testing.T) {
+	dir := copyFixture(t, "elasticsearch-typed-vars-style")
+
+	// Bumps whose coordinates interpolate a typed `String x = "..."` variable
+	// and a `versions << [...]` map-append entry (AUTO-761). Both source
+	// literals must be rewritten in place, not left stale, in addition to the
+	// managed-block force pin.
+	updateAndValidate(t, &languages.UpdateConfig{
+		RootDir: dir,
+		Dependencies: []languages.Dependency{
+			{Name: "com.fasterxml.jackson.core:jackson-core", Version: "2.18.6"},
+			{Name: "io.projectreactor.netty:reactor-netty-core", Version: "1.0.48"},
+		},
+	})
+
+	build := readFile(t, filepath.Join(dir, "build.gradle"))
+	for _, want := range []string{
+		`String jacksonVersion = "2.18.6"`, // typed String literal edited in place
+		`'azureReactorNetty': '1.0.48',`,   // `<<` map-append entry edited in place
+	} {
+		if !strings.Contains(build, want) {
+			t.Errorf("build.gradle missing in-place edit %q:\n%s", want, build)
+		}
+	}
+	// The interpolations are preserved (only the variable definitions changed).
+	for _, want := range []string{
+		`jackson-core:${jacksonVersion}`,
+		`reactor-netty-core:${versions.azureReactorNetty}`,
+	} {
+		if !strings.Contains(build, want) {
+			t.Errorf("build.gradle interpolation not preserved %q:\n%s", want, build)
+		}
+	}
+
+	// The bumps are also force-pinned in the managed block.
+	coords := managedCoordinates(t, filepath.Join(dir, "settings.gradle"))
+	if coords["com.fasterxml.jackson.core:jackson-core"] != "2.18.6" {
+		t.Errorf("jackson-core not force-pinned: %v", coords)
+	}
+	if coords["io.projectreactor.netty:reactor-netty-core"] != "1.0.48" {
+		t.Errorf("reactor-netty-core not force-pinned: %v", coords)
+	}
+}
+
+func TestGradle_Update_KotlinValCrossModuleAliasing(t *testing.T) {
+	// Code-review finding #1: the widened Kotlin `val` capture treats every
+	// string-valued `val` as a version source, and variableSites is keyed by
+	// bare name across the whole project. The `app` module's unrelated
+	// `val nettyVersion` (its own artifact version) shares a name with the
+	// dependency version declared in `lib`. Bumping io.netty:netty-codec routes
+	// through applyVariableRef, which sets EVERY site of the shared name --
+	// clobbering the app module's unrelated declaration.
+	dir := copyFixture(t, "kotlin-val-collision")
+
+	g := &Gradle{}
+	if err := g.Update(t.Context(), &languages.UpdateConfig{
+		RootDir: dir,
+		Dependencies: []languages.Dependency{
+			{Name: "io.netty:netty-codec", Version: "4.1.118.Final"},
+		},
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	lib := readFile(t, filepath.Join(dir, "lib", "build.gradle.kts"))
+	if !strings.Contains(lib, `val nettyVersion = "4.1.118.Final"`) {
+		t.Errorf("lib nettyVersion not bumped:\n%s", lib)
+	}
+
+	// The app module's unrelated artifact version must NOT have been rewritten.
+	app := readFile(t, filepath.Join(dir, "app", "build.gradle.kts"))
+	if !strings.Contains(app, `val nettyVersion = "9.9.9"`) {
+		t.Errorf("app module's unrelated `val nettyVersion` was clobbered by the cross-module bump:\n%s", app)
+	}
+}
+
 func TestGradle_Update_Substitution(t *testing.T) {
 	dir := copyFixture(t, "kayenta-style")
 

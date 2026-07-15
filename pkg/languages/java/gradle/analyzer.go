@@ -172,7 +172,8 @@ func collectDeclaredDependencies(model *projectModel, result *analyzer.AnalysisR
 		if _, exists := result.Dependencies[module]; exists {
 			continue
 		}
-		decl := model.declarationSites[module][0].decl
+		site := model.declarationSites[module][0]
+		decl := site.decl
 		info := &analyzer.DependencyInfo{
 			Name:           module,
 			Version:        decl.Version,
@@ -186,7 +187,7 @@ func collectDeclaredDependencies(model *projectModel, result *analyzer.AnalysisR
 			info.UsesProperty = true
 			info.PropertyName = decl.VarRef
 			info.UpdateStrategy = "property"
-			if sites := model.variableSites[decl.VarRef]; len(sites) > 0 {
+			if sites := model.visibleVariableSites(decl.VarRef, site.build); len(sites) > 0 {
 				info.Version = sites[0].value()
 			}
 			result.PropertyUsage[decl.VarRef]++

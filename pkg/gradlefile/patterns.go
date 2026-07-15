@@ -53,10 +53,12 @@ var (
 	catalogRefPattern = regexp.MustCompile(`[A-Za-z][A-Za-z0-9]*\s*\(?\s*libs\.([A-Za-z0-9_.]+)`)
 
 	// extMapHeaderPattern matches the start of a Groovy map assigned to a
-	// variable, optionally additive and optionally via the ext namespace:
-	//   versions = [        versions += [        ext.versions = [
+	// variable, optionally additive and optionally via the ext namespace. It
+	// also matches the `<<` left-shift append form, which merges entries into
+	// an existing map:
+	//   versions = [   versions += [   ext.versions = [   versions << [
 	// Group 1: map name.
-	extMapHeaderPattern = regexp.MustCompile(`(?m)^\s*(?:ext\.)?([A-Za-z_][A-Za-z0-9_]*)\s*\+?=\s*\[`)
+	extMapHeaderPattern = regexp.MustCompile(`(?m)^\s*(?:ext\.)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:\+?=|<<)\s*\[`)
 
 	// extMapEntryPattern matches one entry inside a Groovy map literal:
 	//   log4j2: "2.25.1",
