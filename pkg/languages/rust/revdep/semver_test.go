@@ -55,6 +55,15 @@ func TestRequirementMatches(t *testing.T) {
 		// inequality
 		{">=0.56.0", "0.56.0", true},
 		{">=0.56.0", "0.55.0", false},
+		// pre-release requirements (e.g. russh's `=0.10.0-rc.18` on rsa)
+		{"=0.10.0-rc.18", "0.10.0-rc.18", true},
+		{"=0.10.0-rc.18", "0.10.0-rc.16", false},
+		{"^0.10.0-rc.10", "0.10.0-rc.18", true}, // rc.18 >= rc.10, same 0.10.0 core
+		{"^0.10.0-rc.10", "0.10.0-rc.9", false}, // rc.9 < rc.10
+		{"^0.10.0-rc.10", "0.10.0", true},       // stable release satisfies the caret
+		{"^0.10.0-rc.10", "0.11.0-rc.1", false}, // different core, outside the caret
+		{"^0.7.0-pre.9", "0.7.2", true},         // crypto-primes: stable satisfies the caret
+		{">=0.10.0-rc.10", "0.10.0-rc.18", true},
 	}
 	for _, tc := range cases {
 		req, err := ParseRequirement(tc.req)

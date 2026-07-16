@@ -124,8 +124,9 @@ func Calculate(ctx context.Context, crate, targetVersion string, opts Options) (
 		client = NewClient(indexURL, opts.HTTP)
 	}
 
-	// Fail early with a clear message if the target simply doesn't exist yet.
-	if maxV, ok, err := client.MaxVersion(ctx, root.Name, opts.AllowPre); err != nil {
+	// Fail early with a clear message if the target simply doesn't exist yet. A
+	// pre-release target implies pre-releases are in play, so consider them here too.
+	if maxV, ok, err := client.MaxVersion(ctx, root.Name, opts.AllowPre || target.Pre != ""); err != nil {
 		return nil, err
 	} else if !ok {
 		return nil, fmt.Errorf("%w: %s", errNoPublished, root.Name)

@@ -239,11 +239,18 @@ func parseTerm(s string) ([]comparator, error) {
 		return []comparator{{">=", Version{}}}, nil
 	}
 
-	major, m, p, count, wild, err := parsePartial(s)
+	// Split off the pre-release / build tag (e.g. "0.10.0-rc.18") before parsing the
+	// numeric core, then carry the pre-release on the lower bound so pre-release
+	// requirements like `=0.10.0-rc.18` or `^0.10.0-rc.10` parse and match. Without
+	// this, parsePartial fails on the "0-rc" token and the requirement is treated as
+	// unsatisfiable (e.g. russh's `=0.10.0-rc.18` on rsa).
+	core, pre := splitPre(s)
+
+	major, m, p, count, wild, err := parsePartial(core)
 	if err != nil {
 		return nil, err
 	}
-	filled := Version{major, m, p, ""}
+	filled := Version{major, m, p, pre}
 
 	// Wildcards ("1.*", "1.2.*") behave like caret-style ranges regardless of a
 	// leading operator, so handle them first.
@@ -261,6 +268,7 @@ func parseTerm(s string) ([]comparator, error) {
 	switch op {
 	case "^":
 		lo, hi := caretRange(major, m, p, count)
+		lo.Pre = pre // a caret's lower bound carries the pre-release (upper bound does not)
 		return []comparator{{">=", lo}, {"<", hi}}, nil
 	case "~":
 		var hi Version
@@ -324,6 +332,22 @@ func caretRange(major, m, p uint64, count int) (lo, hi Version) {
 		hi = Version{0, 0, 1, ""}
 	}
 	return lo, hi
+}
+
+// splitPre separates a version string's numeric core from its pre-release tag,
+// discarding build metadata: "0.10.0-rc.18" -> ("0.10.0", "rc.18"), "1.2.3" ->
+// ("1.2.3", ""). Build metadata (after '+') is dropped as it does not affect
+// ordering or matching.
+func splitPre(s string) (core, pre string) {
+	core = s
+	if i := strings.IndexByte(core, '+'); i >= 0 {
+		core = core[:i]
+	}
+	if i := strings.IndexByte(core, '-'); i >= 0 {
+		pre = core[i+1:]
+		core = core[:i]
+	}
+	return core, pre
 }
 
 // parsePartial parses a possibly-partial version such as "1", "1.2", "1.2.3" or
