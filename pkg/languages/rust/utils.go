@@ -91,20 +91,49 @@ func GetCurrentPackages(ctx context.Context, cargoRoot string) ([]CargoPackage, 
 	return cargoPackages, nil
 }
 
+// ErrCrateNotActivated indicates that `cargo tree -i` found no reachable inverted
+// tree for the crate: it is locked but not activated in the resolved graph this
+// query sees (host target, normal+build edges). This happens for an optional
+// dependency behind a disabled feature or a platform-gated dependency on a
+// non-matching host. cargo reports it either as an empty tree ("warning: nothing to
+// print.", exit 0) or as "did not match any packages" (exit non-zero). It is not a
+// fatal error: the caller falls back to a direct lockfile pin.
+var ErrCrateNotActivated = errors.New("crate is locked but not activated in the inverted dependency tree")
+
 // cargoTreeInverted returns the raw `cargo tree -i` output for crate, in the
 // depth-prefixed format the revdep parser expects. The inverted tree is rooted at
 // crate with each child being a crate that depends on it. Edge kinds are limited
 // to normal+build (dev-deps do not propagate to downstream resolution); the
 // toolchain override is inherited via cargoCommand.
+//
+// It returns ErrCrateNotActivated when the crate is locked but absent from the tree
+// this query sees, so the caller can fall back rather than abort (see the error's
+// doc).
 func cargoTreeInverted(ctx context.Context, cargoRoot, crate string) (string, error) {
-	output := bytes.Buffer{}
+	var stdout, stderr bytes.Buffer
 	cmd := cargoCommand(ctx, cargoRoot, "tree", "-i", crate, "-e", "normal,build", "--charset", "ascii", "--prefix", "depth")
-	cmd.Stdout = &output
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		// cargo tree exits non-zero when the pkgid matches nothing in this query's
+		// resolved graph (e.g. an optional dep behind a disabled feature). The crate
+		// is still locked, so treat it as not-activated rather than fatal.
+		if strings.Contains(stderr.String(), "did not match any packages") {
+			return "", ErrCrateNotActivated
+		}
+		if s := strings.TrimSpace(stderr.String()); s != "" {
+			return "", fmt.Errorf("cargo tree -i %s: %w: %s", crate, err, s)
+		}
 		return "", fmt.Errorf("cargo tree -i %s: %w", crate, err)
 	}
-	return output.String(), nil
+	if strings.TrimSpace(stdout.String()) == "" {
+		// Exit 0 with no output ("warning: nothing to print.") means the crate is
+		// locked but reachable only through edges this query filters out — e.g. a
+		// platform-gated dependency on a non-matching host.
+		return "", ErrCrateNotActivated
+	}
+	return stdout.String(), nil
 }
 
 // presentVersions returns the versions of crate `name` currently resolved in the

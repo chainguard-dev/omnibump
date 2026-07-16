@@ -7,6 +7,7 @@ package rust
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,12 +45,19 @@ func DoUpdate(ctx context.Context, packages map[string]*Package, cargoPackages [
 	// Order packages by index for consistent updates
 	orderedPackages := orderPackages(packages)
 
+	brokeSemVer := false
+	requested := map[string]bool{}
 	for _, pkgName := range orderedPackages {
 		pkg := packages[pkgName]
 		if pkg == nil {
 			log.Warnf("Package %s has nil entry in packages map, skipping", pkgName)
 			continue
 		}
+
+		// Record the requested crate (base name, stripping any @version) so curated
+		// crate families can be coordinated once all targets have landed.
+		base, _, _ := strings.Cut(pkgName, "@")
+		requested[base] = true
 
 		// Find matching package(s) in Cargo.lock
 		matchingPackages := findMatchingPackages(pkgName, cargoPackages)
@@ -58,8 +66,32 @@ func DoUpdate(ctx context.Context, packages map[string]*Package, cargoPackages [
 			continue
 		}
 
-		if err := upgradeReverseDependencies(ctx, cfg.CargoRoot, targetSpec(pkgName, pkg.Version)); err != nil {
+		broke, err := upgradeReverseDependencies(ctx, cfg.CargoRoot, targetSpec(pkgName, pkg.Version))
+		if err != nil {
 			return err
+		}
+		brokeSemVer = brokeSemVer || broke
+	}
+
+	// Coordinate curated crate families (e.g. rand -> rand_core, rand_chacha): once
+	// every requested target has landed, advance any present sibling in place. This
+	// is in-line only, so it never breaks SemVer; it runs before the check so the
+	// verification (if any) covers the refreshed lock.
+	if err := refreshFamilies(ctx, cfg.CargoRoot, requested); err != nil {
+		return err
+	}
+
+	// A SemVer-breaking upgrade (a rewritten Cargo.toml caret line) can change APIs
+	// and leave the project uncompilable; in-line bumps are SemVer-compatible and
+	// cannot. Verify once, after all packages are landed, and only when at least one
+	// upgrade crossed a line — so the result is independent of package ordering and
+	// the compile is not repeated per pin. Edits are left on disk for the caller to
+	// inspect or discard.
+	if brokeSemVer {
+		log.Infof("Verifying the project builds after SemVer-breaking upgrades")
+		if out, err := checkBuild(ctx, cfg.CargoRoot); err != nil {
+			log.Warnf("cargo check failed after the applied upgrades:\n%s", out)
+			return fmt.Errorf("%w: the applied upgrades do not compile", ErrUpgradeBrokeBuild)
 		}
 	}
 
@@ -165,6 +197,28 @@ func runCargoUpdate(ctx context.Context, cargoRoot string, specs []string, extra
 	return nil
 }
 
+// boundaryPinSpec returns the `cargo update --package` spec for a boundary pin and
+// whether the pin should be skipped. It is decided against present — the crate's
+// versions currently locked, re-read after the manifest edits (which re-resolve the
+// lock, so the plan's original "from" version may no longer exist).
+//
+// A boundary crate can be locked at several versions (e.g. axoasset 0.4.0, 0.5.1,
+// 0.6.2), so a bare name is ambiguous. If the target is already locked, the pin is a
+// no-op and is skipped. Otherwise the specific instance in the target's SemVer line
+// is pinned (Crate@<in-line version>); a bare name is the fallback when only one
+// version is locked or the target's line is absent.
+func boundaryPinSpec(b revdep.Boundary, present []string) (spec string, skip bool) {
+	for _, v := range present {
+		if v == b.To {
+			return "", true
+		}
+	}
+	if cur := inLineVersion(b.To, present); cur != "" {
+		return b.Crate + "@" + cur, false
+	}
+	return b.Crate, false
+}
+
 // upgradeReverseDependencies satisfies a requested crate upgrade by computing the
 // minimal reverse-dependency plan (revdep.Calculate), editing the gating direct
 // dependency's Cargo.toml, and pinning the boundary crates to their minimum
@@ -173,19 +227,20 @@ func runCargoUpdate(ctx context.Context, cargoRoot string, specs []string, extra
 // up the inverted tree to the workspace member that must widen a constraint.
 //
 // The target version is a floor (">= floor") for the bare/@version forms and an
-// exact pin for the name@from=precise form. A SemVer-breaking edit is verified
-// with `cargo check`; a build failure means no upgrade is possible.
-func upgradeReverseDependencies(ctx context.Context, cargoRoot string, arg string) error {
+// exact pin for the name@from=precise form. It returns whether this upgrade was
+// SemVer-breaking (moved the target onto a new caret line, rewriting a Cargo.toml
+// constraint); the caller runs `cargo check` once if any upgrade broke SemVer.
+func upgradeReverseDependencies(ctx context.Context, cargoRoot string, arg string) (bool, error) {
 	log := clog.FromContext(ctx)
 	t := parseTarget(arg)
 
 	present, err := presentVersions(ctx, cargoRoot, t.name)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(present) == 0 {
 		log.Warnf("%s is not present in the dependency graph; nothing to update", t.name)
-		return nil
+		return false, nil
 	}
 
 	// Determine the concrete floor version to reach.
@@ -197,27 +252,33 @@ func upgradeReverseDependencies(ctx context.Context, cargoRoot string, arg strin
 		// Bare crate name: refuse an ambiguous bump and resolve the latest
 		// published version as the floor.
 		if len(present) > 1 {
-			return fmt.Errorf("%w: %s (%s); pin one as %s@<version>",
+			return false, fmt.Errorf("%w: %s (%s); pin one as %s@<version>",
 				ErrAmbiguousTarget, t.name, joinVersions(present), t.name)
 		}
 		latest, lerr := LatestCrateVersion(ctx, t.name)
 		if lerr != nil {
-			return lerr
+			return false, lerr
 		}
 		floor = latest
 	}
+
+	// A SemVer-breaking upgrade moves the target onto a new caret line: no currently
+	// locked version shares the floor's line, so a Cargo.toml constraint must be
+	// rewritten and APIs can change. An in-line bump is SemVer-compatible and cannot
+	// break the build, so it needs no cargo check.
+	broke := inLineVersion(floor, present) == ""
 
 	// Cheap skip: the crate already satisfies the floor within the target's SemVer
 	// line. A precise pin must still run so the exact version is landed.
 	if !t.isPrecise && floorSatisfiedInLine(t, present, floor) {
 		log.Infof("%s already satisfies >= %s; skipping", t.name, floor)
-		return nil
+		return false, nil
 	}
 
 	// Compute the minimal reverse-dependency upgrade plan.
 	members, _, err := workspaceLayout(ctx, cargoRoot)
 	if err != nil {
-		return err
+		return false, err
 	}
 	memberSet := make(map[string]bool, len(members))
 	for _, m := range members {
@@ -228,34 +289,46 @@ func upgradeReverseDependencies(ctx context.Context, cargoRoot string, arg strin
 	// crate is locked at multiple versions (see invertedTreeSpec).
 	treeSpec, err := invertedTreeSpec(t.name, t, present)
 	if err != nil {
-		return err
+		return false, err
+	}
+
+	// Fetch the inverted tree up front. An empty tree (ErrCrateNotActivated) means
+	// the crate is locked but not activated in this query's view — there are no
+	// dependents to widen, so the reverse-dependency engine cannot run. Fall back to
+	// a direct lockfile pin instead of aborting the whole bump. A direct pin edits no
+	// manifest constraint, so it is not SemVer-breaking.
+	treeText, err := cargoTreeInverted(ctx, cargoRoot, treeSpec)
+	if errors.Is(err, ErrCrateNotActivated) {
+		return false, pinLockedDependency(ctx, cargoRoot, t, floor, present)
+	}
+	if err != nil {
+		return false, err
 	}
 
 	plan, err := revdep.Calculate(ctx, t.name, floor, revdep.Options{
-		Tree: func(ctx context.Context, _ string) (string, error) {
-			return cargoTreeInverted(ctx, cargoRoot, treeSpec)
+		Tree: func(context.Context, string) (string, error) {
+			return treeText, nil
 		},
 		IndexURL:         cratesIndexBaseURL + "/",
 		HTTP:             indexHTTPClient,
 		WorkspaceMembers: memberSet,
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	changed := len(plan.Edits) > 0 || len(plan.Boundaries) > 0
-	if !changed && !t.isPrecise {
-		// An empty plan here (we are past the satisfiesFloor skip, so the floor is
-		// not yet met) means no manifest constraint needs widening: the graph
-		// already permits the floor, but the lock is still pinned below it. This
-		// happens for a transitively-pulled crate whose every dependent already
-		// allows the target. Advance the lock within the already-permitted range;
-		// no SemVer constraint is being broken, so no cargo check is needed.
+	if !changed && !t.hasVersion {
+		// Bare-name empty plan: no manifest constraint needs widening and the caller
+		// gave no version to advance to, so just refresh the lock to the resolved
+		// floor. No SemVer constraint is being broken, so no cargo check is needed.
+		// (The versioned forms fall through to the land path below, even on an empty
+		// plan, so an @version floor is advanced to the latest in its line.)
 		log.Infof("%s: constraints already permit >= %s; refreshing the lock", t.name, floor)
 		if err := runCargoUpdate(ctx, cargoRoot, []string{treeSpec}, "--precise", floor); err != nil {
-			return err
+			return false, err
 		}
-		return nil
+		return false, nil
 	}
 
 	// Widen each gating direct dependency's Cargo.toml constraint.
@@ -263,35 +336,72 @@ func upgradeReverseDependencies(ctx context.Context, cargoRoot string, arg strin
 	for _, e := range plan.Edits {
 		log.Infof("Bumping %s (in %s) to allow >= %s", e.Dependency, e.Member, e.MinVersion)
 		if err := applyDirectEdit(ctx, cargoRoot, e, rootBumped); err != nil {
-			return err
+			return false, err
 		}
 	}
 
 	// Land the minimal versions: pin each boundary crate precisely; cargo resolves
 	// the transitive graph to satisfy the widened constraints.
 	for _, b := range plan.Boundaries {
-		log.Infof("Pinning %s to %s", b.Crate, b.To)
-		if err := runCargoUpdate(ctx, cargoRoot, []string{b.Crate}, "--precise", b.To); err != nil {
-			return fmt.Errorf("pinning %s to %s: %w", b.Crate, b.To, err)
+		// Re-read the lock: the manifest edits above may have moved the boundary crate
+		// (or already landed the target), so decide the pin against the current state.
+		boundaryPresent, err := presentVersions(ctx, cargoRoot, b.Crate)
+		if err != nil {
+			return false, err
+		}
+		spec, skip := boundaryPinSpec(b, boundaryPresent)
+		if skip {
+			log.Infof("%s is already at %s; nothing to pin", b.Crate, b.To)
+			continue
+		}
+		log.Infof("Pinning %s to %s", spec, b.To)
+		if err := runCargoUpdate(ctx, cargoRoot, []string{spec}, "--precise", b.To); err != nil {
+			return false, fmt.Errorf("pinning %s to %s: %w", spec, b.To, err)
 		}
 	}
 
-	// For the exact =precise form, guarantee the final pin.
+	// Land the target deliberately. This runs only for the versioned forms; a bare
+	// name is landed by the boundary pins above and keeps its existing behavior. The
+	// =precise form is pinned to its exact version; the @version form is advanced to
+	// the latest version in its SemVer line (floor semantics).
+	if t.hasVersion {
+		if t.isPrecise {
+			if err := pinPrecise(ctx, cargoRoot, t); err != nil {
+				return false, err
+			}
+		} else if err := landFloor(ctx, cargoRoot, t); err != nil {
+			return false, err
+		}
+	}
+
+	// Report the version actually landed, which for a floor (@version) request may
+	// be newer than the requested floor (e.g. 0.9.5 for a request of >= 0.9.3). The
+	// project build is verified once by the caller after all packages are landed.
+	log.Infof("%s upgraded to %s", t.name, landedVersion(ctx, cargoRoot, t, floor))
+	return broke, nil
+}
+
+// landedVersion resolves the version of the target now locked in the requested
+// SemVer line — the exact version for a =precise pin or the latest for an @version
+// floor. It falls back to the requested floor when the line cannot be resolved
+// (e.g. a bare name, or a cross-line move that vacated the requested line), so log
+// messages always carry a concrete version.
+func landedVersion(ctx context.Context, cargoRoot string, t target, floor string) string {
+	if !t.hasVersion {
+		return floor
+	}
+	present, err := presentVersions(ctx, cargoRoot, t.name)
+	if err != nil {
+		return floor
+	}
+	marker := t.version
 	if t.isPrecise {
-		if err := pinPrecise(ctx, cargoRoot, t); err != nil {
-			return err
-		}
+		marker = t.precise
 	}
-
-	// A bump can break the build (a SemVer-breaking edit changes APIs). Verify with
-	// `cargo check`; failure means the upgrade is not viable. Edits are left on disk
-	// for the caller to inspect or discard.
-	log.Infof("Verifying the project builds after upgrading %s to %s", t.name, floor)
-	if out, err := checkBuild(ctx, cargoRoot); err != nil {
-		log.Warnf("cargo check failed after upgrading %s to %s:\n%s", t.name, floor, out)
-		return fmt.Errorf("%w: upgrading %s to %s does not compile", ErrUpgradeBrokeBuild, t.name, floor)
+	if v := inLineVersion(marker, present); v != "" {
+		return v
 	}
-	return nil
+	return floor
 }
 
 // applyDirectEdit widens the Cargo.toml constraint on e.Dependency in workspace
@@ -386,6 +496,68 @@ func verifyTransitiveUpgrade(ctx context.Context, name string, present []string,
 	}
 	log.Warnf("%s is at %s but %s was requested; the direct dependency upgrade did not pull in %s as expected",
 		name, joinVersions(present), requested, requested)
+}
+
+// pinLockedDependency lands a crate that is locked but not activated in the inverted
+// dependency tree (see ErrCrateNotActivated) — an optional dep behind a disabled
+// feature, or a platform-gated dep on a non-matching host. There are no dependents
+// to widen, so the reverse-dependency engine cannot help; pin the crate directly in
+// the lockfile to the requested version instead. A failed pin (e.g. a dependent's
+// constraint forbids it) is warned, not fatal: the crate is inactive here, so a bump
+// of it must never abort the run.
+func pinLockedDependency(ctx context.Context, cargoRoot string, t target, floor string, present []string) error {
+	log := clog.FromContext(ctx)
+
+	// Target the currently-locked in-line instance so cargo updates the right one
+	// when several versions are locked; fall back to the sole locked version.
+	spec := t.name
+	if cur := inLineVersion(floor, present); cur != "" {
+		spec = t.name + "@" + cur
+	} else if len(present) == 1 {
+		spec = t.name + "@" + present[0]
+	}
+
+	log.Infof("%s is locked but not activated in the dependency tree; pinning it directly to %s", t.name, floor)
+	if err := runCargoUpdate(ctx, cargoRoot, []string{spec}, "--precise", floor); err != nil {
+		log.Warnf("could not pin inactive dependency %s to %s (%v); leaving it unchanged", t.name, floor, err)
+	}
+	return nil
+}
+
+// landFloor advances the @version target to the latest version compatible with its
+// current SemVer line. The requested version is treated as a floor, not an exact
+// pin, so the crate is moved to the newest release in the same caret line (e.g.
+// rand 0.9.0 -> 0.9.5 for a request of rand@0.9.3). Only the target is touched; any
+// curated sibling crates are advanced separately by refreshFamilies (see
+// families.go).
+func landFloor(ctx context.Context, cargoRoot string, t target) error {
+	log := clog.FromContext(ctx)
+
+	present, err := presentVersions(ctx, cargoRoot, t.name)
+	if err != nil {
+		return err
+	}
+	cur := inLineVersion(t.version, present)
+	if cur == "" {
+		// A cross-line manifest edit already moved the crate onto a new line (and
+		// pulled its family with it); nothing to advance in the requested line.
+		log.Infof("%s: line %s no longer present; skipping floor advance", t.name, t.version)
+		return nil
+	}
+
+	log.Infof("Advancing %s to the latest version compatible with %s", t.name, cur)
+	if err := runCargoUpdate(ctx, cargoRoot, []string{t.name + "@" + cur}); err != nil {
+		return err
+	}
+
+	after, err := presentVersions(ctx, cargoRoot, t.name)
+	if err != nil {
+		return err
+	}
+	if inLine := inLineVersion(t.version, after); inLine == "" || !satisfiesFloor([]string{inLine}, t.version) {
+		log.Warnf("%s is at %s after the floor advance but >= %s was requested", t.name, joinVersions(after), t.version)
+	}
+	return nil
 }
 
 // cargoAdd rewrites the version requirement of an existing direct dependency in a

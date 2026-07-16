@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/chainguard-dev/omnibump/pkg/languages/rust/revdep"
 	"github.com/google/go-cmp/cmp"
 )
 
@@ -96,6 +97,58 @@ func Test_targetSpec_parseTarget(t *testing.T) {
 			}
 			if diff := cmp.Diff(tt.want, parseTarget(spec), cmp.AllowUnexported(target{})); diff != "" {
 				t.Errorf("parseTarget(%q) mismatch (-want +got):\n%s", spec, diff)
+			}
+		})
+	}
+}
+
+// Test_boundaryPinSpec guards the boundary pin spec decided against the currently
+// locked versions: a crate already at the target is skipped; a crate locked at
+// multiple versions is pinned as Crate@<in-line version> (not an ambiguous bare
+// name); a single locked version (or an absent target line) falls back to the bare
+// name.
+func Test_boundaryPinSpec(t *testing.T) {
+	tests := []struct {
+		name     string
+		boundary revdep.Boundary
+		present  []string
+		wantSpec string
+		wantSkip bool
+	}{
+		{
+			name:     "already at target is a no-op",
+			boundary: revdep.Boundary{Crate: "axoasset", To: "0.6.2"},
+			present:  []string{"0.4.0", "0.5.1", "0.6.2"},
+			wantSkip: true,
+		},
+		{
+			name:     "multiple versions disambiguates within the target line",
+			boundary: revdep.Boundary{Crate: "axoasset", To: "0.6.2"},
+			present:  []string{"0.4.0", "0.6.1"},
+			wantSpec: "axoasset@0.6.1",
+		},
+		{
+			name:     "single locked version in the target line pins that instance",
+			boundary: revdep.Boundary{Crate: "rand", To: "0.9.0"},
+			present:  []string{"0.9.5"},
+			wantSpec: "rand@0.9.5",
+		},
+		{
+			name:     "target line absent falls back to a bare name",
+			boundary: revdep.Boundary{Crate: "axoasset", To: "0.6.2"},
+			present:  []string{"0.4.0"},
+			wantSpec: "axoasset",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec, skip := boundaryPinSpec(tt.boundary, tt.present)
+			if skip != tt.wantSkip {
+				t.Errorf("skip = %v, want %v", skip, tt.wantSkip)
+			}
+			if !tt.wantSkip && spec != tt.wantSpec {
+				t.Errorf("spec = %q, want %q", spec, tt.wantSpec)
 			}
 		})
 	}
