@@ -299,7 +299,8 @@ func upgradeReverseDependencies(ctx context.Context, cargoRoot string, arg strin
 	// manifest constraint, so it is not SemVer-breaking.
 	treeText, err := cargoTreeInverted(ctx, cargoRoot, treeSpec)
 	if errors.Is(err, ErrCrateNotActivated) {
-		return false, pinLockedDependency(ctx, cargoRoot, t, floor, present)
+		pinLockedDependency(ctx, cargoRoot, t, floor, present)
+		return false, nil
 	}
 	if err != nil {
 		return false, err
@@ -504,8 +505,8 @@ func verifyTransitiveUpgrade(ctx context.Context, name string, present []string,
 // to widen, so the reverse-dependency engine cannot help; pin the crate directly in
 // the lockfile to the requested version instead. A failed pin (e.g. a dependent's
 // constraint forbids it) is warned, not fatal: the crate is inactive here, so a bump
-// of it must never abort the run.
-func pinLockedDependency(ctx context.Context, cargoRoot string, t target, floor string, present []string) error {
+// of it must never abort the run — hence no error is returned.
+func pinLockedDependency(ctx context.Context, cargoRoot string, t target, floor string, present []string) {
 	log := clog.FromContext(ctx)
 
 	// Target the currently-locked in-line instance so cargo updates the right one
@@ -521,7 +522,6 @@ func pinLockedDependency(ctx context.Context, cargoRoot string, t target, floor 
 	if err := runCargoUpdate(ctx, cargoRoot, []string{spec}, "--precise", floor); err != nil {
 		log.Warnf("could not pin inactive dependency %s to %s (%v); leaving it unchanged", t.name, floor, err)
 	}
-	return nil
 }
 
 // landFloor advances the @version target to the latest version compatible with its
