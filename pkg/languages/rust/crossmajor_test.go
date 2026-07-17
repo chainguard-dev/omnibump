@@ -589,6 +589,49 @@ quinn-proto = "0.11"
 	require.True(t, satisfiesFloor([]string{got}, target), "quinn-proto must be pinned to >= %s, got %s", target, got)
 }
 
+// Test_CrossSemverDirectPreRelease checks the pre-release manifest-edit path: a
+// direct dependency bumped across a SemVer boundary into a pre-release-only line
+// must have its Cargo.toml constraint rewritten to the full pre-release version, not
+// a truncated caret line. rsa's 0.10 line is pre-release only (0.10.0-rc.*, no stable
+// 0.10.0), so caretConstraint must keep "0.10.0-rc.18" — a truncated "0.10" would be
+// read as ^0.10 and never match a pre-release, so `cargo add` would fail to resolve.
+// The build check is stubbed (the fixture has no source); this verifies the manifest
+// edit and lock resolution. Needs network/registry access.
+func Test_CrossSemverDirectPreRelease(t *testing.T) {
+	cargoRoot := t.TempDir()
+	writeFile(t, filepath.Join(cargoRoot, "Cargo.toml"), `[package]
+name = "demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rsa = "0.9"
+`)
+	writeFile(t, filepath.Join(cargoRoot, "src", "lib.rs"), "")
+	generateLockfile(t, cargoRoot)
+
+	restore := checkBuild
+	checkBuild = func(context.Context, string) (string, error) { return "", nil }
+	defer func() { checkBuild = restore }()
+
+	original, err := GetCurrentPackages(context.Background(), cargoRoot)
+	require.NoError(t, err)
+	require.True(t, cargoCompatible("0.9", lockedVersion(original, "rsa")), "expected rsa locked in the 0.9 line")
+
+	packages := map[string]*Package{"rsa": {Name: "rsa", Version: "0.10.0-rc.18", Index: 0}}
+	require.NoError(t, DoUpdate(context.Background(), packages, original, &UpdateConfig{CargoRoot: cargoRoot}))
+
+	manifest, err := os.ReadFile(filepath.Join(cargoRoot, "Cargo.toml"))
+	require.NoError(t, err)
+	require.Contains(t, string(manifest), `rsa = "0.10.0-rc.18"`,
+		"constraint must keep the pre-release tag, not truncate to 0.10")
+
+	updated, err := GetCurrentPackages(context.Background(), cargoRoot)
+	require.NoError(t, err)
+	got := lockedVersion(updated, "rsa")
+	require.True(t, satisfiesFloor([]string{got}, "0.10.0-rc.18"), "rsa must be >= 0.10.0-rc.18, got %s", got)
+}
+
 // Test_CrossSemverDirect is an end-to-end check that a SemVer-breaking bump of a
 // DIRECT dependency rewrites its Cargo.toml constraint (replacing the old `sed`
 // hack) and moves Cargo.lock onto the new line. It scaffolds a minimal crate and
