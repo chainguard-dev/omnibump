@@ -35,7 +35,7 @@ func Test_MinVersionRequiring_preReleaseFloor(t *testing.T) {
 
 	acceptable := []Version{{Major: 0, Minor: 7, Patch: 0}, {Major: 0, Minor: 7, Patch: 2}}
 	// allowPre is false, but the floor is a pre-release, so rc candidates must count.
-	got, err := c.MinVersionRequiring(context.Background(), "rsa", Version{Major: 0, Minor: 10, Patch: 0, Pre: "rc.18"}, "crypto-primes", acceptable, false)
+	got, err := c.MinVersionRequiring(context.Background(), "rsa", Version{Major: 0, Minor: 10, Patch: 0, Pre: "rc.18"}, "crypto-primes", Version{Major: 0, Minor: 7}, acceptable, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -56,7 +56,7 @@ func Test_MinVersionRequiring_preReleaseRequirement(t *testing.T) {
 	)
 
 	acceptable := []Version{{Major: 0, Minor: 10, Patch: 0, Pre: "rc.18"}}
-	got, err := c.MinVersionRequiring(context.Background(), "russh", Version{Major: 0, Minor: 61, Patch: 2}, "rsa", acceptable, false)
+	got, err := c.MinVersionRequiring(context.Background(), "russh", Version{Major: 0, Minor: 61, Patch: 2}, "rsa", Version{Major: 0, Minor: 10, Patch: 0, Pre: "rc.18"}, acceptable, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -83,12 +83,36 @@ func Test_MinVersionRequiring_renamedDependency(t *testing.T) {
 	})
 
 	acceptable := []Version{{Major: 1, Minor: 11, Patch: 1}, {Major: 1, Minor: 12, Patch: 1}}
-	got, err := c.MinVersionRequiring(context.Background(), "combine", Version{Major: 4, Minor: 6, Patch: 6}, "bytes", acceptable, false)
+	got, err := c.MinVersionRequiring(context.Background(), "combine", Version{Major: 4, Minor: 6, Patch: 6}, "bytes", Version{Major: 1}, acceptable, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got.String() != "4.6.6" {
 		t.Errorf("got %s, want 4.6.6 (combine 4.6.6 permits bytes 1.x via its ^1 entry)", got)
+	}
+}
+
+// Test_MinVersionRequiring_renamedDependencyCrossLine guards F1: when a candidate
+// depends on the same crate under two renames on different lines, the group NOT
+// governing the bumped instance must not yield a false positive. combine 4.6.6 has
+// bytes `^1` and the renamed bytes_05 `^0.5`; targeting the bytes 0.6 line (which
+// neither entry permits), the unbounded acceptable set's 1.x member must not let the
+// `^1` group report combine as sufficient.
+func Test_MinVersionRequiring_renamedDependencyCrossLine(t *testing.T) {
+	c := preload(IndexVersion{
+		Name: "combine", Vers: "4.6.6",
+		Deps: []IndexDep{
+			{Name: "bytes", Package: "bytes", Req: "^1", Kind: "normal"},
+			{Name: "bytes_05", Package: "bytes", Req: "^0.5", Kind: "normal"},
+		},
+	})
+
+	// acceptable is unbounded (includes a 1.x version); the target line is bytes 0.6,
+	// which neither ^1 nor ^0.5 permits.
+	acceptable := []Version{{Major: 0, Minor: 6}, {Major: 1, Minor: 12, Patch: 1}}
+	_, err := c.MinVersionRequiring(context.Background(), "combine", Version{Major: 4, Minor: 6, Patch: 6}, "bytes", Version{Major: 0, Minor: 6}, acceptable, false)
+	if !errors.Is(err, errNoPermitting) {
+		t.Fatalf("expected errNoPermitting (combine 4.6.6 does not permit bytes 0.6), got %v", err)
 	}
 }
 
@@ -106,7 +130,7 @@ func Test_MinVersionRequiring_sameNameConjoined(t *testing.T) {
 
 	// 1.5.0 satisfies >=1.1 but not <1.2, so the conjoined per-target requirement is
 	// unsatisfiable by the only acceptable version.
-	_, err := c.MinVersionRequiring(context.Background(), "dependent", Version{Major: 1}, "child", []Version{{Major: 1, Minor: 5}}, false)
+	_, err := c.MinVersionRequiring(context.Background(), "dependent", Version{Major: 1}, "child", Version{Major: 1}, []Version{{Major: 1, Minor: 5}}, false)
 	if !errors.Is(err, errNoPermitting) {
 		t.Fatalf("expected errNoPermitting for unsatisfiable conjoined per-target reqs, got %v", err)
 	}

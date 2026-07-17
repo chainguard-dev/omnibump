@@ -32,8 +32,14 @@ func Test_caretConstraint(t *testing.T) {
 		{version: "2.5.1", want: "2"},
 		{version: "1.0.0", want: "1"},
 		{version: "1", want: "1"},
-		{version: "0.3.4-beta.1", want: "0.3"},
+		// Pre-release versions keep their full form so the written constraint opts
+		// into the pre-release line (a truncated "0.3"/"0.10" would never match).
+		{version: "0.3.4-beta.1", want: "0.3.4-beta.1"},
+		{version: "0.10.0-rc.18", want: "0.10.0-rc.18"},
+		{version: "1.0.0-alpha.2", want: "1.0.0-alpha.2"},
+		// Build metadata (no pre-release) is still stripped and truncated.
 		{version: "2.5.1+build7", want: "2"},
+		{version: "0.3.4-beta.1+build7", want: "0.3.4-beta.1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.version, func(t *testing.T) {

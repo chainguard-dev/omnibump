@@ -45,7 +45,7 @@ func DoUpdate(ctx context.Context, packages map[string]*Package, cargoPackages [
 	// Order packages by index for consistent updates
 	orderedPackages := orderPackages(packages)
 
-	brokeSemVer := false
+	var brokeCrates []string
 	requested := map[string]bool{}
 	for _, pkgName := range orderedPackages {
 		pkg := packages[pkgName]
@@ -70,7 +70,9 @@ func DoUpdate(ctx context.Context, packages map[string]*Package, cargoPackages [
 		if err != nil {
 			return err
 		}
-		brokeSemVer = brokeSemVer || broke
+		if broke {
+			brokeCrates = append(brokeCrates, base)
+		}
 	}
 
 	// Coordinate curated crate families (e.g. rand -> rand_core, rand_chacha): once
@@ -85,13 +87,19 @@ func DoUpdate(ctx context.Context, packages map[string]*Package, cargoPackages [
 	// and leave the project uncompilable; in-line bumps are SemVer-compatible and
 	// cannot. Verify once, after all packages are landed, and only when at least one
 	// upgrade crossed a line — so the result is independent of package ordering and
-	// the compile is not repeated per pin. Edits are left on disk for the caller to
-	// inspect or discard.
-	if brokeSemVer {
-		log.Infof("Verifying the project builds after SemVer-breaking upgrades")
+	// the compile is not repeated per pin.
+	//
+	// Because the check is deferred, every package in the run has already landed its
+	// edits by the time it runs; on failure all of them are left on disk for the
+	// caller to inspect or discard. The error names the crates whose bumps were
+	// SemVer-breaking (the candidates for the failure), since the raw compiler output
+	// only goes to the log.
+	if len(brokeCrates) > 0 {
+		crates := strings.Join(brokeCrates, ", ")
+		log.Infof("Verifying the project builds after SemVer-breaking upgrades (%s)", crates)
 		if out, err := checkBuild(ctx, cfg.CargoRoot); err != nil {
 			log.Warnf("cargo check failed after the applied upgrades:\n%s", out)
-			return fmt.Errorf("%w: the applied upgrades do not compile", ErrUpgradeBrokeBuild)
+			return fmt.Errorf("%w: the applied upgrades (%s) do not compile", ErrUpgradeBrokeBuild, crates)
 		}
 	}
 
@@ -213,10 +221,8 @@ func boundaryPinSpec(b revdep.Boundary, present []string) (spec string, skip boo
 			return "", true
 		}
 	}
-	if cur := inLineVersion(b.To, present); cur != "" {
-		return b.Crate + "@" + cur, false
-	}
-	return b.Crate, false
+	spec, _ = inLineSpec(b.Crate, b.To, present)
+	return spec, false
 }
 
 // upgradeReverseDependencies satisfies a requested crate upgrade by computing the
@@ -344,13 +350,14 @@ func upgradeReverseDependencies(ctx context.Context, cargoRoot string, arg strin
 	// Land the minimal versions: pin each boundary crate precisely; cargo resolves
 	// the transitive graph to satisfy the widened constraints.
 	for _, b := range plan.Boundaries {
-		// Re-read the lock: the manifest edits above may have moved the boundary crate
-		// (or already landed the target), so decide the pin against the current state.
-		boundaryPresent, err := presentVersions(ctx, cargoRoot, b.Crate)
+		// Re-read the lock: the manifest edits and prior boundary pins may have moved
+		// the crate (or already landed the target), so decide against the current
+		// state. GetCurrentPackages is a Cargo.lock parse (no cargo subprocess).
+		locked, err := GetCurrentPackages(ctx, cargoRoot)
 		if err != nil {
 			return false, err
 		}
-		spec, skip := boundaryPinSpec(b, boundaryPresent)
+		spec, skip := boundaryPinSpec(b, lockedVersionsOf(locked, b.Crate))
 		if skip {
 			log.Infof("%s is already at %s; nothing to pin", b.Crate, b.To)
 			continue
@@ -391,10 +398,11 @@ func landedVersion(ctx context.Context, cargoRoot string, t target, floor string
 	if !t.hasVersion {
 		return floor
 	}
-	present, err := presentVersions(ctx, cargoRoot, t.name)
+	pkgs, err := GetCurrentPackages(ctx, cargoRoot) // Cargo.lock parse, no cargo subprocess
 	if err != nil {
 		return floor
 	}
+	present := lockedVersionsOf(pkgs, t.name)
 	marker := t.version
 	if t.isPrecise {
 		marker = t.precise
@@ -463,7 +471,7 @@ func pinPrecise(ctx context.Context, cargoRoot string, t target) error {
 	if err != nil {
 		return err
 	}
-	cur := inLineVersion(t.version, present)
+	spec, cur := inLineSpec(t.name, t.version, present)
 	if cur == "" {
 		// The "from" line is gone because upgrading the dependents moved the crate
 		// onto a newer line — the intended outcome for a transitive dependency, so
@@ -477,7 +485,6 @@ func pinPrecise(ctx context.Context, cargoRoot string, t target) error {
 		return nil
 	}
 
-	spec := t.name + "@" + cur
 	log.Infof("Pinning %s precisely to %s", spec, t.precise)
 	return runCargoUpdate(ctx, cargoRoot, []string{spec}, "--precise", t.precise)
 }
@@ -511,10 +518,8 @@ func pinLockedDependency(ctx context.Context, cargoRoot string, t target, floor 
 
 	// Target the currently-locked in-line instance so cargo updates the right one
 	// when several versions are locked; fall back to the sole locked version.
-	spec := t.name
-	if cur := inLineVersion(floor, present); cur != "" {
-		spec = t.name + "@" + cur
-	} else if len(present) == 1 {
+	spec, cur := inLineSpec(t.name, floor, present)
+	if cur == "" && len(present) == 1 {
 		spec = t.name + "@" + present[0]
 	}
 
@@ -537,7 +542,7 @@ func landFloor(ctx context.Context, cargoRoot string, t target) error {
 	if err != nil {
 		return err
 	}
-	cur := inLineVersion(t.version, present)
+	spec, cur := inLineSpec(t.name, t.version, present)
 	if cur == "" {
 		// A cross-line manifest edit already moved the crate onto a new line (and
 		// pulled its family with it); nothing to advance in the requested line.
@@ -546,7 +551,7 @@ func landFloor(ctx context.Context, cargoRoot string, t target) error {
 	}
 
 	log.Infof("Advancing %s to the latest version compatible with %s", t.name, cur)
-	if err := runCargoUpdate(ctx, cargoRoot, []string{t.name + "@" + cur}); err != nil {
+	if err := runCargoUpdate(ctx, cargoRoot, []string{spec}); err != nil {
 		return err
 	}
 

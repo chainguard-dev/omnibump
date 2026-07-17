@@ -46,18 +46,11 @@ func (v Version) String() string {
 func ParseVersion(s string) (Version, error) {
 	s = strings.TrimSpace(s)
 	s = strings.TrimPrefix(s, "v")
-	if i := strings.IndexByte(s, '+'); i >= 0 {
-		s = s[:i]
-	}
-	pre := ""
-	if i := strings.IndexByte(s, '-'); i >= 0 {
-		pre = s[i+1:]
-		s = s[:i]
-	}
-	if s == "" {
+	core, pre := splitPre(s)
+	if core == "" {
 		return Version{}, errEmptyVersion
 	}
-	parts := strings.Split(s, ".")
+	parts := strings.Split(core, ".")
 	var nums [3]uint64
 	for i := 0; i < 3; i++ {
 		if i < len(parts) && parts[i] != "" {
@@ -131,6 +124,27 @@ func comparePre(a, b string) int {
 		}
 	}
 	return cmpUint(uint64(len(as)), uint64(len(bs)))
+}
+
+// sameCaretLine reports whether v falls in the same Cargo caret-compatibility line
+// as ref: same major for >=1.0.0, same major.minor for 0.x, and same
+// major.minor.patch for 0.0.x. Mirrors caretRange's line rules, and is used to scope
+// which locked instance a requirement group governs when a crate is depended on
+// under multiple renames.
+func sameCaretLine(ref, v Version) bool {
+	if ref.Major != v.Major {
+		return false
+	}
+	if ref.Major != 0 {
+		return true
+	}
+	if ref.Minor != v.Minor {
+		return false
+	}
+	if ref.Minor != 0 {
+		return true
+	}
+	return ref.Patch == v.Patch
 }
 
 // comparator is a single primitive constraint, e.g. ">= 0.56.0".

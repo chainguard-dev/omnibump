@@ -313,7 +313,7 @@ func (c *calculator) walkChild(ctx context.Context, node, child *TreeNode, nodeF
 	if err != nil {
 		return false, fmt.Errorf("parsing current version of %s: %w", child.Name, err)
 	}
-	minVer, err := c.client.MinVersionRequiring(ctx, child.Name, floor, node.Name, acceptable, c.allowPre)
+	minVer, err := c.client.MinVersionRequiring(ctx, child.Name, floor, node.Name, nodeFloor, acceptable, c.allowPre)
 	if err != nil {
 		if !errors.Is(err, ErrNotFound) {
 			return false, err

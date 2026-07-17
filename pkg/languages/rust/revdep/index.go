@@ -38,7 +38,7 @@ var (
 type Fetcher interface {
 	MaxVersion(ctx context.Context, crate string, allowPre bool) (Version, bool, error)
 	VersionsAtLeast(ctx context.Context, crate string, floor Version, allowPre bool) ([]Version, error)
-	MinVersionRequiring(ctx context.Context, dependent string, floor Version, depCrate string, acceptable []Version, allowPre bool) (Version, error)
+	MinVersionRequiring(ctx context.Context, dependent string, floor Version, depCrate string, depFloor Version, acceptable []Version, allowPre bool) (Version, error)
 }
 
 // IndexDep mirrors a dependency entry in a crates.io sparse-index record.
@@ -237,7 +237,11 @@ func (c *Client) VersionsAtLeast(ctx context.Context, crate string, floor Versio
 // `acceptable` (i.e. >= the child's own minimum), it finds the minimal upgrade
 // of the crate that depends on it. A parent qualifies as soon as it *permits* an
 // acceptable child version, because Cargo resolves to the highest permitted one.
-func (c *Client) MinVersionRequiring(ctx context.Context, dependent string, floor Version, depCrate string, acceptable []Version, allowPre bool) (Version, error) {
+//
+// depFloor is depCrate's target version (the line the bumped instance lives in). It
+// disambiguates when a candidate depends on depCrate under multiple renames — see
+// the grouping logic below.
+func (c *Client) MinVersionRequiring(ctx context.Context, dependent string, floor Version, depCrate string, depFloor Version, acceptable []Version, allowPre bool) (Version, error) {
 	versions, err := c.Fetch(ctx, dependent)
 	if err != nil {
 		return Version{}, err
@@ -291,8 +295,19 @@ func (c *Client) MinVersionRequiring(ctx context.Context, dependent string, floo
 		}
 		sawDep = true
 
+		// With more than one rename group, each governs an independent locked instance
+		// on its own SemVer line, and only the group governing the instance being
+		// bumped (depFloor's line) may qualify. Scope the acceptable set to depFloor's
+		// line so an unrelated group can't yield a false positive — e.g. combine's
+		// `bytes` ^1 must not "permit" the target when the governing group is the
+		// renamed `bytes_05` ^0.5. A single group is unambiguous, so the full
+		// acceptable set is used, preserving cross-line resolution.
+		permit := acceptable
+		if len(groups) > 1 {
+			permit = versionsInLine(acceptable, depFloor)
+		}
 		for _, name := range order {
-			if permitsAcceptable(groups[name], acceptable) {
+			if permitsAcceptable(groups[name], permit) {
 				return cand.ver, nil
 			}
 		}
@@ -302,6 +317,18 @@ func (c *Client) MinVersionRequiring(ctx context.Context, dependent string, floo
 		return Version{}, fmt.Errorf("%w: no version of %s >= %s depends on %s", errNoDependency, dependent, floor, depCrate)
 	}
 	return Version{}, fmt.Errorf("%w: no version of %s >= %s permits an acceptable %s", errNoPermitting, dependent, floor, depCrate)
+}
+
+// versionsInLine returns the subset of vers that fall in the same Cargo caret line
+// as ref (see sameCaretLine).
+func versionsInLine(vers []Version, ref Version) []Version {
+	var out []Version
+	for _, v := range vers {
+		if sameCaretLine(ref, v) {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // permitsAcceptable reports whether the requirements of a single dependency entry

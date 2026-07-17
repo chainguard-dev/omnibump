@@ -119,6 +119,32 @@ func Test_inLineVersion(t *testing.T) {
 	}
 }
 
+// Test_inLineSpec checks the shared cargo `--package` spec builder: name@version
+// when a locked version shares the line, and the bare name (empty cur) otherwise.
+func Test_inLineSpec(t *testing.T) {
+	present := []string{"0.9.5", "0.10.1"}
+
+	spec, cur := inLineSpec("rand", "0.9.0", present)
+	require.Equal(t, "rand@0.9.5", spec)
+	require.Equal(t, "0.9.5", cur)
+
+	spec, cur = inLineSpec("rand", "0.8.0", present) // no locked 0.8.x
+	require.Equal(t, "rand", spec)
+	require.Empty(t, cur)
+}
+
+// Test_lockedVersionsOf checks extraction of a crate's locked versions from parsed
+// Cargo.lock packages.
+func Test_lockedVersionsOf(t *testing.T) {
+	pkgs := []CargoPackage{
+		{Name: "rand", Version: "0.9.5"},
+		{Name: "serde", Version: "1.0.0"},
+		{Name: "rand", Version: "0.8.5"},
+	}
+	require.Equal(t, []string{"0.9.5", "0.8.5"}, lockedVersionsOf(pkgs, "rand"))
+	require.Nil(t, lockedVersionsOf(pkgs, "absent"))
+}
+
 // Test_maxVersion checks selection of the highest semver across compatibility
 // lines, skipping unparseable entries, and the empty result when none parse.
 func Test_maxVersion(t *testing.T) {
