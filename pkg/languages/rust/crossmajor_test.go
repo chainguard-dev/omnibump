@@ -15,6 +15,7 @@ import (
 
 	"github.com/chainguard-dev/clog"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/mod/semver"
 )
 
 // Test_caretConstraint checks the reduction of a concrete version to the Cargo
@@ -31,8 +32,14 @@ func Test_caretConstraint(t *testing.T) {
 		{version: "2.5.1", want: "2"},
 		{version: "1.0.0", want: "1"},
 		{version: "1", want: "1"},
-		{version: "0.3.4-beta.1", want: "0.3"},
+		// Pre-release versions keep their full form so the written constraint opts
+		// into the pre-release line (a truncated "0.3"/"0.10" would never match).
+		{version: "0.3.4-beta.1", want: "0.3.4-beta.1"},
+		{version: "0.10.0-rc.18", want: "0.10.0-rc.18"},
+		{version: "1.0.0-alpha.2", want: "1.0.0-alpha.2"},
+		// Build metadata (no pre-release) is still stripped and truncated.
 		{version: "2.5.1+build7", want: "2"},
+		{version: "0.3.4-beta.1+build7", want: "0.3.4-beta.1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.version, func(t *testing.T) {
@@ -459,6 +466,172 @@ func Test_CrossSemverDirectPrecise(t *testing.T) {
 	require.Equal(t, "0.9.0", lockedVersion(updated, "rand"), "expected rand pinned exactly to 0.9.0")
 }
 
+// scaffoldRand09Crate scaffolds a crate depending on rand ^0.9 with rand,
+// rand_chacha and rand_core all pinned down to 0.9.0, establishing an old baseline
+// so a subsequent floor upgrade has room to advance the target. Needs
+// network/registry access.
+func scaffoldRand09Crate(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "Cargo.toml"), `[package]
+name = "demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = "0.9"
+`)
+	writeFile(t, filepath.Join(root, "src", "lib.rs"), "")
+	generateLockfile(t, root)
+
+	// Pin the family down to 0.9.0 (released together) to establish an old baseline.
+	for _, c := range []string{"rand", "rand_chacha", "rand_core"} {
+		require.NoError(t, runCargoUpdate(context.Background(), root, []string{c}, "--precise", "0.9.0"))
+	}
+	return root
+}
+
+// Test_FloorAdvancesToLatestInLine is an end-to-end check of floor semantics for the
+// @version form: requesting rand@0.9.3 against a 0.9.0 baseline advances rand to the
+// latest version in its 0.9 line (past 0.9.0, >= 0.9.3) without editing the in-line
+// manifest constraint. (Coordinated advancement of rand's family siblings is covered
+// by Test_FamilyRefresh.) Needs network access.
+func Test_FloorAdvancesToLatestInLine(t *testing.T) {
+	cargoRoot := scaffoldRand09Crate(t)
+
+	base, err := GetCurrentPackages(context.Background(), cargoRoot)
+	require.NoError(t, err)
+	require.Equal(t, "0.9.0", lockedVersion(base, "rand"))
+
+	packages := map[string]*Package{"rand": {Name: "rand", Version: "0.9.3", Index: 0}}
+	require.NoError(t, DoUpdate(context.Background(), packages, base, &UpdateConfig{CargoRoot: cargoRoot}))
+
+	updated, err := GetCurrentPackages(context.Background(), cargoRoot)
+	require.NoError(t, err)
+
+	gotRand := lockedVersion(updated, "rand")
+	require.True(t, cargoCompatible("0.9", gotRand), "rand must stay in the 0.9 line, got %s", gotRand)
+	require.True(t, satisfiesFloor([]string{gotRand}, "0.9.3"), "rand must satisfy the floor, got %s", gotRand)
+	require.Positive(t, semver.Compare("v"+gotRand, "v0.9.0"), "rand must advance past the baseline, got %s", gotRand)
+
+	manifest, err := os.ReadFile(filepath.Join(cargoRoot, "Cargo.toml"))
+	require.NoError(t, err)
+	require.Contains(t, string(manifest), `rand = "0.9"`, "an in-line bump must not edit the manifest constraint")
+}
+
+// Test_FamilyRefresh is an end-to-end check that bumping a family member advances its
+// curated siblings in place. Against a 0.9.0 baseline (rand, rand_core, rand_chacha
+// all pinned to 0.9.0), requesting rand@0.9.3 must advance rand_core past 0.9.0 via
+// the family refresh — it is not touched by landing rand itself. rand_chacha 0.9.0 is
+// the latest in its line, so assert only that it stayed in-line and did not regress.
+// Needs network access.
+func Test_FamilyRefresh(t *testing.T) {
+	cargoRoot := scaffoldRand09Crate(t)
+
+	base, err := GetCurrentPackages(context.Background(), cargoRoot)
+	require.NoError(t, err)
+	baseCore := lockedVersion(base, "rand_core")
+	baseChacha := lockedVersion(base, "rand_chacha")
+	require.Equal(t, "0.9.0", baseCore)
+	require.Equal(t, "0.9.0", baseChacha)
+
+	packages := map[string]*Package{"rand": {Name: "rand", Version: "0.9.3", Index: 0}}
+	require.NoError(t, DoUpdate(context.Background(), packages, base, &UpdateConfig{CargoRoot: cargoRoot}))
+
+	updated, err := GetCurrentPackages(context.Background(), cargoRoot)
+	require.NoError(t, err)
+
+	require.Positive(t, semver.Compare("v"+lockedVersion(updated, "rand_core"), "v"+baseCore),
+		"rand_core sibling must advance past %s", baseCore)
+	gotChacha := lockedVersion(updated, "rand_chacha")
+	require.True(t, cargoCompatible("0.9", gotChacha), "rand_chacha must stay in the 0.9 line, got %s", gotChacha)
+	require.True(t, satisfiesFloor([]string{gotChacha}, baseChacha), "rand_chacha must not regress below %s", baseChacha)
+}
+
+// Test_InactiveDepPinsDirectly checks that bumping a crate that is locked but not
+// activated in the inverted tree does not abort the run. quinn-proto is declared
+// only under a windows-only target table, so on a non-Windows host it is locked
+// (listed by cargo metadata) yet `cargo tree -i` returns "nothing to print". The
+// bump must fall back to a direct lockfile pin and land the requested version.
+// Needs network access and a non-Windows host.
+func Test_InactiveDepPinsDirectly(t *testing.T) {
+	cargoRoot := t.TempDir()
+	writeFile(t, filepath.Join(cargoRoot, "Cargo.toml"), `[package]
+name = "demo"
+version = "0.1.0"
+edition = "2021"
+
+[target.'cfg(windows)'.dependencies]
+quinn-proto = "0.11"
+`)
+	writeFile(t, filepath.Join(cargoRoot, "src", "lib.rs"), "")
+	generateLockfile(t, cargoRoot)
+
+	// The latest 0.11.x that resolved is our upgrade target; pin the lock down so a
+	// floor bump has room to move.
+	initial, err := GetCurrentPackages(context.Background(), cargoRoot)
+	require.NoError(t, err)
+	target := lockedVersion(initial, "quinn-proto")
+	require.NotEmpty(t, target, "expected quinn-proto locked via the windows-only edge")
+	require.NoError(t, runCargoUpdate(context.Background(), cargoRoot, []string{"quinn-proto"}, "--precise", "0.11.0"))
+
+	base, err := GetCurrentPackages(context.Background(), cargoRoot)
+	require.NoError(t, err)
+	require.Equal(t, "0.11.0", lockedVersion(base, "quinn-proto"))
+
+	packages := map[string]*Package{"quinn-proto": {Name: "quinn-proto", Version: target, Index: 0}}
+	// Must not be fatal: the inactive-but-locked crate falls back to a direct pin.
+	require.NoError(t, DoUpdate(context.Background(), packages, base, &UpdateConfig{CargoRoot: cargoRoot}))
+
+	updated, err := GetCurrentPackages(context.Background(), cargoRoot)
+	require.NoError(t, err)
+	got := lockedVersion(updated, "quinn-proto")
+	require.True(t, satisfiesFloor([]string{got}, target), "quinn-proto must be pinned to >= %s, got %s", target, got)
+}
+
+// Test_CrossSemverDirectPreRelease checks the pre-release manifest-edit path: a
+// direct dependency bumped across a SemVer boundary into a pre-release-only line
+// must have its Cargo.toml constraint rewritten to the full pre-release version, not
+// a truncated caret line. rsa's 0.10 line is pre-release only (0.10.0-rc.*, no stable
+// 0.10.0), so caretConstraint must keep "0.10.0-rc.18" — a truncated "0.10" would be
+// read as ^0.10 and never match a pre-release, so `cargo add` would fail to resolve.
+// The build check is stubbed (the fixture has no source); this verifies the manifest
+// edit and lock resolution. Needs network/registry access.
+func Test_CrossSemverDirectPreRelease(t *testing.T) {
+	cargoRoot := t.TempDir()
+	writeFile(t, filepath.Join(cargoRoot, "Cargo.toml"), `[package]
+name = "demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rsa = "0.9"
+`)
+	writeFile(t, filepath.Join(cargoRoot, "src", "lib.rs"), "")
+	generateLockfile(t, cargoRoot)
+
+	restore := checkBuild
+	checkBuild = func(context.Context, string) (string, error) { return "", nil }
+	defer func() { checkBuild = restore }()
+
+	original, err := GetCurrentPackages(context.Background(), cargoRoot)
+	require.NoError(t, err)
+	require.True(t, cargoCompatible("0.9", lockedVersion(original, "rsa")), "expected rsa locked in the 0.9 line")
+
+	packages := map[string]*Package{"rsa": {Name: "rsa", Version: "0.10.0-rc.18", Index: 0}}
+	require.NoError(t, DoUpdate(context.Background(), packages, original, &UpdateConfig{CargoRoot: cargoRoot}))
+
+	manifest, err := os.ReadFile(filepath.Join(cargoRoot, "Cargo.toml"))
+	require.NoError(t, err)
+	require.Contains(t, string(manifest), `rsa = "0.10.0-rc.18"`,
+		"constraint must keep the pre-release tag, not truncate to 0.10")
+
+	updated, err := GetCurrentPackages(context.Background(), cargoRoot)
+	require.NoError(t, err)
+	got := lockedVersion(updated, "rsa")
+	require.True(t, satisfiesFloor([]string{got}, "0.10.0-rc.18"), "rsa must be >= 0.10.0-rc.18, got %s", got)
+}
+
 // Test_CrossSemverDirect is an end-to-end check that a SemVer-breaking bump of a
 // DIRECT dependency rewrites its Cargo.toml constraint (replacing the old `sed`
 // hack) and moves Cargo.lock onto the new line. It scaffolds a minimal crate and
@@ -573,7 +746,11 @@ func Test_InRangeIndirectRefreshesLock(t *testing.T) {
 
 	updated, err := GetCurrentPackages(context.Background(), cargoRoot)
 	require.NoError(t, err)
-	require.Equal(t, "0.6.4", lockedVersion(updated, "rand_core"), "in-range lock must be advanced, not left stale")
+	// Floor semantics: the lock must advance to at least the requested 0.6.4 within
+	// the 0.6 line (the floor landing moves it to the latest compatible release).
+	gotCore := lockedVersion(updated, "rand_core")
+	require.True(t, cargoCompatible("0.6", gotCore), "rand_core must stay in the 0.6 line, got %s", gotCore)
+	require.True(t, satisfiesFloor([]string{gotCore}, "0.6.4"), "in-range lock must advance to >= 0.6.4, got %s", gotCore)
 
 	// The upgrade needed no manifest edit; the indirect target must not be added.
 	manifest, err := os.ReadFile(filepath.Join(cargoRoot, "Cargo.toml"))

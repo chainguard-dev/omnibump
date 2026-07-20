@@ -38,7 +38,7 @@ var (
 type Fetcher interface {
 	MaxVersion(ctx context.Context, crate string, allowPre bool) (Version, bool, error)
 	VersionsAtLeast(ctx context.Context, crate string, floor Version, allowPre bool) ([]Version, error)
-	MinVersionRequiring(ctx context.Context, dependent string, floor Version, depCrate string, acceptable []Version, allowPre bool) (Version, error)
+	MinVersionRequiring(ctx context.Context, dependent string, floor Version, depCrate string, depFloor Version, acceptable []Version, allowPre bool) (Version, error)
 }
 
 // IndexDep mirrors a dependency entry in a crates.io sparse-index record.
@@ -187,13 +187,27 @@ type candidate struct {
 	deps []IndexDep
 }
 
+// preAllowed reports whether pre-release versions should be considered as
+// candidates: either the caller explicitly allowed them, or the floor is itself a
+// pre-release. A pre-release floor means the project has already opted this crate
+// into its pre-release line, so its pre-release versions are legitimate upgrade
+// targets. This matters for families whose dependency link exists only in the
+// pre-release line — e.g. rsa depends on crypto-primes only in its 0.10.0-rc.*
+// versions, so excluding pre-releases makes the walk conclude, wrongly, that no rsa
+// version depends on crypto-primes.
+func preAllowed(allowPre bool, floor Version) bool {
+	return allowPre || floor.Pre != ""
+}
+
 // VersionsAtLeast returns all non-yanked published versions of crate that are
-// >= floor, sorted ascending. Pre-releases are excluded unless allowPre is set.
+// >= floor, sorted ascending. Pre-releases are excluded unless allowPre is set or
+// the floor is itself a pre-release (see preAllowed).
 func (c *Client) VersionsAtLeast(ctx context.Context, crate string, floor Version, allowPre bool) ([]Version, error) {
 	versions, err := c.Fetch(ctx, crate)
 	if err != nil {
 		return nil, err
 	}
+	allowPre = preAllowed(allowPre, floor)
 	var out []Version
 	for _, iv := range versions {
 		if iv.Yanked {
@@ -223,7 +237,11 @@ func (c *Client) VersionsAtLeast(ctx context.Context, crate string, floor Versio
 // `acceptable` (i.e. >= the child's own minimum), it finds the minimal upgrade
 // of the crate that depends on it. A parent qualifies as soon as it *permits* an
 // acceptable child version, because Cargo resolves to the highest permitted one.
-func (c *Client) MinVersionRequiring(ctx context.Context, dependent string, floor Version, depCrate string, acceptable []Version, allowPre bool) (Version, error) {
+//
+// depFloor is depCrate's target version (the line the bumped instance lives in). It
+// disambiguates when a candidate depends on depCrate under multiple renames — see
+// the grouping logic below.
+func (c *Client) MinVersionRequiring(ctx context.Context, dependent string, floor Version, depCrate string, depFloor Version, acceptable []Version, allowPre bool) (Version, error) {
 	versions, err := c.Fetch(ctx, dependent)
 	if err != nil {
 		return Version{}, err
@@ -231,6 +249,7 @@ func (c *Client) MinVersionRequiring(ctx context.Context, dependent string, floo
 	if len(acceptable) == 0 {
 		return Version{}, fmt.Errorf("%w: %s", errNoAcceptable, depCrate)
 	}
+	allowPre = preAllowed(allowPre, floor)
 
 	var cands []candidate
 	for _, iv := range versions {
@@ -253,23 +272,44 @@ func (c *Client) MinVersionRequiring(ctx context.Context, dependent string, floo
 
 	sawDep := false
 	for _, cand := range cands {
-		var reqs []string
+		// Group requirements on depCrate by the dependency's local name. Cargo unifies
+		// same-named entries (e.g. one dependency split across [target.'cfg(...)']
+		// tables) into a single locked instance, so those must be satisfied together.
+		// A renamed entry — a different name with the same package, e.g. combine's
+		// `bytes` ^1 and `bytes_05` (package = bytes) ^0.5 — is an independent locked
+		// instance and must not be conjoined with the others; only the group governing
+		// the instance being bumped needs to permit an acceptable version.
+		groups := map[string][]string{}
+		var order []string
 		for _, d := range cand.deps {
-			if d.crate() != depCrate {
+			if d.crate() != depCrate || d.Kind == "dev" { // dev-deps don't propagate downstream
 				continue
 			}
-			if d.Kind == "dev" { // dev-deps don't propagate to downstream resolution
-				continue
+			if _, ok := groups[d.Name]; !ok {
+				order = append(order, d.Name)
 			}
-			reqs = append(reqs, d.Req)
+			groups[d.Name] = append(groups[d.Name], d.Req)
 		}
-		if len(reqs) == 0 {
+		if len(groups) == 0 {
 			continue // this version doesn't depend on depCrate; not a valid link
 		}
 		sawDep = true
 
-		if permitsAcceptable(reqs, acceptable) {
-			return cand.ver, nil
+		// With more than one rename group, each governs an independent locked instance
+		// on its own SemVer line, and only the group governing the instance being
+		// bumped (depFloor's line) may qualify. Scope the acceptable set to depFloor's
+		// line so an unrelated group can't yield a false positive — e.g. combine's
+		// `bytes` ^1 must not "permit" the target when the governing group is the
+		// renamed `bytes_05` ^0.5. A single group is unambiguous, so the full
+		// acceptable set is used, preserving cross-line resolution.
+		permit := acceptable
+		if len(groups) > 1 {
+			permit = versionsInLine(acceptable, depFloor)
+		}
+		for _, name := range order {
+			if permitsAcceptable(groups[name], permit) {
+				return cand.ver, nil
+			}
 		}
 	}
 
@@ -279,8 +319,21 @@ func (c *Client) MinVersionRequiring(ctx context.Context, dependent string, floo
 	return Version{}, fmt.Errorf("%w: no version of %s >= %s permits an acceptable %s", errNoPermitting, dependent, floor, depCrate)
 }
 
-// permitsAcceptable reports whether every requirement (there may be several, e.g.
-// per-target) is satisfied by at least one common acceptable version.
+// versionsInLine returns the subset of vers that fall in the same Cargo caret line
+// as ref (see sameCaretLine).
+func versionsInLine(vers []Version, ref Version) []Version {
+	var out []Version
+	for _, v := range vers {
+		if sameCaretLine(ref, v) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// permitsAcceptable reports whether the requirements of a single dependency entry
+// (one rename group — several comparators appear when a dep is split across target
+// tables) are all satisfied by at least one common acceptable version.
 func permitsAcceptable(reqs []string, acceptable []Version) bool {
 	for _, av := range acceptable {
 		all := true

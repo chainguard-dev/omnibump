@@ -46,18 +46,11 @@ func (v Version) String() string {
 func ParseVersion(s string) (Version, error) {
 	s = strings.TrimSpace(s)
 	s = strings.TrimPrefix(s, "v")
-	if i := strings.IndexByte(s, '+'); i >= 0 {
-		s = s[:i]
-	}
-	pre := ""
-	if i := strings.IndexByte(s, '-'); i >= 0 {
-		pre = s[i+1:]
-		s = s[:i]
-	}
-	if s == "" {
+	core, pre := splitPre(s)
+	if core == "" {
 		return Version{}, errEmptyVersion
 	}
-	parts := strings.Split(s, ".")
+	parts := strings.Split(core, ".")
 	var nums [3]uint64
 	for i := 0; i < 3; i++ {
 		if i < len(parts) && parts[i] != "" {
@@ -131,6 +124,27 @@ func comparePre(a, b string) int {
 		}
 	}
 	return cmpUint(uint64(len(as)), uint64(len(bs)))
+}
+
+// sameCaretLine reports whether v falls in the same Cargo caret-compatibility line
+// as ref: same major for >=1.0.0, same major.minor for 0.x, and same
+// major.minor.patch for 0.0.x. Mirrors caretRange's line rules, and is used to scope
+// which locked instance a requirement group governs when a crate is depended on
+// under multiple renames.
+func sameCaretLine(ref, v Version) bool {
+	if ref.Major != v.Major {
+		return false
+	}
+	if ref.Major != 0 {
+		return true
+	}
+	if ref.Minor != v.Minor {
+		return false
+	}
+	if ref.Minor != 0 {
+		return true
+	}
+	return ref.Patch == v.Patch
 }
 
 // comparator is a single primitive constraint, e.g. ">= 0.56.0".
@@ -239,11 +253,18 @@ func parseTerm(s string) ([]comparator, error) {
 		return []comparator{{">=", Version{}}}, nil
 	}
 
-	major, m, p, count, wild, err := parsePartial(s)
+	// Split off the pre-release / build tag (e.g. "0.10.0-rc.18") before parsing the
+	// numeric core, then carry the pre-release on the lower bound so pre-release
+	// requirements like `=0.10.0-rc.18` or `^0.10.0-rc.10` parse and match. Without
+	// this, parsePartial fails on the "0-rc" token and the requirement is treated as
+	// unsatisfiable (e.g. russh's `=0.10.0-rc.18` on rsa).
+	core, pre := splitPre(s)
+
+	major, m, p, count, wild, err := parsePartial(core)
 	if err != nil {
 		return nil, err
 	}
-	filled := Version{major, m, p, ""}
+	filled := Version{major, m, p, pre}
 
 	// Wildcards ("1.*", "1.2.*") behave like caret-style ranges regardless of a
 	// leading operator, so handle them first.
@@ -261,6 +282,7 @@ func parseTerm(s string) ([]comparator, error) {
 	switch op {
 	case "^":
 		lo, hi := caretRange(major, m, p, count)
+		lo.Pre = pre // a caret's lower bound carries the pre-release (upper bound does not)
 		return []comparator{{">=", lo}, {"<", hi}}, nil
 	case "~":
 		var hi Version
@@ -324,6 +346,22 @@ func caretRange(major, m, p uint64, count int) (lo, hi Version) {
 		hi = Version{0, 0, 1, ""}
 	}
 	return lo, hi
+}
+
+// splitPre separates a version string's numeric core from its pre-release tag,
+// discarding build metadata: "0.10.0-rc.18" -> ("0.10.0", "rc.18"), "1.2.3" ->
+// ("1.2.3", ""). Build metadata (after '+') is dropped as it does not affect
+// ordering or matching.
+func splitPre(s string) (core, pre string) {
+	core = s
+	if i := strings.IndexByte(core, '+'); i >= 0 {
+		core = core[:i]
+	}
+	if i := strings.IndexByte(core, '-'); i >= 0 {
+		pre = core[i+1:]
+		core = core[:i]
+	}
+	return core, pre
 }
 
 // parsePartial parses a possibly-partial version such as "1", "1.2", "1.2.3" or

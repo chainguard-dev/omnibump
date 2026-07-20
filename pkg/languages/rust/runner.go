@@ -136,12 +136,15 @@ func validateVersion(version string) error {
 	return nil
 }
 
-// CargoCheck runs `cargo check --workspace` to verify the project still compiles.
-// It returns the combined output (so compiler errors can be surfaced) and an error
-// if the check fails. Used to gate SemVer-breaking upgrades, which can leave the
-// project unbuildable.
+// CargoCheck runs `cargo check --workspace --release` to verify the project still
+// compiles. It returns the combined output (so compiler errors can be surfaced) and
+// an error if the check fails. Used to gate SemVer-breaking upgrades, which can
+// leave the project unbuildable.
+//
+// --release compiles in the release profile so a subsequent `cargo build --release`
+// can reuse these artifacts rather than recompiling from scratch.
 func CargoCheck(ctx context.Context, cargoRoot string) (string, error) {
-	cmd := cargoCommand(ctx, cargoRoot, "check", "--workspace")
+	cmd := cargoCommand(ctx, cargoRoot, "check", "--workspace", "--release")
 	if bytes, err := cmd.CombinedOutput(); err != nil {
 		return strings.TrimSpace(string(bytes)), err
 	}

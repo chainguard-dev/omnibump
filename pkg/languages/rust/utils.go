@@ -91,20 +91,69 @@ func GetCurrentPackages(ctx context.Context, cargoRoot string) ([]CargoPackage, 
 	return cargoPackages, nil
 }
 
+// ErrCrateNotActivated indicates that `cargo tree -i` found no reachable inverted
+// tree for the crate: it is locked but not activated in the resolved graph this
+// query sees (host target, normal+build edges). This happens for an optional
+// dependency behind a disabled feature or a platform-gated dependency on a
+// non-matching host. cargo reports it either as an empty tree ("warning: nothing to
+// print.", exit 0) or as "did not match any packages" (exit non-zero). It is not a
+// fatal error: the caller falls back to a direct lockfile pin.
+var ErrCrateNotActivated = errors.New("crate is locked but not activated in the inverted dependency tree")
+
 // cargoTreeInverted returns the raw `cargo tree -i` output for crate, in the
 // depth-prefixed format the revdep parser expects. The inverted tree is rooted at
 // crate with each child being a crate that depends on it. Edge kinds are limited
 // to normal+build (dev-deps do not propagate to downstream resolution); the
 // toolchain override is inherited via cargoCommand.
+//
+// It returns ErrCrateNotActivated when the crate is locked but absent from the tree
+// this query sees, so the caller can fall back rather than abort (see the error's
+// doc).
 func cargoTreeInverted(ctx context.Context, cargoRoot, crate string) (string, error) {
-	output := bytes.Buffer{}
+	log := clog.FromContext(ctx)
+	var stdout, stderr bytes.Buffer
 	cmd := cargoCommand(ctx, cargoRoot, "tree", "-i", crate, "-e", "normal,build", "--charset", "ascii", "--prefix", "depth")
-	cmd.Stdout = &output
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+
+	if notActivatedInTree(err, stdout.String(), stderr.String()) {
+		return "", ErrCrateNotActivated
+	}
+	if err != nil {
+		if s := strings.TrimSpace(stderr.String()); s != "" {
+			return "", fmt.Errorf("cargo tree -i %s: %w: %s", crate, err, s)
+		}
 		return "", fmt.Errorf("cargo tree -i %s: %w", crate, err)
 	}
-	return output.String(), nil
+	// Surface any warnings cargo emitted on the success path (edition/resolver
+	// notices) rather than silently discarding the buffered stderr.
+	if s := strings.TrimSpace(stderr.String()); s != "" {
+		log.Debugf("cargo tree -i %s: %s", crate, s)
+	}
+	return stdout.String(), nil
+}
+
+// notActivatedInTree reports whether a `cargo tree -i` run signals that the crate is
+// locked but absent from this query's resolved view (host target, normal/build
+// edges) — as opposed to a genuine failure. cargo exposes no machine-readable signal
+// for this, so it is inferred from behavior/wording:
+//   - non-zero exit whose stderr says the pkgid "did not match any packages" (or
+//     "package ID specification ... did not match"): an optional dependency behind a
+//     disabled feature;
+//   - exit 0 with empty stdout ("warning: nothing to print."): reachable only through
+//     edges this query filters out, e.g. a platform-gated dependency on a
+//     non-matching host.
+//
+// This is coupled to cargo's human-readable diagnostics: if a future cargo release
+// rewords them, the pinLockedDependency fallback stops firing and such bumps regress
+// to a hard abort. There is no version-stable signal to key on instead.
+func notActivatedInTree(runErr error, stdout, stderr string) bool {
+	if runErr != nil {
+		return strings.Contains(stderr, "did not match any packages") ||
+			(strings.Contains(stderr, "package ID specification") && strings.Contains(stderr, "did not match"))
+	}
+	return strings.TrimSpace(stdout) == ""
 }
 
 // presentVersions returns the versions of crate `name` currently resolved in the
@@ -402,12 +451,21 @@ func cargoCompatible(req, have string) bool {
 // into a Cargo.toml constraint: "major.minor" for 0.x releases (0.3.4 -> "0.3")
 // and "major" for >=1 releases (2.5.1 -> "2"). This mirrors cargoCompatible's
 // line rules and matches idiomatic hand-written manifests, so the manifest holds
-// the compatible line while Cargo.lock holds the exact pin. Pre-release/build
-// metadata is stripped; a version too short to reduce is returned unchanged.
+// the compatible line while Cargo.lock holds the exact pin. Build metadata is
+// stripped; a version too short to reduce is returned unchanged.
+//
+// A pre-release version is NOT truncated: cargo only matches a pre-release when the
+// requirement names the same major.minor.patch with a pre-release tag, so a
+// truncated "0.10" would never match "0.10.0-rc.18". The full version is returned
+// instead (a bare "0.10.0-rc.18" is read by cargo as "^0.10.0-rc.18", which matches
+// and opts into the pre-release line).
 func caretConstraint(version string) string {
 	v := version
-	if i := strings.IndexAny(v, "-+"); i >= 0 {
-		v = v[:i]
+	if i := strings.IndexByte(v, '+'); i >= 0 {
+		v = v[:i] // build metadata is not significant to matching
+	}
+	if strings.IndexByte(v, '-') >= 0 {
+		return v // pre-release: keep the full version so the constraint opts in
 	}
 	parts := strings.Split(v, ".")
 	if len(parts) == 0 || parts[0] == "" {
@@ -476,6 +534,35 @@ func inLineVersion(version string, present []string) string {
 		}
 	}
 	return best
+}
+
+// inLineSpec builds an unambiguous `name@version` cargo `--package` spec targeting
+// the instance of name locked in `line`'s SemVer line. cur is
+// inLineVersion(line, present); it is "" when no locked version shares that line, in
+// which case the bare name is returned and the caller decides the fallback (skip,
+// transitive handling, or trusting cargo to disambiguate a single instance). Callers
+// use this so the spec construction — and this fallback contract — lives in one
+// place.
+func inLineSpec(name, line string, present []string) (spec, cur string) {
+	cur = inLineVersion(line, present)
+	if cur == "" {
+		return name, ""
+	}
+	return name + "@" + cur, cur
+}
+
+// lockedVersionsOf returns the versions of crate `name` recorded in a parsed
+// Cargo.lock. Reading the lock (via GetCurrentPackages) is a file parse with no cargo
+// subprocess, unlike presentVersions' `cargo metadata`; it is the right source for
+// post-landing "which instances are pinned" queries.
+func lockedVersionsOf(pkgs []CargoPackage, name string) []string {
+	var out []string
+	for _, p := range pkgs {
+		if p.Name == name {
+			out = append(out, p.Version)
+		}
+	}
+	return out
 }
 
 // isDowngrade reports whether target is a lower SemVer than current. Non-SemVer

@@ -36,7 +36,7 @@ func (s *stubFetcher) VersionsAtLeast(_ context.Context, crate string, _ Version
 	return s.atLeast[crate], nil
 }
 
-func (s *stubFetcher) MinVersionRequiring(_ context.Context, dependent string, _ Version, _ string, _ []Version, _ bool) (Version, error) {
+func (s *stubFetcher) MinVersionRequiring(_ context.Context, dependent string, _ Version, _ string, _ Version, _ []Version, _ bool) (Version, error) {
 	if s.notFound[dependent] {
 		return Version{}, fmt.Errorf("crate %q: %w", dependent, ErrNotFound)
 	}
