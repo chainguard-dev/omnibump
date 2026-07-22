@@ -30,6 +30,9 @@ var (
 
 	// ErrUnexpectedGoListOutput is returned when go list output has unexpected format.
 	ErrUnexpectedGoListOutput = errors.New("unexpected go list output")
+
+	// ErrNonSemverResolvedVersion is returned when go list resolves a version that is not valid SemVer.
+	ErrNonSemverResolvedVersion = errors.New("resolved version is not valid semver")
 )
 
 // Golang implements the Language interface for Go projects.
@@ -825,11 +828,25 @@ func resolveVersionQuery(ctx context.Context, modulePath, query, modroot string)
 		return "", fmt.Errorf("go list failed: %w, output: %s", err, strings.TrimSpace(string(output)))
 	}
 
-	// Parse output: "module version"
-	parts := strings.Fields(strings.TrimSpace(string(output)))
-	if len(parts) < 2 {
-		return "", fmt.Errorf("%w: %s", ErrUnexpectedGoListOutput, string(output))
-	}
+	return parseGoListModuleVersion(string(output), modulePath)
+}
 
-	return parts[1], nil
+// parseGoListModuleVersion extracts modulePath's resolved version from "go list -m"
+// output by finding the "<module> <version>" result line. Lines whose first field is
+// not modulePath are skipped — this drops "go:" progress/diagnostic output (e.g.
+// "go: downloading ...", "go: finding ...") that CombinedOutput merges in from stderr
+// on a cold module cache. Non-SemVer versions are rejected so download-progress tokens
+// like "downloading" never reach go.mod.
+func parseGoListModuleVersion(output, modulePath string) (string, error) {
+	for _, line := range strings.Split(output, "\n") {
+		parts := strings.Fields(line)
+		if len(parts) < 2 || parts[0] != modulePath {
+			continue
+		}
+		if !semver.IsValid(parts[1]) {
+			return "", fmt.Errorf("%w: %q for %s", ErrNonSemverResolvedVersion, parts[1], modulePath)
+		}
+		return parts[1], nil
+	}
+	return "", fmt.Errorf("%w: %s", ErrUnexpectedGoListOutput, output)
 }
