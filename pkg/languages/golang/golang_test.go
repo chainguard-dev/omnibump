@@ -1486,6 +1486,97 @@ func TestFilterDepsForModule(t *testing.T) {
 	}
 }
 
+func TestAbsentReplacePins(t *testing.T) {
+	tests := []struct {
+		name     string
+		deps     []languages.Dependency
+		modFile  *modfile.File
+		wantPins []string // names expected in the returned pins
+	}{
+		{
+			name: "replace pin absent from go.mod is returned (transitive-only)",
+			deps: []languages.Dependency{
+				{Name: "github.com/segmentio/asm", Version: "v1.2.0", Replace: true},
+			},
+			modFile: &modfile.File{
+				Require: []*modfile.Require{
+					{Mod: module.Version{Path: "github.com/envoyproxy/gateway", Version: "v1.5.7"}},
+				},
+			},
+			wantPins: []string{"github.com/segmentio/asm"},
+		},
+		{
+			name: "absent require bump is not returned",
+			deps: []languages.Dependency{
+				{Name: "github.com/segmentio/asm", Version: "v1.2.0"}, // Replace: false
+			},
+			modFile: &modfile.File{
+				Require: []*modfile.Require{},
+			},
+			wantPins: []string{},
+		},
+		{
+			name: "replace pin already present via Name is not returned",
+			deps: []languages.Dependency{
+				{Name: "github.com/example/foo", Version: "v1.2.0", Replace: true},
+			},
+			modFile: &modfile.File{
+				Require: []*modfile.Require{
+					{Mod: module.Version{Path: "github.com/example/foo", Version: "v1.0.0"}},
+				},
+			},
+			wantPins: []string{},
+		},
+		{
+			name: "replace pin already present via OldName is not returned",
+			deps: []languages.Dependency{
+				{OldName: "github.com/example/old", Name: "github.com/example/new", Version: "v1.2.0", Replace: true},
+			},
+			modFile: &modfile.File{
+				Require: []*modfile.Require{
+					{Mod: module.Version{Path: "github.com/example/old", Version: "v1.0.0"}},
+				},
+			},
+			wantPins: []string{},
+		},
+		{
+			name: "mixed: only the absent replace pin rides along",
+			deps: []languages.Dependency{
+				{Name: "github.com/envoyproxy/gateway", Version: "v1.7.4"},           // present require bump
+				{Name: "github.com/segmentio/asm", Version: "v1.2.0", Replace: true}, // absent replace pin
+				{Name: "golang.org/x/crypto", Version: "v0.45.0"},                    // absent require bump
+			},
+			modFile: &modfile.File{
+				Require: []*modfile.Require{
+					{Mod: module.Version{Path: "github.com/envoyproxy/gateway", Version: "v1.5.7"}},
+				},
+			},
+			wantPins: []string{"github.com/segmentio/asm"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := absentReplacePins(tt.deps, tt.modFile)
+
+			if len(got) != len(tt.wantPins) {
+				t.Errorf("got %d pins, want %d: %v", len(got), len(tt.wantPins), got)
+				return
+			}
+
+			gotNames := make(map[string]bool)
+			for _, d := range got {
+				gotNames[d.Name] = true
+			}
+			for _, want := range tt.wantPins {
+				if !gotNames[want] {
+					t.Errorf("expected pin %q in result, got: %v", want, got)
+				}
+			}
+		})
+	}
+}
+
 func TestGolang_Update_Workspace_OnlyTargetedModules(t *testing.T) {
 	tmpDir := t.TempDir()
 

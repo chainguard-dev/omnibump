@@ -177,6 +177,14 @@ func (g *Golang) updateWorkspace(ctx context.Context, cfg *languages.UpdateConfi
 			continue
 		}
 
+		// filterDepsForModule drops any dep absent from this module's go.mod. That is
+		// correct for require bumps (a bare require would be undone by go mod tidy), but
+		// it also drops explicitly-requested replace pins for purely transitive modules
+		// (present in no go.mod, only in the module graph). A replace directive survives
+		// go mod tidy, so re-add such pins to modules that are already being updated so
+		// the transitive dependency is actually pinned. See AUTO-954.
+		moduleDeps = append(moduleDeps, absentReplacePins(cfg.Dependencies, modFile)...)
+
 		clog.InfoContextf(ctx, "Updating module: %s", modPath)
 
 		moduleCfg := &languages.UpdateConfig{
@@ -204,11 +212,11 @@ func (g *Golang) updateWorkspace(ctx context.Context, cfg *languages.UpdateConfi
 	return nil
 }
 
-// filterDepsForModule returns only the dependencies already present in the given
-// module's go.mod as require or replace directives. This prevents omnibump from
-// adding packages to workspace sub-modules that don't already have them, which
-// would be undone by go mod tidy and cause a verification failure.
-func filterDepsForModule(deps []languages.Dependency, modFile *modfile.File) []languages.Dependency {
+// modFilePresentSet returns the set of module paths declared in the go.mod as a
+// require or replace directive (both the old and new path of a replace). Membership
+// means the module is already managed here, which decides whether a dependency needs
+// to be added or is already covered.
+func modFilePresentSet(modFile *modfile.File) map[string]struct{} {
 	present := make(map[string]struct{}, len(modFile.Require)+len(modFile.Replace)*2)
 	for _, req := range modFile.Require {
 		if req != nil {
@@ -221,16 +229,55 @@ func filterDepsForModule(deps []languages.Dependency, modFile *modfile.File) []l
 			present[repl.New.Path] = struct{}{}
 		}
 	}
+	return present
+}
 
+// depPresent reports whether dep is declared in present, matching on either its Name
+// or (for cross-path replaces) its OldName.
+func depPresent(present map[string]struct{}, dep languages.Dependency) bool {
+	if _, ok := present[dep.Name]; ok {
+		return true
+	}
+	if dep.OldName != "" {
+		if _, ok := present[dep.OldName]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// filterDepsForModule returns only the dependencies already present in the given
+// module's go.mod as require or replace directives. This prevents omnibump from
+// adding packages to workspace sub-modules that don't already have them, which
+// would be undone by go mod tidy and cause a verification failure.
+func filterDepsForModule(deps []languages.Dependency, modFile *modfile.File) []languages.Dependency {
+	present := modFilePresentSet(modFile)
 	filtered := make([]languages.Dependency, 0, len(deps))
 	for _, dep := range deps {
-		_, namePresent := present[dep.Name]
-		_, oldNamePresent := present[dep.OldName]
-		if namePresent || (dep.OldName != "" && oldNamePresent) {
+		if depPresent(present, dep) {
 			filtered = append(filtered, dep)
 		}
 	}
 	return filtered
+}
+
+// absentReplacePins returns the replace-type dependencies that filterDepsForModule
+// dropped because they are absent from this module's go.mod (neither Name nor OldName
+// appears in a require or replace directive). These are purely transitive modules that
+// need a replace pin — for example a CVE bump that raises a transitive dependency which
+// must be pinned back to a compatible version. Unlike a bare require, a replace
+// directive survives go mod tidy, so adding one for a transitive module is safe and is
+// exactly how the pin is meant to take effect. Only deps with Replace set are returned;
+// absent require bumps stay filtered out (see AUTO-954).
+func absentReplacePins(deps []languages.Dependency, modFile *modfile.File) []languages.Dependency {
+	present := modFilePresentSet(modFile)
+	var pins []languages.Dependency
+	for _, dep := range deps {
+		if dep.Replace && !depPresent(present, dep) {
+			pins = append(pins, dep)
+		}
+	}
+	return pins
 }
 
 // Validate checks if the updates were applied successfully.
