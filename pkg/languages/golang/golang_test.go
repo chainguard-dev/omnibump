@@ -1966,3 +1966,92 @@ require (
 	require.False(t, oauth2Found,
 		"go.example.io/pkg/oauth2 must not be suggested when its target version returns 404")
 }
+
+func TestParseGoListModuleVersion(t *testing.T) {
+	const modulePath = "k8s.io/metrics"
+
+	tests := []struct {
+		name    string
+		output  string
+		want    string
+		wantErr error
+	}{
+		{
+			name:   "cold cache merges downloading progress before result line",
+			output: "go: downloading k8s.io/metrics v0.34.1\nk8s.io/metrics v0.34.1\n",
+			want:   "v0.34.1",
+		},
+		{
+			name:   "multiple progress lines before result line",
+			output: "go: finding module for package k8s.io/metrics\ngo: downloading k8s.io/metrics v0.34.1\nk8s.io/metrics v0.34.1\n",
+			want:   "v0.34.1",
+		},
+		{
+			name:   "clean single line",
+			output: "k8s.io/metrics v0.34.1",
+			want:   "v0.34.1",
+		},
+		{
+			name:   "incompatible suffix is accepted",
+			output: "k8s.io/metrics v2.0.0+incompatible\n",
+			want:   "v2.0.0+incompatible",
+		},
+		{
+			name:    "only progress lines, no module result",
+			output:  "go: downloading k8s.io/metrics v0.34.1\n",
+			wantErr: ErrUnexpectedGoListOutput,
+		},
+		{
+			name:    "non-semver version for the module is rejected",
+			output:  "k8s.io/metrics downloading\n",
+			wantErr: ErrNonSemverResolvedVersion,
+		},
+		{
+			name:    "empty output",
+			output:  "",
+			wantErr: ErrUnexpectedGoListOutput,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseGoListModuleVersion(tt.output, modulePath)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// withColdCacheVersionResolver stubs resolveListCommand to return the given cold-cache
+// output for every query, restoring the original resolver when the test finishes.
+func withColdCacheVersionResolver(t *testing.T, output string, cmdErr error) {
+	t.Helper()
+	orig := resolveListCommand
+	resolveListCommand = func(_ context.Context, _, _ string) commander {
+		return &fakeCmd{out: []byte(output), err: cmdErr}
+	}
+	t.Cleanup(func() { resolveListCommand = orig })
+}
+
+func TestResolveVersionQueryColdCache(t *testing.T) {
+	// Regression for AUTO-953: on a cold cache, "go: downloading ..." progress from stderr
+	// is merged by CombinedOutput and must not be parsed as the resolved version.
+	t.Run("downloading progress is ignored", func(t *testing.T) {
+		withColdCacheVersionResolver(t, "go: downloading k8s.io/metrics v0.34.1\nk8s.io/metrics v0.34.1\n", nil)
+
+		got, err := resolveVersionQuery(t.Context(), "k8s.io/metrics", "v0.34.1", t.TempDir())
+		require.NoError(t, err)
+		require.Equal(t, "v0.34.1", got)
+	})
+
+	t.Run("progress only output propagates an error", func(t *testing.T) {
+		withColdCacheVersionResolver(t, "go: downloading k8s.io/metrics v0.34.1\n", nil)
+
+		_, err := resolveVersionQuery(t.Context(), "k8s.io/metrics", "v0.34.1", t.TempDir())
+		require.ErrorIs(t, err, ErrUnexpectedGoListOutput)
+	})
+}
