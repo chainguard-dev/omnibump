@@ -19,7 +19,7 @@ require (
 	golang.org/x/exp v0.0.0-20231006140011-7918f672742d
 	golang.org/x/mod v0.38.0
 	golang.org/x/tools v0.48.0
-	k8s.io/apimachinery v0.36.2
+	k8s.io/apimachinery v0.36.3
 	sigs.k8s.io/release-utils v0.12.4
 )
 
