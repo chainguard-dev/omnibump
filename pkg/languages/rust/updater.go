@@ -103,6 +103,14 @@ func DoUpdate(ctx context.Context, packages map[string]*Package, cargoPackages [
 		}
 	}
 
+	// Restore pre-#155 resolution: after the targeted (floor) upgrades land, float
+	// the remaining graph to the latest SemVer-compatible version, matching the
+	// lockfiles that package baselines were built against. #155/#162 CVE handling
+	// still runs first, so the fix versions are preserved (latest >= floor).
+	if output, err := CargoUpdate(ctx, cfg.CargoRoot); err != nil {
+		return fmt.Errorf("failed to run final 'cargo update': %w with output: %v", err, output)
+	}
+
 	return nil
 }
 
