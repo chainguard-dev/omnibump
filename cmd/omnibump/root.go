@@ -52,6 +52,7 @@ type rootFlags struct {
 	venv               string
 	gradleForceConfigs []string
 	gemDir             string
+	features           []string
 }
 
 var flags rootFlags
@@ -105,6 +106,7 @@ func New() *cobra.Command {
 	f.StringVar(&flags.venv, "venv", "", "path to staged Python venv for in-place bumping (Python only)")
 	f.StringSliceVar(&flags.gradleForceConfigs, "gradle-force-configurations", nil, "extra Gradle configuration names (beyond compile/runtime classpaths) to force managed pins on, for fat-jar/packaging builds that bundle a custom configuration (Java/Gradle only). May be repeated or comma-separated.")
 	f.StringVar(&flags.gemDir, "gem-dir", "", "path to Ruby gem directory for in-place overlay bumping (Ruby only)")
+	f.StringSliceVar(&flags.features, "features", nil, "Cargo features to activate when resolving the dependency graph (Rust only); should mirror the package's build features so pins for feature-gated crates are not skipped. Defaults to --all-features when unset. May be repeated or comma-separated.")
 
 	// Add version command
 	cmd.AddCommand(version.WithFont("starwars"))
@@ -437,6 +439,11 @@ func buildUpdateConfig(cfg *config.Config) *languages.UpdateConfig {
 	}
 	if flags.gemDir != "" {
 		updateCfg.Options["gem-dir"] = flags.gemDir
+	}
+	// The CLI's --features flag wins over a deps-file `features` list (which
+	// ToUpdateConfig already stamped into Options), mirroring --manager/--tool.
+	if len(flags.features) > 0 {
+		updateCfg.Options["features"] = flags.features
 	}
 
 	return updateCfg

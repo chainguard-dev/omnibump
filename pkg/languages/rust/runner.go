@@ -113,6 +113,95 @@ func cargoCommand(ctx context.Context, dir string, args ...string) *exec.Cmd {
 	return cmd
 }
 
+// featureSelection captures which Cargo features cargo should activate when
+// omnibump discovers the dependency graph (cargo metadata / cargo tree). cargo
+// resolves only the default feature set unless told otherwise, so a crate
+// reachable *only* through a non-default feature is invisible to discovery and its
+// pin is silently skipped (AUTO-1142). Discovery therefore runs with the package's
+// features: an explicit list when the pipeline threads one, otherwise every
+// feature (--all-features) so no feature-gated crate is missed.
+type featureSelection struct {
+	// features, when non-empty, is passed as `--features a,b,c` — the exact set
+	// the melange package builds with. It takes precedence over the all-features
+	// default.
+	features []string
+}
+
+// Cargo feature-selection flags for discovery commands (cargo metadata / cargo
+// tree).
+const (
+	featuresFlag    = "--features"
+	allFeaturesFlag = "--all-features"
+)
+
+// args renders the cargo feature flags for a discovery command (cargo metadata /
+// cargo tree), to be appended after the subcommand and its arguments. An explicit
+// feature list is passed verbatim as `--features <list>`; otherwise `--all-features`
+// is used as the safe default so discovery sees the whole graph rather than only
+// default features.
+func (fs featureSelection) args() []string {
+	if len(fs.features) > 0 {
+		return []string{featuresFlag, strings.Join(fs.features, ",")}
+	}
+	return []string{allFeaturesFlag}
+}
+
+// featureSelectionKey is the context key under which a run's featureSelection is
+// carried.
+type featureSelectionKey struct{}
+
+// withFeatureSelection returns ctx carrying fs, so the discovery helpers
+// (presentVersions, cargoTreeInverted) can read the run's feature set without
+// threading it through every intermediate signature — mirroring how the toolchain
+// override is applied run-wide. It is set once per run in Rust.Update.
+func withFeatureSelection(ctx context.Context, fs featureSelection) context.Context {
+	return context.WithValue(ctx, featureSelectionKey{}, fs)
+}
+
+// featureSelectionFrom returns the run's featureSelection, or the zero value when
+// none was set. The zero value resolves to --all-features (see args), so any code
+// path that reaches discovery without an explicit selection still errs on the side
+// of seeing the whole graph rather than silently missing feature-gated crates.
+func featureSelectionFrom(ctx context.Context) featureSelection {
+	if fs, ok := ctx.Value(featureSelectionKey{}).(featureSelection); ok {
+		return fs
+	}
+	return featureSelection{}
+}
+
+// resolveFeatureSelection reads the run's Cargo feature selection from the
+// language-agnostic Options map (populated from the deps.yaml `features` field and
+// the --features CLI flag). A non-empty list is used verbatim; anything else yields
+// the zero value, which resolves to --all-features (see featureSelection.args). It
+// accepts both []string (CLI / typed config) and []any (generic YAML decode) so the
+// same key works whichever path stamped it. Blank entries are dropped.
+func resolveFeatureSelection(options map[string]any) featureSelection {
+	raw, ok := options["features"]
+	if !ok {
+		return featureSelection{}
+	}
+	var list []string
+	switch v := raw.(type) {
+	case []string:
+		list = v
+	case []any:
+		for _, e := range v {
+			if s, ok := e.(string); ok {
+				list = append(list, s)
+			}
+		}
+	default:
+		return featureSelection{}
+	}
+	out := make([]string, 0, len(list))
+	for _, s := range list {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return featureSelection{features: out}
+}
+
 // validateCrateName validates a Rust crate name against the allowed character set.
 // Crate names must be alphanumeric, hyphens, or underscores per Cargo spec.
 func validateCrateName(name string) error {

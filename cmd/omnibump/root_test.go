@@ -351,6 +351,45 @@ func TestLoadUpdateConfig_MergesFileAndInlineInputs(t *testing.T) {
 	}
 }
 
+// TestBuildUpdateConfig_Features verifies the --features CLI flag is stamped into
+// Options["features"] and wins over a deps-file `features` list, mirroring
+// --manager/--tool, while a deps-file list flows through when the flag is unset.
+func TestBuildUpdateConfig_Features(t *testing.T) {
+	original := flags
+	defer func() { flags = original }()
+
+	cfg := &config.Config{Features: []string{"depsfile"}}
+
+	t.Run("deps-file features flow through when flag unset", func(t *testing.T) {
+		flags = rootFlags{rootDir: "."}
+		got, _ := buildUpdateConfig(cfg).Options["features"].([]string)
+		if want := []string{"depsfile"}; !equalStrings(got, want) {
+			t.Errorf("Options[\"features\"] = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("CLI --features overrides deps-file", func(t *testing.T) {
+		flags = rootFlags{rootDir: ".", features: []string{"cli-a", "cli-b"}}
+		got, _ := buildUpdateConfig(cfg).Options["features"].([]string)
+		if want := []string{"cli-a", "cli-b"}; !equalStrings(got, want) {
+			t.Errorf("Options[\"features\"] = %v, want %v", got, want)
+		}
+	})
+}
+
+// equalStrings reports whether two string slices are element-wise equal.
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // writeTestFile writes content to path, failing the test on error.
 func writeTestFile(t *testing.T, path, content string) {
 	t.Helper()

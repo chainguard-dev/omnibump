@@ -68,6 +68,19 @@ func (r *Rust) SupportsAnalysis() bool {
 func (r *Rust) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 	log := clog.FromContext(ctx)
 
+	// Thread the run's Cargo feature selection into the context so the discovery
+	// helpers (presentVersions, cargoTreeInverted) resolve the graph the package
+	// actually builds — an explicit `features` list when supplied, else
+	// --all-features. Default-only resolution would hide feature-gated crates and
+	// silently skip their pins (AUTO-1142).
+	fs := resolveFeatureSelection(cfg.Options)
+	ctx = withFeatureSelection(ctx, fs)
+	if len(fs.features) > 0 {
+		log.Infof("Resolving the Cargo dependency graph with features: %s", strings.Join(fs.features, ", "))
+	} else {
+		log.Infof("Resolving the Cargo dependency graph with all features (--all-features)")
+	}
+
 	log.Infof("Updating Rust project at: %s", cfg.RootDir)
 	log.Infof("Dependencies to update: %d", len(cfg.Dependencies))
 
