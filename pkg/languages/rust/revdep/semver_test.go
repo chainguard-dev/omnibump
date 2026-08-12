@@ -162,6 +162,34 @@ func TestParseTreeMultipleRootsDedupesChildren(t *testing.T) {
 	}
 }
 
+func TestParseTreeMultipleRootsMergesSubtrees(t *testing.T) {
+	// The same top-level dependent (shared v1.0.0) appears under both roots, but
+	// its own descendants differ between the per-edge-kind trees: depA under the
+	// first root, depB under the second. Deduping shared to a single copy must
+	// union those subtrees, keeping both depA and depB, rather than discarding the
+	// second copy's subtree and hiding depB from the calculator's walk.
+	in := "0rand v0.8.5\n" +
+		"1shared v1.0.0\n" +
+		"2depA v1.0.0\n" +
+		"0rand v0.8.5\n" +
+		"1shared v1.0.0\n" +
+		"2depB v2.0.0\n"
+	root, err := ParseTree(in)
+	if err != nil {
+		t.Fatalf("expected merged root, got error: %v", err)
+	}
+	if len(root.Children) != 1 || root.Children[0].Name != "shared" {
+		t.Fatalf("expected single merged child shared, got %+v", root.Children)
+	}
+	shared := root.Children[0]
+	if len(shared.Children) != 2 {
+		t.Fatalf("expected 2 unioned grandchildren, got %d: %+v", len(shared.Children), shared.Children)
+	}
+	if shared.Children[0].Name != "depA" || shared.Children[1].Name != "depB" {
+		t.Fatalf("subtrees not unioned: %+v", shared.Children)
+	}
+}
+
 func TestParseTreeDepthPrefix(t *testing.T) {
 	// This is the format `cargo tree -i --prefix depth` actually emits.
 	in := "0gix-transport v0.47.0\n" +
