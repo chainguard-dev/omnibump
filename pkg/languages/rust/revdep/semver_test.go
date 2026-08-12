@@ -101,12 +101,64 @@ func TestParseTreeASCII(t *testing.T) {
 }
 
 func TestParseTreeMultipleRoots(t *testing.T) {
-	// cargo tree -i for a crate locked at two versions emits two depth-0 roots.
-	// This must be refused, not silently reduced to the first tree.
+	// cargo tree -i for a crate locked at two versions emits two depth-0 roots
+	// that differ in version. This must be refused, not silently reduced to the
+	// first tree.
 	in := "0rand v0.7.3\n1foo v1.0.0\n0rand v0.8.5\n1bar v2.0.0\n"
 	_, err := ParseTree(in)
 	if !errors.Is(err, errMultipleRoots) {
 		t.Fatalf("expected errMultipleRoots, got %v", err)
+	}
+}
+
+func TestParseTreeMultipleRootsSameVersion(t *testing.T) {
+	// `cargo tree -i -e normal,build` prints one inverted tree per
+	// dependency-kind graph, so a crate reachable both as a normal dependency
+	// and through a proc-macro / build-dependency edge yields several depth-0
+	// roots for a single version. Modeled on rand@0.8.5 in garage v2.3.0, which
+	// is reachable normally and via phf_generator -> phf_macros (proc-macro).
+	// These roots must merge into one, not raise errMultipleRoots.
+	in := "0rand v0.8.5\n" +
+		"1getrandom v0.2.15\n" +
+		"0rand v0.8.5\n" +
+		"1phf_generator v0.11.3\n" +
+		"2phf_macros v0.11.3\n"
+	root, err := ParseTree(in)
+	if err != nil {
+		t.Fatalf("expected merged root, got error: %v", err)
+	}
+	if root.Name != "rand" || root.Version != "0.8.5" {
+		t.Fatalf("root = %+v", root)
+	}
+	if len(root.Children) != 2 {
+		t.Fatalf("expected 2 merged children, got %d: %+v", len(root.Children), root.Children)
+	}
+	if root.Children[0].Name != "getrandom" || root.Children[1].Name != "phf_generator" {
+		t.Fatalf("bad merged children: %+v", root.Children)
+	}
+	if len(root.Children[1].Children) != 1 || root.Children[1].Children[0].Name != "phf_macros" {
+		t.Fatalf("proc-macro subtree not preserved: %+v", root.Children[1])
+	}
+}
+
+func TestParseTreeMultipleRootsDedupesChildren(t *testing.T) {
+	// When the same top-level dependent appears under more than one root (same
+	// name and version), the merge keeps a single copy rather than making the
+	// calculator walk an identical dependent twice.
+	in := "0rand v0.8.5\n" +
+		"1shared v1.0.0\n" +
+		"0rand v0.8.5\n" +
+		"1shared v1.0.0\n" +
+		"1unique v2.0.0\n"
+	root, err := ParseTree(in)
+	if err != nil {
+		t.Fatalf("expected merged root, got error: %v", err)
+	}
+	if len(root.Children) != 2 {
+		t.Fatalf("expected 2 deduped children, got %d: %+v", len(root.Children), root.Children)
+	}
+	if root.Children[0].Name != "shared" || root.Children[1].Name != "unique" {
+		t.Fatalf("bad deduped children: %+v", root.Children)
 	}
 }
 
