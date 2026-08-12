@@ -326,9 +326,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 		},
 	}
 
-	// Validate logs warnings but doesn't return error for version mismatches
+	// A pin that did not land (serde locked at 1.0.0, below the requested 1.0.1
+	// floor on the same line) is reported as ErrUnappliedPins so callers can fail
+	// the build on it, in addition to the per-crate warning.
 	err = r.Validate(context.Background(), cfg)
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrUnappliedPins)
+	require.Contains(t, err.Error(), "serde")
 }
 
 func TestRust_Validate_PackageNotFound(t *testing.T) {
@@ -477,7 +480,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 // TestRust_Validate_BelowFloorNoLine covers the genuine failure: the requested
 // line is absent and every present instance is below the requested version, so a
-// warning must still fire.
+// warning must fire and Validate must report ErrUnappliedPins.
 func TestRust_Validate_BelowFloorNoLine(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -502,7 +505,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 	var recs []slog.Record
 	ctx := clog.WithLogger(context.Background(), clog.New(capturingHandler{&recs}))
-	require.NoError(t, r.Validate(ctx, cfg))
+	require.ErrorIs(t, r.Validate(ctx, cfg), ErrUnappliedPins)
 
 	found := false
 	for _, rec := range recs {
@@ -558,7 +561,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 			var recs []slog.Record
 			ctx := clog.WithLogger(context.Background(), clog.New(capturingHandler{&recs}))
-			require.NoError(t, r.Validate(ctx, cfg))
+			err := r.Validate(ctx, cfg)
+			// A below-floor precise pin did not land: it both warns and reports
+			// ErrUnappliedPins. The satisfied cases return no error.
+			if tt.wantWarn {
+				require.ErrorIs(t, err, ErrUnappliedPins)
+			} else {
+				require.NoError(t, err)
+			}
 
 			warned := false
 			for _, rec := range recs {
@@ -570,6 +580,48 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 			require.Equal(t, tt.wantWarn, warned, "warning mismatch, got %v", recs)
 		})
 	}
+}
+
+// TestRust_Validate_UnappliedPinsEnumerated verifies the ErrUnappliedPins error
+// names every crate whose pin did not land, and that a crate merely absent from
+// Cargo.lock is a warning only (not an unapplied-pin failure), so the two
+// conditions stay distinct.
+func TestRust_Validate_UnappliedPinsEnumerated(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// serde and tokio are present but below their floors (unapplied pins); rustls is
+	// requested but absent from the lock (warning only).
+	cargoLockContent := `
+version = 3
+
+[[package]]
+name = "serde"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "tokio"
+version = "1.40.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "Cargo.lock"), []byte(cargoLockContent), 0o600))
+
+	r := &Rust{}
+	cfg := &languages.UpdateConfig{
+		RootDir: tmpDir,
+		Dependencies: []languages.Dependency{
+			{Name: "serde", Version: "1.0.1"},
+			{Name: "tokio", Version: "1.44.0"},
+			{Name: "rustls", Version: "0.23.0"},
+		},
+	}
+
+	err := r.Validate(context.Background(), cfg)
+	require.ErrorIs(t, err, ErrUnappliedPins)
+	require.Contains(t, err.Error(), "serde")
+	require.Contains(t, err.Error(), "tokio")
+	// A crate absent from Cargo.lock is not an unapplied-pin failure.
+	require.NotContains(t, err.Error(), "rustls")
 }
 
 func TestRustAnalyzer_Analyze(t *testing.T) {

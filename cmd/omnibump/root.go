@@ -32,27 +32,28 @@ import (
 )
 
 type rootFlags struct {
-	language           string
-	managers           []string
-	depsFile           string
-	propertiesFile     string
-	packages           string
-	replaces           string
-	properties         string
-	rootDir            string
-	manifestFile       string
-	tidy               bool
-	tidyCompat         string
-	showDiff           bool
-	dryRun             bool
-	logLevel           string
-	logPolicy          []string
-	update             bool
-	tool               string
-	venv               string
-	gradleForceConfigs []string
-	gemDir             string
-	features           []string
+	language            string
+	managers            []string
+	depsFile            string
+	propertiesFile      string
+	packages            string
+	replaces            string
+	properties          string
+	rootDir             string
+	manifestFile        string
+	tidy                bool
+	tidyCompat          string
+	showDiff            bool
+	dryRun              bool
+	logLevel            string
+	logPolicy           []string
+	update              bool
+	tool                string
+	venv                string
+	gradleForceConfigs  []string
+	gemDir              string
+	features            []string
+	failOnUnappliedPins bool
 }
 
 var flags rootFlags
@@ -107,6 +108,7 @@ func New() *cobra.Command {
 	f.StringSliceVar(&flags.gradleForceConfigs, "gradle-force-configurations", nil, "extra Gradle configuration names (beyond compile/runtime classpaths) to force managed pins on, for fat-jar/packaging builds that bundle a custom configuration (Java/Gradle only). May be repeated or comma-separated.")
 	f.StringVar(&flags.gemDir, "gem-dir", "", "path to Ruby gem directory for in-place overlay bumping (Ruby only)")
 	f.StringSliceVar(&flags.features, "features", nil, "Cargo features to activate when resolving the dependency graph (Rust only); should mirror the package's build features so pins for feature-gated crates are not skipped. Defaults to --all-features when unset. May be repeated or comma-separated.")
+	f.BoolVar(&flags.failOnUnappliedPins, "fail-on-unapplied-pins", false, "exit non-zero if validation finds a requested pin that did not land (a crate present but below its requested version), instead of only warning")
 
 	// Add version command
 	cmd.AddCommand(version.WithFont("starwars"))
@@ -307,6 +309,12 @@ func runUpdate(cmd *cobra.Command, _ []string) error { // args unused but requir
 
 	if !flags.dryRun {
 		if err := lang.Validate(ctx, updateCfg); err != nil {
+			// By default a validation problem (e.g. a pin that did not land) is a
+			// warning so the run still succeeds; --fail-on-unapplied-pins promotes it
+			// to a hard failure so CI does not read a silently-stale lock as clean.
+			if flags.failOnUnappliedPins {
+				return fmt.Errorf("validation failed: %w", err)
+			}
 			log.Warnf("Validation completed with warnings: %v", err)
 		}
 	}

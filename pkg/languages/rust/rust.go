@@ -26,6 +26,13 @@ var (
 
 	// ErrRemoteAnalysisNotImplemented is returned when remote analysis is not implemented.
 	ErrRemoteAnalysisNotImplemented = errors.New("remote analysis not yet implemented")
+
+	// ErrUnappliedPins is returned by Validate when one or more requested pins did
+	// not land: the crate is present in Cargo.lock on the requested SemVer line but
+	// still below the requested floor. A silently-unapplied pin is worse than an
+	// error because a CVE scan reads the resulting clean lock as "fixed"
+	// (AUTO-1142), so callers can opt into failing the build on it.
+	ErrUnappliedPins = errors.New("requested dependency pins were not applied")
 )
 
 // Rust implements the Language interface for Rust projects.
@@ -186,6 +193,11 @@ func (r *Rust) Validate(ctx context.Context, cfg *languages.UpdateConfig) error 
 		packageMap[pkg.Name] = append(packageMap[pkg.Name], pkg)
 	}
 
+	// unapplied collects crates whose requested pin did not land (present on the
+	// requested line but below the floor). It is reported both per-crate (a warning,
+	// as before) and, at the end, as ErrUnappliedPins so a caller can fail the build
+	// rather than trusting a green run that silently shipped a stale dependency.
+	var unapplied []string
 	for _, dep := range cfg.Dependencies {
 		// A precise pin (name@from=to) keeps its "@from" marker on dep.Name; strip
 		// it to the base crate name. The marker only records the pin's from-line for
@@ -193,6 +205,9 @@ func (r *Rust) Validate(ctx context.Context, cfg *languages.UpdateConfig) error 
 		baseName, _, _ := strings.Cut(dep.Name, "@")
 		instances := packageMap[baseName]
 		if len(instances) == 0 {
+			// The crate is not in Cargo.lock at all. This is left a warning, not an
+			// unapplied-pin failure: it can be a legitimately-removed or renamed
+			// dependency, which is distinct from a pin that landed below its floor.
 			log.Warnf("Dependency not found in Cargo.lock: %s", dep.Name)
 			continue
 		}
@@ -216,6 +231,7 @@ func (r *Rust) Validate(ctx context.Context, cfg *languages.UpdateConfig) error 
 		if len(inLine) > 0 {
 			if !satisfiesFloor(inLine, dep.Version) {
 				log.Warnf("Dependency %s: expected >= %s, got %s", baseName, dep.Version, joinVersions(inLine))
+				unapplied = append(unapplied, fmt.Sprintf("%s (expected >= %s, got %s)", baseName, dep.Version, joinVersions(inLine)))
 			}
 			continue
 		}
@@ -226,7 +242,12 @@ func (r *Rust) Validate(ctx context.Context, cfg *languages.UpdateConfig) error 
 		// instance is below the requested version.
 		if !satisfiesFloor(versions, dep.Version) {
 			log.Warnf("Dependency %s: expected >= %s, got %s", baseName, dep.Version, joinVersions(versions))
+			unapplied = append(unapplied, fmt.Sprintf("%s (expected >= %s, got %s)", baseName, dep.Version, joinVersions(versions)))
 		}
+	}
+
+	if len(unapplied) > 0 {
+		return fmt.Errorf("%w: %s", ErrUnappliedPins, strings.Join(unapplied, "; "))
 	}
 
 	log.Infof("Validation completed successfully")

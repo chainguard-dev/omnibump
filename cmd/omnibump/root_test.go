@@ -377,6 +377,20 @@ func TestBuildUpdateConfig_Features(t *testing.T) {
 	})
 }
 
+// TestFailOnUnappliedPinsFlag verifies the --fail-on-unapplied-pins flag is
+// registered and defaults to off, so the swallow-then-warn behavior is unchanged
+// unless a caller opts in.
+func TestFailOnUnappliedPinsFlag(t *testing.T) {
+	cmd := New()
+	f := cmd.Flags().Lookup("fail-on-unapplied-pins")
+	if f == nil {
+		t.Fatal("expected --fail-on-unapplied-pins flag to be registered")
+	}
+	if f.DefValue != "false" {
+		t.Errorf("--fail-on-unapplied-pins default = %q, want \"false\"", f.DefValue)
+	}
+}
+
 // equalStrings reports whether two string slices are element-wise equal.
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
