@@ -29,7 +29,7 @@ type TreeNode struct {
 // format (each line prefixed with a numeric depth) and the ASCII box-drawing
 // format, so a hand-pasted tree can be fed in as well.
 func ParseTree(text string) (*TreeNode, error) {
-	var root *TreeNode
+	var roots []*TreeNode
 	stack := []*TreeNode{}
 
 	for _, raw := range strings.Split(text, "\n") {
@@ -45,14 +45,13 @@ func ParseTree(text string) (*TreeNode, error) {
 		node := &TreeNode{Name: pl.name, Version: pl.version, Path: pl.path}
 
 		if depth == 0 {
-			// A second depth-0 line means cargo emitted more than one inverted tree
-			// (the crate is locked at several versions). Refuse it rather than
-			// silently keeping only the first; callers must scope the query to a
-			// single version.
-			if root != nil {
-				return nil, fmt.Errorf("%w: %s", errMultipleRoots, node.Name)
-			}
-			root = node
+			// A second depth-0 line means cargo emitted more than one inverted
+			// tree. `cargo tree -i -e normal,build` prints one tree per
+			// dependency-kind graph, so a single crate at a single version
+			// legitimately yields several roots when it is reachable both as a
+			// normal dependency and through a proc-macro / build-dependency edge.
+			// Collect every root here; mergeRoots reconciles them below.
+			roots = append(roots, node)
 			stack = []*TreeNode{node}
 			continue
 		}
@@ -73,10 +72,54 @@ func ParseTree(text string) (*TreeNode, error) {
 		stack = append(stack, node)
 	}
 
-	if root == nil {
+	return mergeRoots(roots)
+}
+
+// mergeRoots reconciles the depth-0 roots parsed from `cargo tree -i` output.
+//
+// A single root is returned as-is. Several roots that agree on both name and
+// version are the normal / proc-macro / build-dependency split of one crate at
+// one version: their subtrees are merged recursively into a single root, which
+// carries no version ambiguity. Roots that disagree on version mean the crate
+// really is locked at several versions; that is refused rather than silently
+// reduced to the first tree, so callers scope the query to a single version.
+func mergeRoots(roots []*TreeNode) (*TreeNode, error) {
+	if len(roots) == 0 {
 		return nil, errNoRoot
 	}
+	root := roots[0]
+	for _, other := range roots[1:] {
+		if other.Name != root.Name || other.Version != root.Version {
+			return nil, fmt.Errorf("%w: %s", errMultipleRoots, root.Name)
+		}
+		mergeNode(root, other)
+	}
 	return root, nil
+}
+
+// mergeNode folds src's subtree into dst; the two must already share a name and
+// version. Children are matched by name+version: a child present in both is
+// merged recursively so descendants unique to either tree are preserved, while a
+// child only in src is appended once. This keeps the whole reachability graph
+// when the same crate is split across the per-edge-kind trees that
+// `cargo tree -i -e normal,build` emits, rather than dropping one copy's subtree.
+func mergeNode(dst, src *TreeNode) {
+	if dst.Path == "" && src.Path != "" {
+		dst.Path = src.Path
+	}
+	index := make(map[string]*TreeNode, len(dst.Children))
+	for _, c := range dst.Children {
+		index[c.Name+"\x00"+c.Version] = c
+	}
+	for _, sc := range src.Children {
+		key := sc.Name + "\x00" + sc.Version
+		if existing, ok := index[key]; ok {
+			mergeNode(existing, sc)
+			continue
+		}
+		index[key] = sc
+		dst.Children = append(dst.Children, sc)
+	}
 }
 
 // parsedLine is one parsed tree row.
