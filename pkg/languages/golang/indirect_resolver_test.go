@@ -303,7 +303,7 @@ func TestCheckIfDirectParentHasFix(t *testing.T) {
 		checkFunc      func(*testing.T, *ParentFixInfo)
 	}{
 		{
-			name:           "libp2p v0.48.0 has webtransport-go v0.10.0",
+			name:           "libp2p fix pulls webtransport-go >= v0.10.0",
 			directDep:      "github.com/libp2p/go-libp2p",
 			currentVersion: "v0.46.0",
 			indirectPkg:    "github.com/quic-go/webtransport-go",
@@ -314,10 +314,10 @@ func TestCheckIfDirectParentHasFix(t *testing.T) {
 				assert.Equal(t, "v0.46.0", info.CurrentVersion)
 				assert.True(t, semver.Compare(info.FixVersion, "v0.47.0") >= 0, "FixVersion should be >= v0.47.0, got %s", info.FixVersion)
 				assert.Equal(t, "github.com/quic-go/webtransport-go", info.IndirectPkg)
-				// The fix version is fetched live from the Go proxy, so the indirect
-				// version it pulls in floats upward as libp2p publishes releases (it was
-				// v0.10.0 when written, v0.11.1 by 2026-08). Assert the floor, matching
-				// the FixVersion check above, rather than an exact version that drifts.
+				// The fix-carrying go-libp2p release pins webtransport-go at or above
+				// the fixed line (v0.10.0). Assert the floor rather than an exact
+				// version: this is resolved from live proxy data, so a newer go-libp2p
+				// release (e.g. one pinning v0.11.x) must not fail the test.
 				assert.True(t, semver.Compare(info.IndirectVersionIn, "v0.10.0") >= 0, "IndirectVersionIn should be >= v0.10.0, got %s", info.IndirectVersionIn)
 			},
 		},
