@@ -255,3 +255,23 @@ func TestParseInlinePackages_RejectsMalformed(t *testing.T) {
 		})
 	}
 }
+
+// TestToUpdateConfig_Features verifies the deps-file `features` list is stamped
+// into Options["features"] so the Rust discovery pass can resolve the graph the
+// package builds with, and that an empty list leaves the key absent (so discovery
+// falls back to --all-features).
+func TestToUpdateConfig_Features(t *testing.T) {
+	t.Run("features are threaded into Options", func(t *testing.T) {
+		c := &Config{Features: []string{"fjall", "syslog", "journald"}}
+		uc := c.ToUpdateConfig()
+		if diff := cmp.Diff([]string{"fjall", "syslog", "journald"}, uc.Options["features"]); diff != "" {
+			t.Errorf("Options[\"features\"] mismatch (-want +got):\n%s", diff)
+		}
+	})
+	t.Run("no features leaves the key absent", func(t *testing.T) {
+		uc := (&Config{}).ToUpdateConfig()
+		if _, ok := uc.Options["features"]; ok {
+			t.Errorf("expected Options[\"features\"] to be absent, got %v", uc.Options["features"])
+		}
+	})
+}

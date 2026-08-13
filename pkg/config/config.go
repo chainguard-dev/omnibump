@@ -61,6 +61,14 @@ type Config struct {
 	// sync).
 	Manager js.Managers `json:"manager,omitempty" yaml:"manager,omitempty"`
 
+	// Features lists Cargo features to activate when resolving the dependency
+	// graph during discovery (Rust only). It should mirror the feature set the
+	// melange package builds with (e.g. the crate's `cargo build --features ...`),
+	// so omnibump sees crates reachable only through non-default features and does
+	// not silently skip their pins. When empty, omnibump falls back to
+	// --all-features.
+	Features []string `json:"features,omitempty" yaml:"features,omitempty"`
+
 	// Packages lists dependencies to update
 	Packages []Package `json:"packages,omitempty" yaml:"packages,omitempty"`
 
@@ -372,6 +380,10 @@ func (c *Config) ToUpdateConfig() *languages.UpdateConfig {
 
 	if len(c.Manager) > 0 {
 		uc.Options["manager"] = []js.Manager(c.Manager)
+	}
+
+	if len(c.Features) > 0 {
+		uc.Options["features"] = c.Features
 	}
 
 	return uc

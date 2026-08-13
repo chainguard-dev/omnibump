@@ -111,27 +111,54 @@ var ErrCrateNotActivated = errors.New("crate is locked but not activated in the 
 // doc).
 func cargoTreeInverted(ctx context.Context, cargoRoot, crate string) (string, error) {
 	log := clog.FromContext(ctx)
-	var stdout, stderr bytes.Buffer
-	cmd := cargoCommand(ctx, cargoRoot, "tree", "-i", crate, "-e", "normal,build", "--charset", "ascii", "--prefix", "depth")
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
+	featureArgs := featureSelectionFrom(ctx).args()
 
-	if notActivatedInTree(err, stdout.String(), stderr.String()) {
+	// Run with the run's feature selection: activating the package's features (or
+	// --all-features by default) is what makes a crate reachable only through a
+	// non-default feature visible to the reverse-dependency engine (AUTO-1142).
+	stdout, stderr, err := runCargoTree(ctx, cargoRoot, crate, featureArgs)
+
+	// A failure that is *not* the "crate not activated" signal may be a
+	// feature-resolution error (e.g. --all-features hitting mutually-exclusive
+	// features); retry once with default features so tree discovery degrades to
+	// today's behavior rather than aborting. The not-activated case is left to the
+	// fall-through below: it is a legitimate outcome (handled by pinLockedDependency),
+	// not a resolution failure to retry.
+	if err != nil && len(featureArgs) > 0 && !notActivatedInTree(err, stdout, stderr) {
+		log.Warnf("cargo tree -i %s %s failed (%v); retrying with default features", crate, strings.Join(featureArgs, " "), err)
+		stdout, stderr, err = runCargoTree(ctx, cargoRoot, crate, nil)
+	}
+
+	if notActivatedInTree(err, stdout, stderr) {
 		return "", ErrCrateNotActivated
 	}
 	if err != nil {
-		if s := strings.TrimSpace(stderr.String()); s != "" {
+		if s := strings.TrimSpace(stderr); s != "" {
 			return "", fmt.Errorf("cargo tree -i %s: %w: %s", crate, err, s)
 		}
 		return "", fmt.Errorf("cargo tree -i %s: %w", crate, err)
 	}
 	// Surface any warnings cargo emitted on the success path (edition/resolver
 	// notices) rather than silently discarding the buffered stderr.
-	if s := strings.TrimSpace(stderr.String()); s != "" {
+	if s := strings.TrimSpace(stderr); s != "" {
 		log.Debugf("cargo tree -i %s: %s", crate, s)
 	}
-	return stdout.String(), nil
+	return stdout, nil
+}
+
+// runCargoTree runs `cargo tree -i crate` (normal+build edges, depth-prefixed) with
+// the given feature flags and returns stdout, stderr, and the run error separately.
+// The caller needs all three to distinguish a genuine failure from the "crate not
+// activated" signals cargo only expresses through its human-readable diagnostics
+// (see notActivatedInTree).
+func runCargoTree(ctx context.Context, cargoRoot, crate string, featureArgs []string) (stdout, stderr string, err error) {
+	var outBuf, errBuf bytes.Buffer
+	args := append([]string{"tree", "-i", crate, "-e", "normal,build", "--charset", "ascii", "--prefix", "depth"}, featureArgs...)
+	cmd := cargoCommand(ctx, cargoRoot, args...)
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err = cmd.Run()
+	return outBuf.String(), errBuf.String(), err
 }
 
 // notActivatedInTree reports whether a `cargo tree -i` run signals that the crate is
@@ -158,13 +185,16 @@ func notActivatedInTree(runErr error, stdout, stderr string) bool {
 
 // presentVersions returns the versions of crate `name` currently resolved in the
 // workspace, as reported by `cargo metadata`.
+//
+// Discovery runs with the run's feature selection (see featureSelectionFrom):
+// resolving only default features would omit any crate reachable solely through a
+// non-default feature, so its pin would be silently skipped (AUTO-1142). An empty
+// result therefore means the crate is genuinely absent from the *feature-expanded*
+// graph, not merely gated behind a disabled feature.
 func presentVersions(ctx context.Context, cargoRoot, name string) ([]string, error) {
-	output := bytes.Buffer{}
-	cmd := cargoCommand(ctx, cargoRoot, "metadata", "--format-version", "1")
-	cmd.Stdout = &output
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("cargo metadata: %w", err)
+	output, err := runCargoMetadata(ctx, cargoRoot, featureSelectionFrom(ctx))
+	if err != nil {
+		return nil, err
 	}
 
 	var meta struct {
@@ -173,7 +203,7 @@ func presentVersions(ctx context.Context, cargoRoot, name string) ([]string, err
 			Version string `json:"version"`
 		} `json:"packages"`
 	}
-	if err := json.Unmarshal(output.Bytes(), &meta); err != nil {
+	if err := json.Unmarshal(output, &meta); err != nil {
 		return nil, fmt.Errorf("parsing cargo metadata: %w", err)
 	}
 
@@ -184,6 +214,36 @@ func presentVersions(ctx context.Context, cargoRoot, name string) ([]string, err
 		}
 	}
 	return versions, nil
+}
+
+// runCargoMetadata runs `cargo metadata --format-version 1` with fs's feature flags
+// and returns its stdout. If the feature-expanded run fails — most plausibly
+// because --all-features activated mutually-exclusive features that cannot
+// co-resolve — it warns and retries once with cargo's default features, so a
+// feature-resolution error degrades to default-only discovery (today's behavior)
+// rather than aborting the whole bump.
+func runCargoMetadata(ctx context.Context, cargoRoot string, fs featureSelection) ([]byte, error) {
+	log := clog.FromContext(ctx)
+	featureArgs := fs.args()
+
+	output := bytes.Buffer{}
+	cmd := cargoCommand(ctx, cargoRoot, append([]string{"metadata", "--format-version", "1"}, featureArgs...)...)
+	cmd.Stdout = &output
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		if len(featureArgs) == 0 {
+			return nil, fmt.Errorf("cargo metadata: %w", err)
+		}
+		log.Warnf("cargo metadata %s failed (%v); retrying with default features", strings.Join(featureArgs, " "), err)
+		output.Reset()
+		cmd = cargoCommand(ctx, cargoRoot, "metadata", "--format-version", "1")
+		cmd.Stdout = &output
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return nil, fmt.Errorf("cargo metadata: %w", err)
+		}
+	}
+	return output.Bytes(), nil
 }
 
 // wsMember is a workspace member crate: its package name (for `cargo add
