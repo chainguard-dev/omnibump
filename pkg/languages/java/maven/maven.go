@@ -298,7 +298,14 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 	}
 	properties := pomProperties(ctx, pomPath, project)
 
-	// Validate dependencies
+	// Validate dependencies across every module, not just the POM we were
+	// pointed at. A pin applied through a property is visible on the dependency
+	// that references it, which routinely lives in a submodule while the
+	// property itself sits in the aggregator. Checking only the aggregator
+	// reported such a dependency as "not found" even though it now resolves to
+	// the requested version.
+	modules := validationModules(ctx, pomPath, cfg.RootDir, project, properties)
+
 	for _, dep := range cfg.Dependencies {
 		found := false
 
@@ -325,23 +332,11 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 			}
 		}
 
-		// Check in dependencies
-		if project.Dependencies != nil {
-			for _, pomDep := range *project.Dependencies {
-				if matches(pomDep) && resolveVersion(pomDep.Version, properties) == dep.Version {
-					found = true
-					break
-				}
-			}
-		}
-
-		// Check in dependency management
-		if !found && project.DependencyManagement != nil && project.DependencyManagement.Dependencies != nil {
-			for _, pomDep := range *project.DependencyManagement.Dependencies {
-				if matches(pomDep) && resolveVersion(pomDep.Version, properties) == dep.Version {
-					found = true
-					break
-				}
+		for _, module := range modules {
+			if moduleHasDependencyAtVersion(module, matches, dep.Version) {
+				log.Debugf("Dependency %s@%s satisfied by %s", searchKey, dep.Version, module.path)
+				found = true
+				break
 			}
 		}
 
@@ -365,6 +360,59 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 
 	log.Infof("Validation completed successfully")
 	return nil
+}
+
+// modulePom pairs a parsed POM with the properties visible to it, including
+// those inherited from its parent chain.
+type modulePom struct {
+	path       string
+	project    *gopom.Project
+	properties *gopom.Properties
+}
+
+// validationModules returns the POM at pomPath followed by every module POM
+// beneath it, each carrying the properties it can actually see. The walk is the
+// same bounded downward scan dependency detection uses, so validation and
+// detection agree on which files are in scope.
+func validationModules(ctx context.Context, pomPath, rootDir string, rootProject *gopom.Project, rootProperties *gopom.Properties) []modulePom {
+	modules := []modulePom{{path: pomPath, project: rootProject, properties: rootProperties}}
+	for _, candidate := range propertyScanPoms(ctx, pomPath, rootDir) {
+		if candidate == pomPath {
+			continue
+		}
+		project, err := ParsePom(candidate)
+		if err != nil {
+			clog.DebugContextf(ctx, "Skipping module POM %s during validation: %v", candidate, err)
+			continue
+		}
+		modules = append(modules, modulePom{
+			path:       candidate,
+			project:    project,
+			properties: pomProperties(ctx, candidate, project),
+		})
+	}
+	return modules
+}
+
+// moduleHasDependencyAtVersion reports whether module declares a dependency
+// that matches and resolves to version, in either <dependencies> or
+// <dependencyManagement>.
+func moduleHasDependencyAtVersion(module modulePom, matches func(gopom.Dependency) bool, version string) bool {
+	depSets := []*[]gopom.Dependency{module.project.Dependencies}
+	if module.project.DependencyManagement != nil {
+		depSets = append(depSets, module.project.DependencyManagement.Dependencies)
+	}
+	for _, deps := range depSets {
+		if deps == nil {
+			continue
+		}
+		for _, pomDep := range *deps {
+			if matches(pomDep) && resolveVersion(pomDep.Version, module.properties) == version {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // applyPrecedenceRules filters dependencies based on precedence rules:

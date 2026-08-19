@@ -12,11 +12,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/gopom"
 	"github.com/chainguard-dev/omnibump/pkg/pathutil"
+	"github.com/chainguard-dev/omnibump/pkg/pomfile"
 	"github.com/ghodss/yaml"
 )
 
@@ -152,18 +154,52 @@ type pomPropertyUpdate struct {
 	propertyValue string
 }
 
+// propertyScanPoms returns pomPath followed by every other Maven POM at or
+// below pomPath's directory, in deterministic walk order.
+//
+// The walk only ever descends, so it cannot reach a POM outside the directory
+// it starts from — in particular it never climbs the parent chain the way
+// findProjectRoot does. Every candidate is still re-checked against rootDir
+// before being returned, so a symlinked module cannot escape the project root.
+func propertyScanPoms(ctx context.Context, pomPath, rootDir string) []string {
+	poms := []string{pomPath}
+	pomKey, err := pomPathKey(pomPath)
+	if err != nil {
+		return poms
+	}
+	for _, candidate := range findMavenPoms(filepath.Dir(pomPath)) {
+		candidateKey, err := pomPathKey(candidate)
+		if err != nil || candidateKey == pomKey {
+			continue
+		}
+		if err := pathutil.ValidatePathWithinRoot(rootDir, candidate); err != nil {
+			clog.DebugContextf(ctx, "Skipping module POM %s: %v", candidate, err)
+			continue
+		}
+		poms = append(poms, candidate)
+	}
+	return poms
+}
+
 // dependencyPropertyUpdates moves property-backed dependency patches onto the
-// POM that defines the property. rootDir bounds the parent chain traversal.
+// POM that defines the property. rootDir bounds the traversal.
+//
+// Dependency discovery spans the whole module tree below pomPath, not just
+// pomPath itself: a multi-module project routinely declares the property in the
+// aggregator POM while the dependency that references it lives in a submodule
+// (e.g. <logback.version> in ./pom.xml, ${logback.version} in
+// ./server/pom.xml). Scanning only pomPath left such a dependency unrecognised
+// as property-backed, so it fell through to a direct patch and was appended to
+// the aggregator's <dependencyManagement> as a new scope=import entry — which
+// does not change the submodule's resolved version, leaving the CVE unfixed.
+//
+// Each match resolves its property starting from the POM that declares the
+// dependency and walking that module's own parent chain, which is Maven's real
+// resolution order. A property declared in the aggregator therefore still wins
+// over a same-named property in an unrelated sibling module.
 func dependencyPropertyUpdates(ctx context.Context, pomPath string, patches []Patch, explicitProperties map[string]string, rootDir string) ([]Patch, []pomPropertyUpdate, error) {
 	if len(patches) == 0 {
 		return patches, nil, nil
-	}
-
-	// We need the current POM contents to know whether a dependency version is
-	// inline or backed by a Maven property reference like ${version.netty}.
-	project, err := ParsePom(pomPath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse POM: %w", err)
 	}
 
 	// matchedPatches are removed from the direct dependency patch list because
@@ -173,68 +209,86 @@ func dependencyPropertyUpdates(ctx context.Context, pomPath string, patches []Pa
 	propertyValues := make(map[string]string)
 	var propertyUpdates []pomPropertyUpdate
 
-	// Check both regular dependencies and dependencyManagement entries.
-	dependencySets := []*[]gopom.Dependency{project.Dependencies}
-	if project.DependencyManagement != nil {
-		dependencySets = append(dependencySets, project.DependencyManagement.Dependencies)
-	}
-
-	for _, deps := range dependencySets {
-		if deps == nil {
+	for _, depPomPath := range propertyScanPoms(ctx, pomPath, rootDir) {
+		// We need the POM contents to know whether a dependency version is
+		// inline or backed by a Maven property reference like ${version.netty}.
+		project, err := ParsePom(depPomPath)
+		if err != nil {
+			// The POM given to us must parse; a module POM discovered by the
+			// walk is skipped so one unreadable module cannot fail the run.
+			if depPomPath == pomPath {
+				return nil, nil, fmt.Errorf("failed to parse POM: %w", err)
+			}
+			clog.DebugContextf(ctx, "Skipping module POM %s: %v", depPomPath, err)
 			continue
 		}
-		for _, dep := range *deps {
-			if !isPropertyReference(dep.Version) {
+
+		// Check both regular dependencies and dependencyManagement entries.
+		dependencySets := []*[]gopom.Dependency{project.Dependencies}
+		if project.DependencyManagement != nil {
+			dependencySets = append(dependencySets, project.DependencyManagement.Dependencies)
+		}
+
+		for _, deps := range dependencySets {
+			if deps == nil {
 				continue
 			}
-			propertyName := strings.TrimSuffix(strings.TrimPrefix(dep.Version, "${"), "}")
-			for _, patch := range patches {
-				// Only dependency patches matching this exact dependency can move
-				// from a direct version change to a property update.
-				if !depMatchesPatch(dep, patch) {
+			for _, dep := range *deps {
+				if !isPropertyReference(dep.Version) {
 					continue
 				}
-				// This patch is handled by updating the referenced property.
-				matchedPatches[patch] = struct{}{}
-				// Explicit property updates are appended by Maven.Update below.
-				if explicitValue, explicit := explicitProperties[propertyName]; explicit {
-					if patch.Version != "" && explicitValue != patch.Version {
-						return nil, nil, fmt.Errorf("%w: dependency %s:%s requests %s but property %s is explicitly set to %s",
-							ErrVersionConflict, patch.GroupID, patch.ArtifactID, patch.Version, propertyName, explicitValue)
+				propertyName := strings.TrimSuffix(strings.TrimPrefix(dep.Version, "${"), "}")
+				for _, patch := range patches {
+					// Only dependency patches matching this exact dependency can move
+					// from a direct version change to a property update.
+					if !depMatchesPatch(dep, patch) {
+						continue
 					}
-					continue
-				}
-				if propertyValue, alreadySet := propertyValues[propertyName]; alreadySet {
-					if propertyValue != patch.Version {
-						return nil, nil, fmt.Errorf("%w: dependencies using property %s request both %s and %s",
-							ErrVersionConflict, propertyName, propertyValue, patch.Version)
+					// This patch is handled by updating the referenced property.
+					matchedPatches[patch] = struct{}{}
+					// Explicit property updates are appended by Maven.Update below.
+					if explicitValue, explicit := explicitProperties[propertyName]; explicit {
+						if patch.Version != "" && explicitValue != patch.Version {
+							return nil, nil, fmt.Errorf("%w: dependency %s:%s requests %s but property %s is explicitly set to %s",
+								ErrVersionConflict, patch.GroupID, patch.ArtifactID, patch.Version, propertyName, explicitValue)
+						}
+						continue
 					}
-					clog.InfoContextf(ctx, "Patching %s:%s via property %s to %s (property already updated)",
-						patch.GroupID, patch.ArtifactID, dep.Version, propertyValue)
-					continue
-				}
+					if propertyValue, alreadySet := propertyValues[propertyName]; alreadySet {
+						if propertyValue != patch.Version {
+							return nil, nil, fmt.Errorf("%w: dependencies using property %s request both %s and %s",
+								ErrVersionConflict, propertyName, propertyValue, patch.Version)
+						}
+						clog.InfoContextf(ctx, "Patching %s:%s via property %s to %s (property already updated)",
+							patch.GroupID, patch.ArtifactID, dep.Version, propertyValue)
+						continue
+					}
 
-				// project.version is a Maven built-in that mirrors the project's own <version>
-				// tag; skip with an informational message instead of failing.
-				if propertyName == "project.version" {
-					clog.InfoContextf(ctx, "Skipping %s:%s: uses ${project.version} which is the project's own version tag, not a configurable property",
-						patch.GroupID, patch.ArtifactID)
-					continue
-				}
+					// project.version is a Maven built-in that mirrors the project's own <version>
+					// tag; skip with an informational message instead of failing.
+					if propertyName == "project.version" {
+						clog.InfoContextf(ctx, "Skipping %s:%s: uses ${project.version} which is the project's own version tag, not a configurable property",
+							patch.GroupID, patch.ArtifactID)
+						continue
+					}
 
-				// Reuse the existing resolver so current-vs-parent ownership stays consistent.
-				propertyPomPath, err := resolvePropertyPomPath(ctx, pomPath, propertyName, rootDir)
-				if err != nil {
-					return nil, nil, fmt.Errorf("failed to resolve file where property %s is set: %w", propertyName, err)
+					// Resolve from the POM that declares the dependency so the
+					// module's own parent chain is consulted first, matching how
+					// Maven itself resolves ${...} in that file.
+					propertyPomPath, err := resolvePropertyPomPath(ctx, depPomPath, propertyName, rootDir)
+					if err != nil {
+						return nil, nil, fmt.Errorf("failed to resolve file where property %s is set (referenced by %s:%s in %s): %w",
+							propertyName, patch.GroupID, patch.ArtifactID, depPomPath, err)
+					}
+					clog.InfoContextf(ctx, "Patching %s:%s via property %s in %s to %s",
+						patch.GroupID, patch.ArtifactID, dep.Version, propertyPomPath, patch.Version)
+					propertyValues[propertyName] = patch.Version
+					propertyUpdates = append(propertyUpdates, pomPropertyUpdate{
+						pomFile:       propertyPomPath,
+						propertyName:  propertyName,
+						propertyValue: patch.Version,
+					})
 				}
-				clog.InfoContextf(ctx, "Patching %s:%s via property %s in %s to %s",
-					patch.GroupID, patch.ArtifactID, dep.Version, propertyPomPath, patch.Version)
-				propertyValues[propertyName] = patch.Version
-				propertyUpdates = append(propertyUpdates, pomPropertyUpdate{
-					pomFile:       propertyPomPath,
-					propertyName:  propertyName,
-					propertyValue: patch.Version,
-				})
 			}
 		}
 	}
@@ -252,6 +306,19 @@ func dependencyPropertyUpdates(ctx context.Context, pomPath string, patches []Pa
 // UpdatePom updates a POM file with the given patches and properties.
 // Returns the marshaled XML content of the updated POM.
 func UpdatePom(ctx context.Context, pomPath string, patches []Patch, properties map[string]string) ([]byte, error) {
+	// A property-only update changes nothing but a handful of values, so it can
+	// be applied in place. That keeps comments (notably enforced license
+	// headers) and the file's existing formatting intact, which the
+	// unmarshal/marshal round-trip below would discard. Updates that add or
+	// retarget dependencies still need the structural rewrite.
+	if len(patches) == 0 && len(properties) > 0 {
+		updated, err := updatePomPropertiesInPlace(ctx, pomPath, properties)
+		if err == nil {
+			return updated, nil
+		}
+		clog.WarnContextf(ctx, "In-place property update of %s not possible (%v); falling back to a full rewrite", pomPath, err)
+	}
+
 	// Parse the POM
 	project, err := ParsePom(pomPath)
 	if err != nil {
@@ -272,6 +339,61 @@ func UpdatePom(ctx context.Context, pomPath string, patches []Patch, properties 
 
 	clog.InfoContextf(ctx, "Successfully updated POM file")
 	return xmlBytes, nil
+}
+
+// readPomFile returns a POM's raw bytes, applying the same size guard ParsePom
+// uses so a hostile or generated file cannot exhaust memory.
+func readPomFile(pomPath string) ([]byte, error) {
+	fileInfo, err := os.Stat(pomPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat POM file %s: %w", pomPath, err)
+	}
+	if fileInfo.Size() > MaxPomFileSize {
+		return nil, fmt.Errorf("%w: POM file %s is %d bytes (max: %d)", ErrFileTooLarge, pomPath, fileInfo.Size(), MaxPomFileSize)
+	}
+	content, err := os.ReadFile(filepath.Clean(pomPath))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read POM file %s: %w", pomPath, err)
+	}
+	return content, nil
+}
+
+// updatePomPropertiesInPlace rewrites each property's value in pomPath without
+// reformatting the rest of the file. It reports an error if any requested
+// property is not declared in the POM's top-level <properties> block, so the
+// caller can fall back to the structural rewrite rather than write a POM with
+// only some of the updates applied.
+func updatePomPropertiesInPlace(ctx context.Context, pomPath string, properties map[string]string) ([]byte, error) {
+	content, err := readPomFile(pomPath)
+	if err != nil {
+		return nil, err
+	}
+
+	pom, err := pomfile.Parse(pomPath, content)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply in a stable order so a conflict surfaces the same way every run.
+	names := make([]string, 0, len(properties))
+	for name := range properties {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		value := properties[name]
+		current, declared := pom.Get(name)
+		if !declared {
+			return nil, fmt.Errorf("%w: %s in %s", ErrPropertyNotFound, name, pomPath)
+		}
+		if err := pom.SetProperty(name, value); err != nil {
+			return nil, err
+		}
+		clog.InfoContextf(ctx, "Updating property: %s from %s to %s", name, current, value)
+	}
+
+	return pom.Content(), nil
 }
 
 // isPropertyReference checks if a version string is a Maven property reference.
@@ -400,13 +522,19 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 		return project, nil
 	}
 
-	// Update existing properties
+	// Update existing properties. A property that this POM does not declare is
+	// left alone rather than created: callers reach here having already resolved
+	// each property to the POM that owns it, so a miss means the resolution and
+	// this write disagree, and inventing the entry here would shadow the real
+	// declaration in a parent POM. Warn instead of skipping silently.
 	for k, v := range propertyPatches {
 		val, exists := project.Properties.Entries[k]
-		if exists {
-			clog.InfoContextf(ctx, "Updating property: %s from %s to %s", k, val, v)
-			project.Properties.Entries[k] = v
+		if !exists {
+			clog.WarnContextf(ctx, "Property %s is not declared in this POM; not setting it to %s here", k, v)
+			continue
 		}
+		clog.InfoContextf(ctx, "Updating property: %s from %s to %s", k, val, v)
+		project.Properties.Entries[k] = v
 	}
 
 	return project, nil
