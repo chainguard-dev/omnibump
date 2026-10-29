@@ -445,12 +445,15 @@ func convertDependenciesToPatches(deps []languages.Dependency) ([]Patch, error) 
 		// Classifier (e.g. osx-x86_64) is part of the Maven coordinate identity.
 		patch.Classifier = extractClassifier(dep)
 
-		// Set defaults if not specified
+		// Set defaults if not specified. These must come from the shared
+		// constants: this is the path Update takes, so hardcoding them here
+		// previously meant a bare dependency still reached PatchProject as
+		// scope=import/type=jar.
 		if patch.Scope == "" {
-			patch.Scope = "import"
+			patch.Scope = defaultScope
 		}
 		if patch.Type == "" {
-			patch.Type = "jar"
+			patch.Type = defaultType
 		}
 
 		// Validate required fields to prevent malformed XML

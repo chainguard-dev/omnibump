@@ -46,10 +46,19 @@ var (
 	ErrVersionConflict = errors.New("conflicting version update detected")
 )
 
-// Default scope and type for a dependency.
+// Default scope and type for a dependency. Both are empty so that a patch
+// which omits them adds no <scope>/<type> to the POM, leaving Maven to apply
+// its own defaults (compile/jar).
+//
+// These are only ever written when a patch matches nothing and is appended to
+// <dependencyManagement> — a matched dependency has only its <version> rewritten
+// (see applyPatchesToDeps). Defaulting to scope=import was therefore invalid on
+// the one path that uses it: Maven accepts <scope>import</scope> only on
+// <type>pom</type>, so an import-scoped jar entry manages the artifact's scope
+// to a non-packaged value and silently drops it from the build.
 const (
-	defaultScope = "import"
-	defaultType  = "jar"
+	defaultScope = ""
+	defaultType  = ""
 
 	// classifierNone is the sentinel a patch uses to target only the
 	// classifier-less variant of an artifact. An unset classifier matches every

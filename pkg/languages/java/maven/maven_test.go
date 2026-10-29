@@ -54,6 +54,15 @@ func TestSimplePoms(t *testing.T) {
 		patches: []Patch{{GroupID: "added", ArtifactID: "b", Version: "2.0.1", Scope: "import", Type: "somethingelse"}},
 		want:    &gopom.Project{DependencyManagement: &gopom.DependencyManagement{Dependencies: &[]gopom.Dependency{makeDep("other", "b3", "2.0.0"), makeDep("added", "b", "2.0.1", "import", "somethingelse")}}},
 	}, {
+		// A patch that omits scope/type and matches nothing must be appended
+		// without either element, so Maven applies compile/jar. Defaulting to
+		// scope=import here managed the artifact's scope to a non-packaged value
+		// and dropped it from the build.
+		name:    "undeclared dependency with no scope or type is added without them",
+		in:      &gopom.Project{DependencyManagement: &gopom.DependencyManagement{Dependencies: &[]gopom.Dependency{makeDep("other", "b4", "2.0.0")}}},
+		patches: []Patch{{GroupID: "ognl", ArtifactID: "ognl", Version: "3.4.13", Scope: defaultScope, Type: defaultType}},
+		want:    &gopom.Project{DependencyManagement: &gopom.DependencyManagement{Dependencies: &[]gopom.Dependency{makeDep("other", "b4", "2.0.0"), makeDep("ognl", "ognl", "3.4.13")}}},
+	}, {
 		name: "auto-resolve property: dep uses property ref, no --properties passed",
 		in: &gopom.Project{
 			Properties:   &gopom.Properties{Entries: map[string]string{"log4j2.version": "2.19.0"}},
@@ -295,18 +304,18 @@ func TestParsePatches(t *testing.T) {
 			ArtifactID: "artifactid-2",
 			Version:    "2.0.0",
 			Scope:      "scope-2",
-			Type:       "jar", // defaulted
+			Type:       "", // defaulted
 		}, {
 			GroupID:    "groupid-1",
 			ArtifactID: "artifactid-1",
 			Version:    "1.0.0",
-			Scope:      "import", // defaulted
+			Scope:      "", // defaulted
 			Type:       "pom",
 		}, {
 			GroupID:    "groupid-3",
 			ArtifactID: "artifactid-3",
 			Version:    "3.0.0",
-			Scope:      "import", // Defaulted
+			Scope:      "", // defaulted
 			Type:       "somethingelse",
 		}},
 	}, {
@@ -317,20 +326,20 @@ func TestParsePatches(t *testing.T) {
 			GroupID:    "io.projectreactor.netty",
 			ArtifactID: "reactor-netty-http",
 			Version:    "1.0.39",
-			Scope:      "import", // defaulted
-			Type:       "jar",    // defaulted
+			Scope:      "", // defaulted
+			Type:       "", // defaulted
 		}, {
 			GroupID:    "org.json",
 			ArtifactID: "json",
 			Version:    "20231013",
-			Scope:      "import",
-			Type:       "jar",
+			Scope:      "", // defaulted
+			Type:       "", // defaulted
 		}, {
 			GroupID:    "ch.qos.logback",
 			ArtifactID: "logback-core",
 			Version:    "[1.4.12,2.0.0)",
-			Scope:      "import", // defaulted
-			Type:       "jar",    // defaulted
+			Scope:      "", // defaulted
+			Type:       "", // defaulted
 		}},
 	}, {
 		name:    "invalid flag",
@@ -345,19 +354,19 @@ func TestParsePatches(t *testing.T) {
 			ArtifactID: "a2",
 			Version:    "v2",
 			Scope:      "scope-2",
-			Type:       "jar", // default
+			Type:       "", // defaulted
 		}, {
 			GroupID:    "g3",
 			ArtifactID: "a3",
 			Version:    "v3",
-			Scope:      "scope-3", // default
+			Scope:      "scope-3",
 			Type:       "type-3",
 		}, {
 			GroupID:    "g1",
 			ArtifactID: "a1",
 			Version:    "v1",
-			Scope:      "import", // default
-			Type:       "jar",    // default
+			Scope:      "", // defaulted
+			Type:       "", // defaulted
 		}},
 	}}
 	for _, tc := range testCases {
@@ -2664,4 +2673,76 @@ func TestConvertDependenciesToPatchesClassifierConflicts(t *testing.T) {
 			t.Fatalf("expected 2 patches, got %d", len(patches))
 		}
 	})
+}
+
+// TestPatchProject_UndeclaredDepEmitsNoImportScope guards the XML that reaches
+// Maven. scope=import is only valid on type=pom, so an undeclared artifact
+// appended to <dependencyManagement> must carry neither element — otherwise the
+// entry manages the artifact's scope to a non-packaged value and the build stops
+// shipping it (observed as a jar silently vanishing from the package and SBOM).
+func TestPatchProject_UndeclaredDepEmitsNoImportScope(t *testing.T) {
+	project := &gopom.Project{
+		DependencyManagement: &gopom.DependencyManagement{
+			Dependencies: &[]gopom.Dependency{makeDep("org.mybatis", "mybatis", "3.5.19")},
+		},
+	}
+	patches := []Patch{{GroupID: "ognl", ArtifactID: "ognl", Version: "3.4.13", Scope: defaultScope, Type: defaultType}}
+
+	got, err := PatchProject(context.Background(), project, patches, nil)
+	if err != nil {
+		t.Fatalf("PatchProject: %v", err)
+	}
+
+	xmlBytes, err := got.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(xmlBytes), "<scope>import</scope>") {
+		t.Errorf("emitted POM contains <scope>import</scope> for an undeclared jar dependency:\n%s", xmlBytes)
+	}
+	if !strings.Contains(string(xmlBytes), "<artifactId>ognl</artifactId>") {
+		t.Errorf("emitted POM is missing the appended dependency:\n%s", xmlBytes)
+	}
+}
+
+// TestConvertDependenciesToPatches_NoImportScopeOnProductionPath covers the path
+// Update actually takes. The constants are only consulted by parsePatches, which
+// nothing in production calls, so convertDependenciesToPatches hardcoding
+// scope=import/type=jar meant a bare dependency still reached PatchProject with
+// an import-scoped jar entry.
+func TestConvertDependenciesToPatches_NoImportScopeOnProductionPath(t *testing.T) {
+	deps := []languages.Dependency{{
+		Name:    "ognl:ognl",
+		Version: "3.4.13",
+		// Scope and Type deliberately unset, as a bare group@artifact@version gives.
+	}}
+
+	patches, err := convertDependenciesToPatches(deps)
+	if err != nil {
+		t.Fatalf("convertDependenciesToPatches: %v", err)
+	}
+	if len(patches) != 1 {
+		t.Fatalf("got %d patches, want 1", len(patches))
+	}
+	if patches[0].Scope == "import" {
+		t.Errorf("patch scope defaulted to import; scope=import is only valid on type=pom")
+	}
+
+	// And confirm it does not reach the emitted POM.
+	project := &gopom.Project{
+		DependencyManagement: &gopom.DependencyManagement{
+			Dependencies: &[]gopom.Dependency{makeDep("org.mybatis", "mybatis", "3.5.19")},
+		},
+	}
+	got, err := PatchProject(context.Background(), project, patches, nil)
+	if err != nil {
+		t.Fatalf("PatchProject: %v", err)
+	}
+	xmlBytes, err := got.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(xmlBytes), "<scope>import</scope>") {
+		t.Errorf("emitted POM contains <scope>import</scope> for an undeclared jar dependency:\n%s", xmlBytes)
+	}
 }
