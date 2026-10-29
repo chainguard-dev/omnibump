@@ -330,6 +330,10 @@ func (c *calculator) walkChild(ctx context.Context, node, child *TreeNode, nodeF
 		return true, nil
 	}
 
+	// An unchanged dependent keeps its parents' constraints satisfied.
+	if minVer.Compare(floor) == 0 {
+		return false, nil
+	}
 	c.record(child.Name, child.Version, minVer.String())
 	return false, c.walk(ctx, child, minVer)
 }
