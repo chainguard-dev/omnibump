@@ -26,7 +26,7 @@ import (
 	"github.com/chainguard-dev/omnibump/pkg/languages/java/maven"
 	"github.com/chainguard-dev/omnibump/pkg/remote"
 	"github.com/ghodss/yaml"
-	"github.com/google/go-github/v75/github"
+	"github.com/google/go-github/v76/github"
 	"github.com/spf13/cobra"
 )
 
