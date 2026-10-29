@@ -6,21 +6,21 @@ require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/aquasecurity/go-pep440-version v0.0.1
 	github.com/chainguard-dev/clog v1.8.1
-	github.com/chainguard-dev/gopom v0.0.0-20250828200639-b1a78ac4b263
+	github.com/chainguard-dev/gopom v0.0.0-20260618152953-bf852e1c3220
 	github.com/charmbracelet/log v1.0.0
 	github.com/ghodss/yaml v1.0.0
 	github.com/google/go-cmp v0.7.0
-	github.com/google/go-github/v75 v75.0.0
+	github.com/google/go-github/v76 v76.0.0
 	github.com/samber/lo v1.53.0
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
-	github.com/tidwall/gjson v1.19.0
+	github.com/tidwall/gjson v1.20.0
 	github.com/tidwall/sjson v1.2.5
-	golang.org/x/exp v0.0.0-20231006140011-7918f672742d
-	golang.org/x/mod v0.41.0
-	golang.org/x/tools v0.49.0
-	k8s.io/apimachinery v0.37.0
-	sigs.k8s.io/release-utils v0.12.4
+	golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e
+	golang.org/x/mod v0.42.0
+	golang.org/x/tools v0.52.0
+	k8s.io/apimachinery v0.37.2
+	sigs.k8s.io/release-utils v0.12.5
 )
 
 require (
@@ -34,7 +34,7 @@ require (
 	github.com/clipperhouse/uax29/v2 v2.6.0 // indirect
 	github.com/common-nighthawk/go-figure v0.0.0-20210622060536-734e95fb86be // indirect
 	github.com/go-logfmt/logfmt v0.6.1 // indirect
-	github.com/google/go-querystring v1.1.0 // indirect
+	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
@@ -47,10 +47,9 @@ require (
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
-	golang.org/x/tools/go/packages/packagestest v0.1.1-deprecated // indirect
+	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
