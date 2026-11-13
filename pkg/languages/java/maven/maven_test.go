@@ -158,8 +158,8 @@ func TestPatchesFromPomFiles(t *testing.T) {
 		// This patches existing dependency in a project
 		name:     "cloudwatch-exporter - dependency patch - existing",
 		in:       "cloudwatch-exporter.pom.xml",
-		patches:  []Patch{{GroupID: "org.eclipse.jetty", ArtifactID: "jetty-servlet", Version: "11.0.16"}},
-		wantDeps: []Patch{{GroupID: "org.eclipse.jetty", ArtifactID: "jetty-servlet", Version: "11.0.16"}},
+		patches:  []Patch{{GroupID: "org.eclipse.jetty", ArtifactID: "jetty-servlet", Version: "11.0.20"}},
+		wantDeps: []Patch{{GroupID: "org.eclipse.jetty", ArtifactID: "jetty-servlet", Version: "11.0.20"}},
 	}, {
 		// This patches existing dependency in a project
 		name:       "common-docker - nil DependencyManagement",

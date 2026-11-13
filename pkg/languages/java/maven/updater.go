@@ -12,10 +12,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/gopom"
+	"github.com/chainguard-dev/omnibump/pkg/languages/java/internal/mavenversion"
 	"github.com/chainguard-dev/omnibump/pkg/pathutil"
 	"github.com/ghodss/yaml"
 )
@@ -163,16 +165,18 @@ type pomPropertyUpdate struct {
 
 // dependencyPropertyUpdates moves property-backed dependency patches onto the
 // POM that defines the property. rootDir bounds the parent chain traversal.
-func dependencyPropertyUpdates(ctx context.Context, pomPath string, patches []Patch, explicitProperties map[string]string, rootDir string) ([]Patch, []pomPropertyUpdate, error) {
+// A patch older than the property's current value is skipped and returned in
+// skipped instead of becoming a property update.
+func dependencyPropertyUpdates(ctx context.Context, pomPath string, patches []Patch, explicitProperties map[string]string, rootDir string) ([]Patch, []pomPropertyUpdate, []Patch, error) {
 	if len(patches) == 0 {
-		return patches, nil, nil
+		return patches, nil, nil, nil
 	}
 
 	// We need the current POM contents to know whether a dependency version is
 	// inline or backed by a Maven property reference like ${version.netty}.
 	project, err := ParsePom(pomPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse POM: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to parse POM: %w", err)
 	}
 
 	// matchedPatches are removed from the direct dependency patch list because
@@ -180,7 +184,14 @@ func dependencyPropertyUpdates(ctx context.Context, pomPath string, patches []Pa
 	matchedPatches := make(map[Patch]struct{})
 	// Multiple dependencies can share one property; all requested values must agree.
 	propertyValues := make(map[string]string)
+	// skippedProperties records properties whose requested value was older than
+	// the current one, so later patches reading the same property are skipped too.
+	skippedProperties := make(map[string]struct{})
 	var propertyUpdates []pomPropertyUpdate
+	var skipped []Patch
+	// parsed caches the POMs read to compare property values, starting with
+	// the one already parsed above.
+	parsed := map[string]*gopom.Project{pomPath: project}
 
 	// Check both regular dependencies and dependencyManagement entries.
 	dependencySets := []*[]gopom.Dependency{project.Dependencies}
@@ -208,15 +219,26 @@ func dependencyPropertyUpdates(ctx context.Context, pomPath string, patches []Pa
 				// Explicit property updates are appended by Maven.Update below.
 				if explicitValue, explicit := explicitProperties[propertyName]; explicit {
 					if patch.Version != "" && explicitValue != patch.Version {
-						return nil, nil, fmt.Errorf("%w: dependency %s:%s requests %s but property %s is explicitly set to %s",
+						return nil, nil, nil, fmt.Errorf("%w: dependency %s:%s requests %s but property %s is explicitly set to %s",
 							ErrVersionConflict, patch.GroupID, patch.ArtifactID, patch.Version, propertyName, explicitValue)
 					}
 					continue
 				}
+				// A versionless entry only sets scope; it must not write an
+				// empty value into the property.
+				if patch.Version == "" {
+					clog.InfoContextf(ctx, "Found %s:%s — patch has no version, preserving property %s",
+						patch.GroupID, patch.ArtifactID, propertyName)
+					continue
+				}
 				if propertyValue, alreadySet := propertyValues[propertyName]; alreadySet {
 					if propertyValue != patch.Version {
-						return nil, nil, fmt.Errorf("%w: dependencies using property %s request both %s and %s",
+						return nil, nil, nil, fmt.Errorf("%w: dependencies using property %s request both %s and %s",
 							ErrVersionConflict, propertyName, propertyValue, patch.Version)
+					}
+					if _, skip := skippedProperties[propertyName]; skip {
+						skipped = append(skipped, patch)
+						continue
 					}
 					clog.InfoContextf(ctx, "Patching %s:%s via property %s to %s (property already updated)",
 						patch.GroupID, patch.ArtifactID, dep.Version, propertyValue)
@@ -234,11 +256,20 @@ func dependencyPropertyUpdates(ctx context.Context, pomPath string, patches []Pa
 				// Reuse the existing resolver so current-vs-parent ownership stays consistent.
 				propertyPomPath, err := resolvePropertyPomPath(ctx, pomPath, propertyName, rootDir)
 				if err != nil {
-					return nil, nil, fmt.Errorf("failed to resolve file where property %s is set: %w", propertyName, err)
+					return nil, nil, nil, fmt.Errorf("failed to resolve file where property %s is set: %w", propertyName, err)
+				}
+				// Recorded before the downgrade check so a conflicting request for
+				// the same property is still an error.
+				propertyValues[propertyName] = patch.Version
+				if current, ok := propertyValueIn(parsed, propertyPomPath, propertyName); ok && mavenversion.IsDowngrade(current, patch.Version) {
+					clog.WarnContextf(ctx, "Skipping %s:%s: requested version %s is older than %s set by property %s",
+						patch.GroupID, patch.ArtifactID, patch.Version, current, propertyName)
+					skippedProperties[propertyName] = struct{}{}
+					skipped = append(skipped, patch)
+					continue
 				}
 				clog.InfoContextf(ctx, "Patching %s:%s via property %s in %s to %s",
 					patch.GroupID, patch.ArtifactID, dep.Version, propertyPomPath, patch.Version)
-				propertyValues[propertyName] = patch.Version
 				propertyUpdates = append(propertyUpdates, pomPropertyUpdate{
 					pomFile:       propertyPomPath,
 					propertyName:  propertyName,
@@ -255,12 +286,37 @@ func dependencyPropertyUpdates(ctx context.Context, pomPath string, patches []Pa
 			remainingPatches = append(remainingPatches, patch)
 		}
 	}
-	return remainingPatches, propertyUpdates, nil
+	return remainingPatches, propertyUpdates, skipped, nil
+}
+
+// propertyValueIn returns the value the POM at pomPath sets for property,
+// parsing each POM at most once through parsed. It is false when the POM
+// cannot be read or does not set the property.
+func propertyValueIn(parsed map[string]*gopom.Project, pomPath, property string) (string, bool) {
+	project, ok := parsed[pomPath]
+	if !ok {
+		var err error
+		if project, err = ParsePom(pomPath); err != nil {
+			return "", false
+		}
+		parsed[pomPath] = project
+	}
+	if project.Properties == nil {
+		return "", false
+	}
+	value, ok := project.Properties.Entries[property]
+	return value, ok
 }
 
 // UpdatePom updates a POM file with the given patches and properties.
 // Returns the marshaled XML content of the updated POM.
 func UpdatePom(ctx context.Context, pomPath string, patches []Patch, properties map[string]string) ([]byte, error) {
+	return updatePom(ctx, pomPath, patches, properties, nil)
+}
+
+// updatePom is UpdatePom with the patches already skipped as downgrades
+// elsewhere, so undeclared members of their family are held back too.
+func updatePom(ctx context.Context, pomPath string, patches []Patch, properties map[string]string, skipped []Patch) ([]byte, error) {
 	// Parse the POM
 	project, err := ParsePom(pomPath)
 	if err != nil {
@@ -268,7 +324,7 @@ func UpdatePom(ctx context.Context, pomPath string, patches []Patch, properties 
 	}
 
 	// Apply patches
-	project, err = PatchProject(ctx, project, patches, properties)
+	project, err = patchProject(ctx, project, patches, properties, skipped)
 	if err != nil {
 		return nil, fmt.Errorf("failed to patch project: %w", err)
 	}
@@ -310,14 +366,26 @@ func resolveVersion(version string, properties *gopom.Properties) string {
 // so it is later added to DependencyManagement without a <version> element.
 // When a dependency version is a property reference (e.g. ${log4j2.version}),
 // the property is automatically added to propertyPatches so it gets updated.
-func applyPatchesToDeps(ctx context.Context, deps *[]gopom.Dependency, patches []Patch, missingDeps map[Patch]Patch, propertyPatches map[string]string) {
+// A patch older than the dependency's literal version is skipped and
+// returned.
+func applyPatchesToDeps(ctx context.Context, deps *[]gopom.Dependency, patches []Patch, missingDeps map[Patch]struct{}, propertyPatches map[string]string) []Patch {
 	if deps == nil {
-		return
+		return nil
 	}
+	var skipped []Patch
 	for i, dep := range *deps {
 		clog.DebugContextf(ctx, "Checking dependency: %s:%s @ %s", dep.GroupID, dep.ArtifactID, dep.Version)
 		for _, patch := range patches {
 			if !depMatchesPatch(dep, patch) {
+				continue
+			}
+			// A patch with no version is a scope-only entry (e.g. scope: provided
+			// to suppress a relocated artifact). Don't overwrite the existing
+			// version, or the property it reads.
+			if patch.Version == "" {
+				clog.InfoContextf(ctx, "Found %s:%s — patch has no version, preserving existing version %s",
+					patch.GroupID, patch.ArtifactID, dep.Version)
+				delete(missingDeps, patch)
 				continue
 			}
 			if isPropertyReference(dep.Version) {
@@ -333,12 +401,11 @@ func applyPatchesToDeps(ctx context.Context, deps *[]gopom.Dependency, patches [
 				delete(missingDeps, patch)
 				continue
 			}
-			// A patch with no version is a scope-only entry (e.g. scope: provided
-			// to suppress a relocated artifact). Don't overwrite the existing version.
-			if patch.Version == "" {
-				clog.InfoContextf(ctx, "Found %s:%s — patch has no version, preserving existing version %s",
-					patch.GroupID, patch.ArtifactID, dep.Version)
+			if mavenversion.IsDowngrade(dep.Version, patch.Version) {
+				clog.WarnContextf(ctx, "Skipping %s:%s: requested version %s is older than %s already set",
+					patch.GroupID, patch.ArtifactID, patch.Version, dep.Version)
 				delete(missingDeps, patch)
+				skipped = append(skipped, patch)
 				continue
 			}
 			clog.InfoContextf(ctx, "Patching %s:%s from %s to %s (scope: %s)",
@@ -347,12 +414,24 @@ func applyPatchesToDeps(ctx context.Context, deps *[]gopom.Dependency, patches [
 			delete(missingDeps, patch)
 		}
 	}
+	return skipped
 }
 
 // PatchProject applies dependency and property patches to a parsed pom.xml.
 // project is a gopom.Project — a Go struct that mirrors the Maven POM XML
 // schema and can be round-tripped back to XML via project.Marshal().
 func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, propertyPatches map[string]string) (*gopom.Project, error) {
+	return patchProject(ctx, project, patches, propertyPatches, nil)
+}
+
+// patchProject is PatchProject with the patches already skipped as
+// downgrades elsewhere (for example through a property in a parent POM).
+//
+// Families such as jackson or netty are pinned in lockstep. A patch for a
+// dependency the POM does not declare is held back when a patch in the same
+// group at the same version was skipped, so the family is not split between
+// the newer version that was kept and the older pinned one.
+func patchProject(ctx context.Context, project *gopom.Project, patches []Patch, propertyPatches map[string]string, skipped []Patch) (*gopom.Project, error) {
 	if propertyPatches == nil {
 		propertyPatches = make(map[string]string)
 	}
@@ -362,15 +441,15 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 	}
 
 	// Track dependencies that weren't found (will be added to DependencyManagement)
-	missingDeps := make(map[Patch]Patch)
+	missingDeps := make(map[Patch]struct{}, len(patches))
 	for _, p := range patches {
 		clog.InfoContextf(ctx, "Processing patch: %s:%s @ %s", p.GroupID, p.ArtifactID, p.Version)
-		missingDeps[p] = p
+		missingDeps[p] = struct{}{}
 	}
 
-	applyPatchesToDeps(ctx, project.Dependencies, patches, missingDeps, propertyPatches)
+	skipped = append(skipped, applyPatchesToDeps(ctx, project.Dependencies, patches, missingDeps, propertyPatches)...)
 	if project.DependencyManagement != nil {
-		applyPatchesToDeps(ctx, project.DependencyManagement.Dependencies, patches, missingDeps, propertyPatches)
+		skipped = append(skipped, applyPatchesToDeps(ctx, project.DependencyManagement.Dependencies, patches, missingDeps, propertyPatches)...)
 	}
 
 	// Add missing dependencies to DependencyManagement
@@ -383,7 +462,18 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 			project.DependencyManagement.Dependencies = &[]gopom.Dependency{}
 		}
 
-		for _, md := range missingDeps {
+		// Walk patches rather than the map so additions keep the request order
+		// and the same request always writes the same POM.
+		for _, md := range patches {
+			if _, missing := missingDeps[md]; !missing {
+				continue
+			}
+			delete(missingDeps, md)
+			if kept, held := keptFamilyMember(md, skipped); held {
+				clog.WarnContextf(ctx, "Skipping %s:%s: %s:%s in the same group is kept at a newer version than the requested %s",
+					md.GroupID, md.ArtifactID, kept.GroupID, kept.ArtifactID, md.Version)
+				continue
+			}
 			clog.InfoContextf(ctx, "Adding missing dependency: %s:%s @ %s", md.GroupID, md.ArtifactID, md.Version)
 			// A wildcard (unset) or "none" patch that matched nothing falls back to
 			// pinning the plain classifier-less artifact.
@@ -409,16 +499,34 @@ func PatchProject(ctx context.Context, project *gopom.Project, patches []Patch, 
 		return project, nil
 	}
 
-	// Update existing properties
+	// Update existing properties. A value older than the one the POM already
+	// sets is skipped, whether it came from an explicit property or from a
+	// dependency that reads the property.
 	for k, v := range propertyPatches {
 		val, exists := project.Properties.Entries[k]
 		if exists {
+			if mavenversion.IsDowngrade(val, v) {
+				clog.WarnContextf(ctx, "Skipping property %s: requested version %s is older than %s already set", k, v, val)
+				continue
+			}
 			clog.InfoContextf(ctx, "Updating property: %s from %s to %s", k, val, v)
 			project.Properties.Entries[k] = v
 		}
 	}
 
 	return project, nil
+}
+
+// keptFamilyMember returns a skipped patch in the same group and at the same
+// requested version as p, if there is one.
+func keptFamilyMember(p Patch, skipped []Patch) (Patch, bool) {
+	i := slices.IndexFunc(skipped, func(s Patch) bool {
+		return s.GroupID == p.GroupID && s.Version == p.Version
+	})
+	if i < 0 {
+		return Patch{}, false
+	}
+	return skipped[i], true
 }
 
 // resolvePropertyPomPath returns the current or parent POM file that defines property.

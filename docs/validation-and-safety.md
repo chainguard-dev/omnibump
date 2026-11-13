@@ -102,11 +102,33 @@ omnibump --packages "github.com/docker/docker@v28.0.0"
 
 ### Downgrade Prevention
 
-- Prevents downgrades in both direct dependencies and property-based versions
+- A requested version older than the one the POM already sets is skipped with
+  a warning, never an error. This covers literal `<version>` elements,
+  `${property}` versions (including properties defined in a parent POM) and
+  explicit property updates
+- Versions are ordered the way Maven orders them, so `2.0.61.Final` equals
+  `2.0.61`, `6.1.0-RC1` comes before `6.1.0`, and `33.4.8-jre` before
+  `33.7.2-jre`
+- A dependency the POM does not declare has no version to compare against: it
+  is added to `<dependencyManagement>` at the requested version, which can
+  still lower a version that would otherwise arrive transitively
+- Families pinned in lockstep stay together: an undeclared dependency is not
+  added when another requested dependency in the same `groupId` at the same
+  version was skipped as a downgrade (e.g. `jackson-core@2.21.7` is left out
+  when `jackson-databind@2.21.7` is skipped because the POM has 2.22.4)
+- Validation accepts a version equal to or newer than the requested one
+
+```bash
+# pom.xml: <version.activemq>6.3.3</version.activemq>
+omnibump --packages "org.apache.activemq@activemq-broker@6.2.7"
+# WARN Skipping org.apache.activemq:activemq-broker: requested version 6.2.7 is older than 6.3.3 set by property version.activemq
+```
 
 ### Scope Preservation
 
 - Maintains dependency scope (compile, test, runtime, provided) during updates
+- A versionless entry (`groupId@artifactId@@provided`) never changes an
+  existing version or the property it reads
 
 ## Gradle Validation
 
