@@ -22,6 +22,7 @@ import (
 	"github.com/chainguard-dev/gopom"
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
+	"github.com/chainguard-dev/omnibump/pkg/languages/java/internal/mavenversion"
 	"github.com/chainguard-dev/omnibump/pkg/pathutil"
 )
 
@@ -215,7 +216,9 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 
 	// Dependency patches can target versions declared as ${property}. Resolve
 	// those first so the property update is sent to the POM that defines it.
-	patches, propertyUpdates, err := dependencyPropertyUpdates(ctx, pomPath, patches, cfg.Properties, cfg.RootDir)
+	// Patches skipped there as downgrades hold back undeclared members of their
+	// family when the root POM is patched below.
+	patches, propertyUpdates, skipped, err := dependencyPropertyUpdates(ctx, pomPath, patches, cfg.Properties, cfg.RootDir)
 	if err != nil {
 		return fmt.Errorf("failed to resolve dependency property updates: %w", err)
 	}
@@ -244,9 +247,10 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 
 	updatedPoms := make(map[string][]byte)
 	for updatePomPath, groupedPropertyUpdates := range propertiesByPom {
-		var pomPatches []Patch
+		var pomPatches, pomSkipped []Patch
 		if updatePomPath == pomPath {
 			pomPatches = patches
+			pomSkipped = skipped
 		}
 		if err := pathutil.ValidatePathWithinRoot(cfg.RootDir, updatePomPath); err != nil {
 			return fmt.Errorf("refusing to update pom file %s: %w", updatePomPath, err)
@@ -256,7 +260,7 @@ func (m *Maven) Update(ctx context.Context, cfg *languages.UpdateConfig) error {
 		for _, propertyUpdate := range groupedPropertyUpdates {
 			properties[propertyUpdate.propertyName] = propertyUpdate.propertyValue
 		}
-		updatedPom, err := UpdatePom(ctx, updatePomPath, pomPatches, properties)
+		updatedPom, err := updatePom(ctx, updatePomPath, pomPatches, properties, pomSkipped)
 		if err != nil {
 			return fmt.Errorf("failed to update pom file %s: %w", updatePomPath, err)
 		}
@@ -328,7 +332,7 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 		// Check in dependencies
 		if project.Dependencies != nil {
 			for _, pomDep := range *project.Dependencies {
-				if matches(pomDep) && resolveVersion(pomDep.Version, properties) == dep.Version {
+				if matches(pomDep) && mavenversion.AtLeast(resolveVersion(pomDep.Version, properties), dep.Version) {
 					found = true
 					break
 				}
@@ -338,7 +342,7 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 		// Check in dependency management
 		if !found && project.DependencyManagement != nil && project.DependencyManagement.Dependencies != nil {
 			for _, pomDep := range *project.DependencyManagement.Dependencies {
-				if matches(pomDep) && resolveVersion(pomDep.Version, properties) == dep.Version {
+				if matches(pomDep) && mavenversion.AtLeast(resolveVersion(pomDep.Version, properties), dep.Version) {
 					found = true
 					break
 				}
@@ -350,11 +354,12 @@ func (m *Maven) Validate(ctx context.Context, cfg *languages.UpdateConfig) error
 		}
 	}
 
-	// Validate properties
+	// Validate properties. A value newer than expected passes: Update skips a
+	// request older than what the POM already sets.
 	for propName, expectedValue := range cfg.Properties {
 		if properties != nil {
 			if actualValue, exists := properties.Entries[propName]; exists {
-				if actualValue != expectedValue {
+				if !mavenversion.AtLeast(actualValue, expectedValue) {
 					return fmt.Errorf("%w: property %s has value %s, expected %s", ErrPropertyValidationFailed, propName, actualValue, expectedValue)
 				}
 				continue
