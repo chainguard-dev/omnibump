@@ -17,6 +17,7 @@ import (
 	"github.com/chainguard-dev/omnibump/pkg/analyzer"
 	"github.com/chainguard-dev/omnibump/pkg/gradlefile"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
+	"github.com/chainguard-dev/omnibump/pkg/languages/java/internal/mavenversion"
 )
 
 // Gradle implements the BuildTool interface for Gradle projects.
@@ -159,8 +160,9 @@ func (g *Gradle) Validate(ctx context.Context, cfg *languages.UpdateConfig) erro
 	}
 
 	var failures []string
+	kept := findKeptFamilies(model, cfg.Dependencies)
 	for _, dep := range cfg.Dependencies {
-		if failure := validateDependency(model, dep); failure != "" {
+		if failure := validateDependency(model, dep, kept); failure != "" {
 			failures = append(failures, failure)
 		}
 	}
@@ -188,8 +190,9 @@ type effectiveVersion struct {
 }
 
 // validateDependency verifies that at least one mechanism resolves the
-// dependency to the expected version. Returns a failure description or "".
-func validateDependency(model *projectModel, dep languages.Dependency) string {
+// dependency to the expected version. A dependency the update held back with
+// its family (see findKeptFamilies) passes. Returns a failure description or "".
+func validateDependency(model *projectModel, dep languages.Dependency, kept map[familyKey]string) string {
 	if dep.Version == "" {
 		return ""
 	}
@@ -201,12 +204,23 @@ func validateDependency(model *projectModel, dep languages.Dependency) string {
 
 	versions := effectiveVersions(model, module, group, artifact)
 	if len(versions) == 0 {
+		if _, held := kept[familyKey{group, dep.Version}]; held {
+			return ""
+		}
 		return fmt.Sprintf("%s: not found in project after update", module)
 	}
+	resolved := make([]string, 0, len(versions))
 	for _, v := range versions {
 		if v.version == dep.Version {
 			return ""
 		}
+		resolved = append(resolved, v.version)
+	}
+	// The update skips a request older than what the project declares, so a
+	// newer declared version passes. A classifier kept with the version does
+	// not count against it.
+	if mavenversion.AtLeast(mavenversion.Highest(plainVersions(resolved)), dep.Version) {
+		return ""
 	}
 	return fmt.Sprintf("%s: %s, expected %s", module, versions[0].desc, dep.Version)
 }
@@ -214,6 +228,35 @@ func validateDependency(model *projectModel, dep languages.Dependency) string {
 // effectiveVersions collects every version the project resolves module to,
 // across catalogs, declarations, referenced variables and force blocks.
 func effectiveVersions(model *projectModel, module, group, artifact string) []effectiveVersion {
+	versions := declaredSiteVersions(model, module, group, artifact)
+	for _, version := range model.pinnedSites[module] {
+		versions = append(versions, effectiveVersion{
+			version: version,
+			desc:    fmt.Sprintf("pinned to version %s", version),
+		})
+	}
+	return versions
+}
+
+// declaredVersions returns the versions the build files declare for module
+// ("group:artifact"), leaving out omnibump's managed force pins and
+// declarations without a version. A module declared nowhere has none.
+func declaredVersions(model *projectModel, module string) []string {
+	group, artifact, _ := strings.Cut(module, ":")
+	sites := declaredSiteVersions(model, module, group, artifact)
+	versions := make([]string, 0, len(sites))
+	for _, site := range sites {
+		if site.version != "" {
+			versions = append(versions, site.version)
+		}
+	}
+	return versions
+}
+
+// declaredSiteVersions collects the versions the build files declare for
+// module across catalogs, declarations, library() entries, resolution rules
+// and the variables they reference.
+func declaredSiteVersions(model *projectModel, module, group, artifact string) []effectiveVersion {
 	var versions []effectiveVersion
 
 	for _, site := range model.catalogLibrarySites[module] {
@@ -269,12 +312,6 @@ func effectiveVersions(model *projectModel, module, group, artifact string) []ef
 			})
 		}
 	}
-	for _, version := range model.pinnedSites[module] {
-		versions = append(versions, effectiveVersion{
-			version: version,
-			desc:    fmt.Sprintf("pinned to version %s", version),
-		})
-	}
 	return versions
 }
 
@@ -314,18 +351,26 @@ func validateProperty(model *projectModel, name, expected string) string {
 		return fmt.Sprintf("property %s: %v", name, ErrPropertyNotFound)
 	}
 	for _, site := range catalogSites {
-		if site.version.Value != expected {
+		if !propertyValueSatisfies(site.version.Value, expected) {
 			return fmt.Sprintf("property %s: catalog key has value %s in %s, expected %s",
 				name, site.version.Value, site.path(), expected)
 		}
 	}
 	for _, site := range variableSites {
-		if site.value() != expected {
+		if !propertyValueSatisfies(site.value(), expected) {
 			return fmt.Sprintf("property %s: has value %s in %s, expected %s",
 				name, site.value(), site.path(), expected)
 		}
 	}
 	return ""
+}
+
+// propertyValueSatisfies reports whether a property's value meets the
+// expected one: equal to it, or newer when the update skipped the request as
+// a downgrade.
+func propertyValueSatisfies(value, expected string) bool {
+	plain, _ := gradlefile.SplitVersionSuffix(value)
+	return value == expected || mavenversion.AtLeast(plain, expected)
 }
 
 // findBuildFiles finds all Gradle files that can contain dependency versions:

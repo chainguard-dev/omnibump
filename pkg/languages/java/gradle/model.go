@@ -539,6 +539,25 @@ func (m *projectModel) resolveCatalogValue(library gradlefile.CatalogLibrary) st
 	return library.Version
 }
 
+// catalogSiteValues returns the value at every definition site of a catalog
+// version key.
+func catalogSiteValues(sites []catalogVersionSite) []string {
+	values := make([]string, 0, len(sites))
+	for _, site := range sites {
+		values = append(values, site.version.Value)
+	}
+	return values
+}
+
+// variableValues returns the value at every definition site.
+func variableValues(sites []variableSite) []string {
+	values := make([]string, 0, len(sites))
+	for _, site := range sites {
+		values = append(values, site.value())
+	}
+	return values
+}
+
 // rootBuildFile picks a representative root build script: the build file
 // adjacent to the root settings file, else the shallowest build file. Returns
 // nil when the project has no build script. The managed block lives in the

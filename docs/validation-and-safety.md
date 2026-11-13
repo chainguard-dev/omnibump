@@ -110,6 +110,21 @@ omnibump --packages "github.com/docker/docker@v28.0.0"
 
 ## Gradle Validation
 
+### Downgrade Prevention
+
+- A requested version older than the highest version the build declares for
+  that module (version catalog, version variable, inline declaration,
+  `library()` entry or resolution rule) is skipped whole with a warning,
+  including the managed `resolutionStrategy.force` pin that would otherwise
+  lower it on every classpath
+- An explicit property older than its current value is skipped the same way
+- A module the build does not declare is force-pinned at the requested
+  version, which can still lower a version that would otherwise arrive
+  transitively, unless another requested module in the same group at the same
+  version was skipped as a downgrade
+- A classifier or extension kept with a version
+  (`2.0.61.Final:linux-x86_64`) is preserved when the version is bumped
+
 ### Format Detection
 
 - Automatically handles both Groovy DSL and Kotlin DSL

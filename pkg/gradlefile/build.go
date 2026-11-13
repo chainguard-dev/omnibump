@@ -45,7 +45,9 @@ type DependencyDecl struct {
 	Artifact string
 
 	// Version is the literal version, or empty when the version is a
-	// variable reference or the declaration carries no version.
+	// variable reference or the declaration carries no version. In string
+	// notation it includes any ":classifier" or "@extension" that follows the
+	// version; see SplitVersionSuffix.
 	Version string
 
 	// VarRef is the referenced variable path when the version is
@@ -189,9 +191,10 @@ func (f *BuildFile) Changed() bool { return f.buf.changed() }
 // ChangeCount returns the number of queued edits that modify the content.
 func (f *BuildFile) ChangeCount() int { return f.buf.changeCount() }
 
-// SetDependencyVersion queues an in-place rewrite of d's version literal.
-// Declarations whose version is a variable reference cannot be edited here;
-// update the variable definition instead.
+// SetDependencyVersion queues an in-place rewrite of d's version literal,
+// keeping any classifier or extension that follows it. Declarations whose
+// version is a variable reference cannot be edited here; update the variable
+// definition instead.
 func (f *BuildFile) SetDependencyVersion(d DependencyDecl, version string) error {
 	if err := ValidateVersion(version); err != nil {
 		return err
@@ -199,10 +202,12 @@ func (f *BuildFile) SetDependencyVersion(d DependencyDecl, version string) error
 	if d.VarRef != "" || !d.versionSpan.valid() || d.Kind == CatalogRef {
 		return fmt.Errorf("%w: %s:%s has no literal version in %s", ErrNotEditable, d.Group, d.Artifact, f.path)
 	}
-	return f.buf.add(d.versionSpan, version)
+	_, suffix := SplitVersionSuffix(d.Version)
+	return f.buf.add(d.versionSpan, version+suffix)
 }
 
-// SetVariable queues an in-place rewrite of v's value.
+// SetVariable queues an in-place rewrite of v's value. A classifier or
+// extension kept in the value ("2.0.61.Final:linux-x86_64") is preserved.
 func (f *BuildFile) SetVariable(v VarDef, value string) error {
 	if err := ValidateVersion(value); err != nil {
 		return err
@@ -210,7 +215,18 @@ func (f *BuildFile) SetVariable(v VarDef, value string) error {
 	if !v.valueSpan.valid() {
 		return fmt.Errorf("%w: variable %s in %s", ErrNotEditable, v.Path(), f.path)
 	}
-	return f.buf.add(v.valueSpan, value)
+	_, suffix := SplitVersionSuffix(v.Value)
+	return f.buf.add(v.valueSpan, value+suffix)
+}
+
+// SplitVersionSuffix splits a version token into the version and whatever
+// follows it in a coordinate: a ":classifier", an "@extension", or both, as
+// in "2.0.61.Final:linux-x86_64@jar". The suffix is "" for a plain version.
+func SplitVersionSuffix(token string) (version, suffix string) {
+	if i := strings.IndexAny(token, ":@"); i >= 0 {
+		return token[:i], token[i:]
+	}
+	return token, ""
 }
 
 // scanDependencies finds all dependency declarations in the script.

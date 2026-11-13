@@ -617,6 +617,58 @@ func TestParseBuild_FormatPreservedOutsideEdit(t *testing.T) {
 	}
 }
 
+// TestSetDependencyVersion_KeepsClassifierAndExtension bumps coordinates that
+// carry a classifier or an extension after the version. Only the version
+// changes; dropping the classifier would resolve the plain jar instead.
+func TestSetDependencyVersion_KeepsClassifierAndExtension(t *testing.T) {
+	tests := []struct {
+		name, content, want string
+	}{{
+		name:    "classifier",
+		content: `runtimeOnly "io.netty:netty-tcnative-boringssl-static:2.0.61.Final:linux-x86_64"`,
+		want:    `runtimeOnly "io.netty:netty-tcnative-boringssl-static:2.0.70.Final:linux-x86_64"`,
+	}, {
+		name:    "extension",
+		content: `implementation 'io.netty:netty-tcnative-boringssl-static:2.0.61.Final@jar'`,
+		want:    `implementation 'io.netty:netty-tcnative-boringssl-static:2.0.70.Final@jar'`,
+	}, {
+		name:    "classifier and extension",
+		content: `runtimeOnly "io.netty:netty-tcnative-boringssl-static:2.0.61.Final:osx-aarch_64@jar"`,
+		want:    `runtimeOnly "io.netty:netty-tcnative-boringssl-static:2.0.70.Final:osx-aarch_64@jar"`,
+	}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := mustParseBuild(t, "build.gradle", tt.content)
+			d := findDecl(t, f, "io.netty", "netty-tcnative-boringssl-static", StringNotation)
+			if err := f.SetDependencyVersion(d, "2.0.70.Final"); err != nil {
+				t.Fatalf("SetDependencyVersion() error = %v", err)
+			}
+			if got := string(f.Content()); got != tt.want {
+				t.Errorf("content: got = %q, want = %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSplitVersionSuffix(t *testing.T) {
+	tests := []struct {
+		name, token, version, suffix string
+	}{
+		{"plain version", "2.0.61.Final", "2.0.61.Final", ""},
+		{"classifier", "2.0.61.Final:linux-x86_64", "2.0.61.Final", ":linux-x86_64"},
+		{"extension", "1.0@jar", "1.0", "@jar"},
+		{"classifier and extension", "2.0.61.Final:osx-aarch_64@jar", "2.0.61.Final", ":osx-aarch_64@jar"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			version, suffix := SplitVersionSuffix(tt.token)
+			if version != tt.version || suffix != tt.suffix {
+				t.Errorf("SplitVersionSuffix(%q): got = (%q, %q), want = (%q, %q)", tt.token, version, suffix, tt.version, tt.suffix)
+			}
+		})
+	}
+}
+
 func TestSetDependencyVersion_RejectsInjection(t *testing.T) {
 	f := mustParseBuild(t, "build.gradle", `implementation "a.b:c:1.0"`)
 	d := findDecl(t, f, "a.b", "c", StringNotation)
