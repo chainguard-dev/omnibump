@@ -1,0 +1,46 @@
+// Verbatim copy of linkedin/ambry gradle/dependency-versions.gradle at e93f411bd4501f8e5e62ebc970a4c0ddbc56c114
+// https://github.com/linkedin/ambry/blob/e93f411bd4501f8e5e62ebc970a4c0ddbc56c114/gradle/dependency-versions.gradle
+// Copyright (C) 2014-2016 LinkedIn Corp. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+// this file except in compliance with the License. You may obtain a copy of the
+// License at  http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software distributed
+// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+// CONDITIONS OF ANY KIND, either express or implied.
+ext {
+    azureSdkBom = "1.2.17"
+    junitVersion = "4.12"
+    slf4jVersion = "1.7.35"
+    joptSimpleVersion = "4.9"
+    log4jVersion = "2.17.1"
+    jsonVersion = "20170516"
+    metricsVersion = "4.1.2"
+    commonsVersion = "1.9"
+    bouncycastleVersion = "1.64"
+    javaxVersion = "3.0.1"
+    jsr305Version = "3.0.2"
+    nettyVersion = "4.1.79.Final"
+    nettyTcNativeBoringSSLStatic_linux_x86_64 = "2.0.61.Final:linux-x86_64"
+    nettyTcNativeBoringSSLStatic_osx_aarch_64 = "2.0.61.Final:osx-aarch_64"
+    helixLockVersion = "1.4.3:jdk8"
+    helixVersion = "1.4.1:jdk8"
+    jacksonVersion = "2.13.5"
+    jaydioVersion = "0.1"
+    azureMsal4jVersion="1.7.1"
+    azureMsalClientCredentialVersion="1.0.0"
+    conscryptVersion = "2.2.1"
+    jimFsVersion = "1.1"
+    mysqlConnectorVersion = "8.0.21"
+    hikariVersion = "3.4.5"
+    lz4Version = "1.8.0"
+    zstdVersion = "1.5.2-3"
+    mockitoVersion = "5.14.2"
+    caffeineVersion = "2.9.3"
+    hadoopCommonVersion = "3.3.6"
+    commonsLangVersion = "3.12.0"
+    httpclientVersion = "4.5.14"
+    guavaVersion = "32.0.0-jre"
+    commonsIoVersion = "2.11.0"
+}

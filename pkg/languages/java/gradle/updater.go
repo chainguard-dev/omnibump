@@ -17,6 +17,7 @@ import (
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/omnibump/pkg/gradlefile"
 	"github.com/chainguard-dev/omnibump/pkg/languages"
+	"github.com/chainguard-dev/omnibump/pkg/languages/java/internal/mavenversion"
 	"github.com/chainguard-dev/omnibump/pkg/pathutil"
 )
 
@@ -73,6 +74,38 @@ type updatePlan struct {
 	// as bundled into a shipped artifact (fat jar, capsule, war, ...) plus any
 	// supplied explicitly via UpdateConfig.GradleForceConfigurations.
 	extraConfigs []string
+
+	// keptFamilies maps a requested group and version to a module of that
+	// group the project keeps at a newer version; see findKeptFamilies.
+	keptFamilies map[familyKey]string
+}
+
+// familyKey identifies the modules of one group requested at one version.
+type familyKey struct {
+	group, version string
+}
+
+// findKeptFamilies finds requested dependencies the project already declares
+// at a newer version, keyed by group and requested version. Families such as
+// jackson or netty are pinned in lockstep, so an undeclared member requested
+// at the same version is held back with them rather than force-pinned below
+// the member that was kept.
+func findKeptFamilies(model *projectModel, deps []languages.Dependency) map[familyKey]string {
+	kept := make(map[familyKey]string)
+	for _, dep := range deps {
+		if dep.Replace || dep.OldName != "" {
+			continue
+		}
+		group, artifact, err := depCoordinates(dep)
+		if err != nil {
+			continue
+		}
+		module := group + ":" + artifact
+		if _, older := olderThanDeclared(declaredVersions(model, module), dep.Version); older {
+			kept[familyKey{group, dep.Version}] = module
+		}
+	}
+	return kept
 }
 
 // computeExtraConfigs unions the statically detected ship configurations with
@@ -108,6 +141,7 @@ func resolveUpdates(ctx context.Context, model *projectModel, cfg *languages.Upd
 		requested:    make(map[string]string),
 		properties:   cfg.Properties,
 		extraConfigs: computeExtraConfigs(model, cfg),
+		keptFamilies: findKeptFamilies(model, cfg.Dependencies),
 	}
 
 	if err := plan.applyProperties(ctx); err != nil {
@@ -163,6 +197,34 @@ func (p *updatePlan) applyReplace(ctx context.Context, dep languages.Dependency)
 	return nil
 }
 
+// olderThanDeclared reports whether version is older than the highest of the
+// declared versions, and returns that highest version. Declared values that
+// are not concrete versions are ignored.
+func olderThanDeclared(declared []string, version string) (string, bool) {
+	highest := mavenversion.Highest(plainVersions(declared))
+	return highest, mavenversion.IsDowngrade(highest, version)
+}
+
+// plainVersions returns versions without any classifier or extension suffix,
+// so "2.0.61.Final:linux-x86_64" compares as 2.0.61.Final.
+func plainVersions(versions []string) []string {
+	plain := make([]string, len(versions))
+	for i, v := range versions {
+		plain[i], _ = gradlefile.SplitVersionSuffix(v)
+	}
+	return plain
+}
+
+// skipDowngrade reports whether version is older than what the project
+// declares, and logs the skip when it is.
+func skipDowngrade(ctx context.Context, target string, declared []string, version string) bool {
+	highest, older := olderThanDeclared(declared, version)
+	if older {
+		clog.WarnContextf(ctx, "Skipping %s: requested version %q is older than the declared version %q", target, version, highest)
+	}
+	return older
+}
+
 // requireVersion records the version requested for a routing target and
 // errors when a different version was already requested for it.
 func (p *updatePlan) requireVersion(target, version string) error {
@@ -187,11 +249,20 @@ func (p *updatePlan) applyProperties(ctx context.Context) error {
 
 	for _, name := range names {
 		value := p.properties[name]
+		catalogSites := p.model.catalogVersionSites[name]
+		variableSites := p.model.variableSitesFor(name)
+		// The current value is the catalog key's when there is one, matching
+		// the precedence applied below.
+		current := variableValues(variableSites)
+		if len(catalogSites) > 0 {
+			current = catalogSiteValues(catalogSites)
+		}
+		if skipDowngrade(ctx, "property "+name, current, value) {
+			continue
+		}
 		if err := p.requireVersion("property "+name, value); err != nil {
 			return err
 		}
-		catalogSites := p.model.catalogVersionSites[name]
-		variableSites := p.model.variableSitesFor(name)
 		switch {
 		case len(catalogSites) > 0:
 			if len(variableSites) > 0 {
@@ -235,6 +306,18 @@ func (p *updatePlan) applyDependency(ctx context.Context, dep languages.Dependen
 
 	if dep.Scope != "" || dep.Type != "" {
 		clog.DebugContextf(ctx, "Ignoring scope/type for %s: not applicable to Gradle", module)
+	}
+
+	// A request below what the project declares is skipped whole, including the
+	// force pin, which would otherwise lower the version on every classpath.
+	declared := declaredVersions(p.model, module)
+	if skipDowngrade(ctx, "dependency "+module, declared, dep.Version) {
+		return nil
+	}
+	if kept, ok := p.keptFamilies[familyKey{group, dep.Version}]; ok && len(declared) == 0 {
+		clog.WarnContextf(ctx, "Skipping dependency %s: %s in the same group is kept at a newer version than the requested %s",
+			module, kept, dep.Version)
+		return nil
 	}
 
 	catalogHandled, err := p.applyCatalogTier(ctx, module, dep.Version)

@@ -1,0 +1,1025 @@
+// Verbatim copy of linkedin/ambry build.gradle at e93f411bd4501f8e5e62ebc970a4c0ddbc56c114
+// https://github.com/linkedin/ambry/blob/e93f411bd4501f8e5e62ebc970a4c0ddbc56c114/build.gradle
+// Copyright (C) 2014-2016 LinkedIn Corp. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+// this file except in compliance with the License. You may obtain a copy of the
+// License at  http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software distributed
+// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+// CONDITIONS OF ANY KIND, either express or implied.
+
+buildscript {
+    repositories {
+        mavenCentral()
+        mavenLocal()
+    }
+    apply from: file('gradle/buildscript.gradle'), to: buildscript
+}
+
+apply plugin: 'org.shipkit.shipkit-auto-version'
+println "Building version $version"
+
+// Test classes whose tests are known to be flaky and benefit from extra retries.
+// Add a class (or glob like 'com.github.ambry.foo.*') here only with a tracking
+// issue/PR documenting the underlying race. The intTest task uses these via the
+// test-retry plugin's filter.includeClasses so only listed classes consume the
+// elevated retry budget; non-flaky tests fail fast on the first attempt,
+// surfacing real regressions immediately.
+ext.flakyIntTestClasses = [
+    // The full :ambry-server:intTest module is currently considered flaky.
+    // ServerHttp2Test.replicateBlobV2MultipleCases (PR #3245) and related
+    // tests in this package depend on cluster startup timing, replication
+    // catchup races, and HTTP/2 lifecycle behaviour that cannot be made
+    // deterministic without larger redesigns. Glob the whole package until
+    // those redesigns land, then narrow.
+    'com.github.ambry.server.*',
+]
+// Retry budget for tests in flakyIntTestClasses. Non-flaky tests get 0 retries.
+ext.flakyIntTestMaxRetries = 4
+// Total tolerated failures (per module) before retrying is disabled. Bumped
+// from the historical 5 because the whole :ambry-server:intTest module is in
+// the flaky allowlist and a bad CI runner can have several failures per round
+// before the retries succeed.
+ext.flakyIntTestMaxFailures = 10
+
+apply from: file('gradle/license.gradle')
+apply from: file('gradle/environment.gradle')
+apply from: file("gradle/dependency-versions.gradle")
+if (!project.hasProperty('disableShipkit')) {
+    apply from: file("gradle/ci-release.gradle")
+}
+
+allprojects {
+    group = "com.github.ambry"
+
+    apply plugin: 'eclipse'
+    apply plugin: 'idea'
+    apply plugin: 'project-report'
+    apply plugin: 'jacoco'
+    apply plugin: 'org.gradle.test-retry'
+
+    repositories {
+        mavenCentral()
+        mavenLocal()
+    }
+
+    configurations.all {
+        resolutionStrategy {
+            // Force avro-parent to version 1.11.4. Currently, a vulnerable version 1.7.7 is being picked up transitively.
+            force 'org.apache.avro:avro-parent:1.11.4'
+            // Force protobuf-parent to version 3.15.0. Currently, a vulnerable version 3.11.4 is being picked up
+            // transitively.
+            force 'com.google.protobuf:protobuf-parent:3.15.0'
+            // Keep ALL Jackson modules aligned; prevents transitive bumps (e.g., to 2.13.5)
+            force "com.fasterxml.jackson.core:jackson-annotations:$jacksonVersion",
+                    "com.fasterxml.jackson.core:jackson-core:$jacksonVersion",
+                    "com.fasterxml.jackson.core:jackson-databind:$jacksonVersion",
+                    "com.fasterxml.jackson.dataformat:jackson-dataformat-xml:$jacksonVersion",
+                    "com.fasterxml.jackson.datatype:jackson-datatype-jdk8:$jacksonVersion",
+                    "com.fasterxml.jackson.datatype:jackson-datatype-jsr310:$jacksonVersion",
+                    "com.fasterxml.jackson.module:jackson-module-afterburner:$jacksonVersion"
+        }
+    }
+}
+
+// Modules that use Netty heavily and benefit from paranoid leak detection in tests.
+// Other modules pay zero Netty-test overhead. Add a module here when test code
+// allocates ByteBufs and you want CI to catch leaks.
+def nettyModules = [
+        'ambry-commons', 'ambry-frontend', 'ambry-messageformat',
+        'ambry-network', 'ambry-protocol', 'ambry-replication', 'ambry-rest',
+        'ambry-router', 'ambry-server', 'ambry-store', 'ambry-utils'
+]
+
+subprojects {
+    apply plugin: 'java'
+
+    if (!project.hasProperty('disableShipkit')) {
+        apply from: "$rootDir/gradle/java-publishing.gradle"
+    }
+
+    sourceCompatibility = 1.8
+    targetCompatibility = 1.8
+
+    if (JavaVersion.current().java9Compatible) {
+        // Our consumers still run on java 8, so this flag ensures that our builds are backwards compatible at runtime
+        // with java 8 platform APIs.
+        compileJava {
+            options.compilerArgs.addAll(['--release', '8'])
+        }
+    }
+
+    sourceSets {
+        // separate source set for integration tests
+        intTest {
+            java.srcDir file('src/integration-test/java')
+            resources.srcDir file('src/integration-test/resources')
+            compileClasspath += sourceSets.main.output + sourceSets.test.output
+            runtimeClasspath += sourceSets.main.output + sourceSets.test.output
+        }
+    }
+
+    configurations {
+        // This configuration allows for test suites to properly depend on utility classes in other subprojects.
+        // Dependencies should be included in the classpath when depending on testArtifacts in another subproject
+        testArchives.extendsFrom testRuntimeOnly
+
+        // These configurations allow for the integration test source set to be compiled and run as a test suite.
+        // Integration tests should be able to get the same dependencies as the corresponding unit tests.
+        intTestImplementation.extendsFrom testImplementation
+        intTestRuntimeOnly.extendsFrom testRuntimeOnly
+
+        // This tells Gradle that the configurations used for building/running
+        // the sourceSet should inherit from your implementation bucket.
+        intTestImplementation {
+            // This is the direct fix for the 'canBeResolved=false' error
+            canBeResolved = true
+            extendsFrom testImplementation
+        }
+
+        intTestRuntimeOnly {
+            canBeResolved = true
+            extendsFrom testRuntimeOnly
+        }
+    }
+
+    // this test jar is used to represent a test dependency for a subproject, since depending directly on a source set
+    // does not guarantee that the source set was actually built.
+    task testJar(type: Jar, dependsOn: testClasses) {
+        archiveClassifier.set('test')
+        from sourceSets.test.output
+    }
+
+    artifacts {
+        // Depending on a jar instead of the source set directly prevents test subprojects from compiling before their
+        // dependencies are built.
+        testArchives testJar
+    }
+
+    dependencies {
+        implementation "org.slf4j:slf4j-api:$slf4jVersion"
+        implementation "com.google.code.findbugs:jsr305:$jsr305Version"
+        testImplementation "org.apache.logging.log4j:log4j-core:$log4jVersion"
+        testImplementation "org.apache.logging.log4j:log4j-api:$log4jVersion"
+        testImplementation "org.apache.logging.log4j:log4j-slf4j-impl:$log4jVersion"
+        testImplementation "junit:junit:$junitVersion"
+        testImplementation "org.mockito:mockito-core:$mockitoVersion"
+        testRuntimeOnly project(':log4j-test-config')
+    }
+
+    idea {
+        // since integration tests are in a separate source set, we have to tell intellij about them
+        module {
+            testSourceDirs += sourceSets.intTest.java.srcDirs
+            testResourceDirs += sourceSets.intTest.resources.srcDirs
+            scopes.TEST.plus += [configurations.intTestImplementation]
+        }
+    }
+
+    test {
+        // Enforce strictly serial test execution. Defaults already serialize, but being
+        // explicit prevents accidental enablement via --parallel or future config drift.
+        maxParallelForks = 1
+        testLogging {
+            exceptionFormat = 'full'
+            // FAILED stays in testLogging for the rich exception-trace format.
+            events "FAILED"
+        }
+        beforeTest { desc ->
+            // One line per test with a wall-clock timestamp. Duration of test N is
+            // roughly (test N+1 timestamp) - (test N timestamp). For the last test
+            // before a hang, the absence of a successor line names the culprit.
+            logger.lifecycle "[${new Date().format('HH:mm:ss.SSS')}] ${desc.className} > ${desc.name} STARTED"
+        }
+        afterTest { desc, result ->
+            // Passes are implied by the next STARTED line; emit explicit lines only for
+            // FAILED (with wall-clock duration) and SKIPPED (so assumeTrue/@Ignore are
+            // visible inline rather than only in the per-suite total).
+            def status = result.resultType.toString()
+            if (status == 'FAILURE') {
+                logger.lifecycle "[${new Date().format('HH:mm:ss.SSS')}] ${desc.className} > ${desc.name} FAILED (${result.endTime - result.startTime}ms)"
+            } else if (status == 'SKIPPED') {
+                logger.lifecycle "[${new Date().format('HH:mm:ss.SSS')}] ${desc.className} > ${desc.name} SKIPPED"
+            }
+        }
+        afterSuite { desc, result ->
+            if (desc.parent == null) {
+                logger.lifecycle "    suite total: ${result.testCount} tests, ${result.successfulTestCount} passed, ${result.failedTestCount} failed, ${result.skippedTestCount} skipped"
+            }
+        }
+        // Plugin for retrying flaky tests. Reference: https://github.com/gradle/test-retry-gradle-plugin
+        retry {
+            // The maximum number of times to retry an individual test
+            maxRetries = 2
+            // The maximum number of test failures that are allowed (per module) before retrying is disabled. The count applies to
+            // each round of test execution. For example, if maxFailures is 5 and 4 tests initially fail and then 3
+            // again on retry, this will not be considered too many failures and retrying will continue (if maxRetries {@literal >} 1).
+            // If 5 or more tests were to fail initially then no retry would be attempted.
+            maxFailures = 5
+            // Whether tests that initially fail and then pass on retry should fail the task.
+            failOnPassedAfterRetry = false
+        }
+        maxHeapSize = "6g"
+
+        // JVM startup tuning for short-lived test JVMs:
+        //   TieredStopAtLevel=1 stops the JIT at C1 (no C2). Test methods average <100ms;
+        //     the time saved skipping C2 compilation outweighs the slightly slower bytecode.
+        // Note: -XX:+UseSerialGC was tried but caused 4 StorageManagerTest assertions to
+        // fail (they count compaction threads using a loose filter; SerialGC's thread set
+        // bled into the count, e.g. expected:<2> but was:<13>). Keep G1 (the JDK default).
+        jvmArgs '-XX:TieredStopAtLevel=1'
+
+        // Per-class JVM isolation for ALL modules. Each test class gets its own JVM,
+        // guaranteeing static state, listener threads, port bindings, and any other
+        // JVM-resident resource cannot survive into the next class.
+        forkEvery = 1
+
+        // Netty leak verification scoped to modules that use Netty. paranoid +
+        // disabled allocator caches catches ByteBuf leaks but is 10-100x slower
+        // than defaults; non-Netty modules see zero overhead from this block.
+        if (project.name in nettyModules) {
+            systemProperty 'io.netty.leakDetection.level', 'paranoid'
+            systemProperty 'io.netty.allocator.tinyCacheSize', '0'
+            systemProperty 'io.netty.allocator.smallCacheSize', '0'
+            systemProperty 'io.netty.allocator.normalCacheSize', '0'
+            systemProperty 'io.netty.allocator.maxCachedBufferCapacity', '0'
+        }
+    }
+
+    task intTest(type: Test) {
+        description = 'Runs integration tests.'
+        group = 'verification'
+        testClassesDirs = sourceSets.intTest.output.classesDirs
+        classpath = sourceSets.intTest.runtimeClasspath
+        testLogging {
+            exceptionFormat = 'full'
+            // FAILED stays in testLogging for the rich exception-trace format.
+            events "FAILED"
+        }
+        beforeTest { desc ->
+            // Timestamped STARTED line per test. Duration of test N is roughly
+            // (test N+1 timestamp) - (test N timestamp). For the last test before
+            // a hang, the absence of a successor line names the culprit.
+            logger.lifecycle "[${new Date().format('HH:mm:ss.SSS')}] ${desc.className} > ${desc.name} STARTED"
+        }
+        afterTest { desc, result ->
+            // Passes are implied by the next STARTED line; emit FAILED and SKIPPED.
+            def status = result.resultType.toString()
+            if (status == 'FAILURE') {
+                logger.lifecycle "[${new Date().format('HH:mm:ss.SSS')}] ${desc.className} > ${desc.name} FAILED (${result.endTime - result.startTime}ms)"
+            } else if (status == 'SKIPPED') {
+                logger.lifecycle "[${new Date().format('HH:mm:ss.SSS')}] ${desc.className} > ${desc.name} SKIPPED"
+            }
+        }
+        afterSuite { desc, result ->
+            if (desc.parent == null) {
+                logger.lifecycle "    suite total: ${result.testCount} tests, ${result.successfulTestCount} passed, ${result.failedTestCount} failed, ${result.skippedTestCount} skipped"
+            }
+        }
+        // Allow for retrying flaky integration tests. Only test classes listed in the
+        // top-level ext.flakyIntTestClasses are eligible for retries — non-flaky tests
+        // fail fast on first failure, surfacing real regressions without auto-rerun masking.
+        // Both maxRetries and maxFailures are sourced from top-level ext globals so they
+        // can be tuned in one place (see top of build.gradle).
+        retry {
+            maxRetries = rootProject.ext.flakyIntTestMaxRetries
+            maxFailures = rootProject.ext.flakyIntTestMaxFailures
+            // Whether tests that initially fail and then pass on retry should fail the task.
+            failOnPassedAfterRetry = false
+            // Restrict retries to known-flaky classes. See the list in the top-level
+            // build.gradle (ext.flakyIntTestClasses) for entries + rationale.
+            filter {
+                rootProject.ext.flakyIntTestClasses.each { includeClasses.add(it) }
+            }
+        }
+        maxHeapSize = "6g"
+
+        // Note: TieredStopAtLevel=1 (used in test{}) is deliberately NOT set here.
+        // Integration tests run for seconds-to-minutes per method, hitting hot paths
+        // (SSL crypto, network replication) repeatedly. Skipping C2 optimization saved
+        // ~3-5s per JVM startup but degraded sustained throughput enough that
+        // replication tests exceeded their 2-minute budgets ("Did not verify in 2
+        // minutes" / SocketTimeoutException). Unit tests still get C1-only since
+        // their methods are <100ms.
+
+        // Note: forkEvery = 1 is deliberately NOT set for intTest. Integration tests
+        // rely on shared external state (MySQL schemas, connection pools, embedded
+        // services) that's implicitly initialized across test classes. Per-class JVM
+        // isolation broke MySqlNamedBlobDbIntegrationTest.testPutWithDigest[1] with
+        // a "Blob not found" error after the prior parameter variant succeeded —
+        // classic fresh-JVM-can't-find-warmed-up-state pattern. Unit tests stay with
+        // forkEvery = 1 in test{}; integration tests run in a single JVM per task.
+
+        // Netty leak verification scoped to nettyModules. Only `paranoid` for intTest;
+        // disabling allocator caches (as test{} does) made server-int-test's
+        // Http2NetworkClientTest.forceDeleteTest fire NettyByteBufLeakHelper assertions
+        // that cascaded into 13 follow-on failures (RouterClosed). Leak detection at
+        // paranoid level catches systemic issues without the false-positive risk of
+        // forcing every ByteBuf through the global allocator under integration load.
+        if (project.name in nettyModules) {
+            systemProperty 'io.netty.leakDetection.level', 'paranoid'
+        }
+    }
+
+    task allTest {
+        description = 'Runs unit and integration tests'
+        group = 'verification'
+    }
+    allTest.dependsOn test
+    allTest.dependsOn intTest
+
+    javadoc {
+        // TODO audit and fix our javadocs so that we don't need this setting
+        // This is mainly for cases where param/throws tags don't have descriptions
+        // Previously, javadocs weren't being compiled, but now shipkit automatically enables this build step
+        options.addStringOption('Xdoclint:none', '-quiet') // Suppress lint warnings
+        failOnError = false
+    }
+
+    task enforceObjectMapperUsage {
+        description = 'Ensures no raw new ObjectMapper() calls exist outside JsonUtil and audited compatibility tests.'
+        doLast {
+            // Intentional exemptions:
+            //   - JsonUtil.java: the canonical factory.
+            //   - *CompatibilityTest.java files below: deliberately use a strict default
+            //     ObjectMapper so they can detect a missing class-level
+            //     @JsonIgnoreProperties(ignoreUnknown = true) on a DTO. Switching them
+            //     to the lenient factory would mask the regression they exist to catch.
+            //   - AccountInfoMap.java: kept on master's strict ObjectMapper. Its
+            //     one-arg constructor is fed an operator-edited JSON file by
+            //     InMemoryAccountService (dev/local mode); strict deserialization
+            //     fails fast on field-name typos at startup. The two-arg constructor's
+            //     Helix-ZK / router-blob path consequently doesn't get the rolling-
+            //     deploy lenient guard from this file's mapper, but other readers of
+            //     the same data (AccountMetadataStore, AccountDao) still use the
+            //     lenient factory. See PR #3232 review thread r3164779558.
+            //   - Operator-supplied config / CLI tool inputs: strict deserialization is
+            //     intentional so a typo in a hand-edited field name fails fast at startup
+            //     rather than silently using a default value (see review thread above).
+            def exemptSuffixes = [
+                'com/github/ambry/utils/JsonUtil.java',
+                'com/github/ambry/account/AccountInfoMap.java',
+                'com/github/ambry/account/BackwardsCompatibilityTest.java',
+                'com/github/ambry/account/RampControlCompatibilityTest.java',
+                'com/github/ambry/account/MigrationConfigTest.java',
+                'com/github/ambry/account/DatasetBuilderCompatibilityTest.java',
+                'com/github/ambry/store/CompactionPolicySwitchInfoCompatibilityTest.java',
+                'com/github/ambry/clustermap/MaintenanceRecordCompatibilityTest.java',
+                // Operator-supplied config / CLI tool inputs — see comment above.
+                'com/github/ambry/clustermap/HelixBootstrapUpgradeUtil.java',
+                'com/github/ambry/cloud/VcrReplicationManager.java',
+                'com/github/ambry/commons/HostLevelThrottler.java',
+                'com/github/ambry/quota/capacityunit/JsonCUQuotaDataProviderUtil.java',
+                'com/github/ambry/quota/storage/JSONStringStorageQuotaSource.java',
+                'com/github/ambry/account/AccountTool.java',
+                'com/github/ambry/account/AccountUpdateTool.java',
+                'com/github/ambry/clustermap/HelixVcrPopulateTool.java',
+                // Tests for the operator-config sites above; kept on master state to
+                // mirror the production file (Cat E — no functional impact either way,
+                // but consistency with the production-side revert keeps the diff cleaner).
+                'com/github/ambry/quota/capacityunit/JsonCUQuotaDataProviderUtilTest.java',
+                'com/github/ambry/account/AccountUpdateToolTest.java',
+                'com/github/ambry/clustermap/HelixVcrPopulateToolTest.java',
+            ]
+            def violations = []
+            fileTree(dir: "${projectDir}/src", includes: ['**/*.java']).each { File f ->
+                def normalized = f.path.replace(File.separator, '/')
+                if (exemptSuffixes.any { normalized.endsWith(it) }) return
+                f.eachLine { line, lineNum ->
+                    if (line =~ /new\s+ObjectMapper\s*\(/) {
+                        violations << "${f.path}:${lineNum}: ${line.trim()}"
+                    }
+                }
+            }
+            if (!violations.isEmpty()) {
+                throw new GradleException(
+                    "Found raw ObjectMapper construction. Use JsonUtil.newObjectMapper() instead:\n"
+                    + violations.join('\n'))
+            }
+        }
+    }
+    check.dependsOn enforceObjectMapperUsage
+}
+
+project(':ambry-utils') {
+    dependencies {
+        implementation "io.dropwizard.metrics:metrics-core:$metricsVersion"
+        implementation "commons-codec:commons-codec:$commonsVersion"
+        implementation "org.json:json:$jsonVersion"
+        implementation "net.sf.jopt-simple:jopt-simple:$joptSimpleVersion"
+        implementation "io.netty:netty-all:$nettyVersion"
+        implementation "com.fasterxml.jackson.core:jackson-databind:$jacksonVersion"
+        testImplementation project(":ambry-test-utils")
+        testImplementation "io.netty:netty-transport-native-epoll:$nettyVersion"
+        testImplementation "commons-io:commons-io:$commonsIoVersion"
+    }
+}
+
+project(':ambry-test-utils') {
+    dependencies {
+        implementation "junit:junit:$junitVersion"
+        implementation "org.mockito:mockito-core:2.+"
+        implementation project(":ambry-api")
+        implementation project(":ambry-utils")
+        implementation project(":ambry-commons")
+        implementation project(":ambry-clustermap")
+        implementation project(":ambry-network")
+        implementation project(":ambry-router")
+        implementation project(":ambry-server")
+        implementation project(":ambry-store")
+        implementation project(":ambry-file-transfer")
+        implementation project(":ambry-protocol")
+        implementation project(":ambry-messageformat")
+        implementation project(":ambry-replication")
+        implementation project(":ambry-mysql")
+        implementation "org.bouncycastle:bcpkix-jdk15on:$bouncycastleVersion"
+        implementation "org.conscrypt:conscrypt-openjdk-uber:$conscryptVersion"
+        implementation "org.json:json:$jsonVersion"
+        implementation "org.apache.helix:helix-core:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:helix-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:zookeeper-api:$helixVersion" exclude group: 'org.apache.helix'
+        implementation("org.apache.hadoop:hadoop-common:$hadoopCommonVersion") {
+            exclude group: "org.bouncycastle"
+        }
+    }
+}
+
+project(':ambry-api') {
+    apply plugin: 'java-library'
+
+    dependencies {
+        implementation project(':ambry-utils')
+        implementation "io.dropwizard.metrics:metrics-core:$metricsVersion"
+        implementation "com.fasterxml.jackson.core:jackson-core:$jacksonVersion"
+        implementation "com.fasterxml.jackson.core:jackson-annotations:$jacksonVersion"
+        implementation "com.fasterxml.jackson.core:jackson-databind:$jacksonVersion"
+        implementation "com.fasterxml.jackson.dataformat:jackson-dataformat-xml:$jacksonVersion"
+        implementation "commons-codec:commons-codec:$commonsVersion"
+        // These dependencies are exposed in public API method signatures
+        api "io.netty:netty-all:$nettyVersion"
+        api "org.json:json:$jsonVersion"
+        testImplementation project(':ambry-clustermap')
+        testImplementation project(':ambry-test-utils')
+    }
+}
+
+project(':ambry-messageformat') {
+    dependencies {
+        implementation project(':ambry-api'),
+                project(':ambry-utils')
+        implementation "io.dropwizard.metrics:metrics-core:$metricsVersion"
+        testImplementation project(':ambry-test-utils')
+        testImplementation project(':ambry-commons')
+        testImplementation project(path: ':ambry-api', configuration: 'testArchives')
+    }
+}
+
+project(':ambry-commons') {
+    dependencies {
+        implementation project(':ambry-api'),
+                project(':ambry-messageformat'),
+                project(':ambry-utils')
+
+        // See https://github.com/facebook/zstd/releases for Zstd releases.  On Jan 2022, latest release is 1.5.2
+        // See https://repo.maven.apache.org/maven2/com/github/luben/zstd-jni/ for library versions.
+        implementation "com.github.luben:zstd-jni:$zstdVersion"
+
+        // See https://github.com/lz4/lz4/releases for LZ4 releases.
+        // There are JNI and Pure Java LZ4 provided at https://repo.maven.apache.org/maven2/org/lz4
+        // The latest LZ4 library is 1.8.0 on 06/2021.
+        implementation "org.lz4:lz4-java:$lz4Version"
+
+        implementation "org.conscrypt:conscrypt-openjdk-uber:$conscryptVersion"
+        implementation "io.netty:netty-all:$nettyVersion"
+        implementation "io.netty:netty-tcnative-boringssl-static:$nettyTcNativeBoringSSLStatic_linux_x86_64"
+        implementation "io.netty:netty-tcnative-boringssl-static:$nettyTcNativeBoringSSLStatic_osx_aarch_64"
+        implementation "org.apache.helix:helix-core:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:helix-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:zookeeper-api:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:metadata-store-directory-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:metrics-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "com.github.ben-manes.caffeine:caffeine:$caffeineVersion"
+        testImplementation project(':ambry-test-utils')
+        testImplementation project(':ambry-clustermap')
+        testImplementation project(path: ':ambry-clustermap', configuration: 'testArchives')
+    }
+}
+
+
+project(':ambry-account') {
+    dependencies {
+        implementation project(':ambry-api'),
+                project(':ambry-utils'),
+                project(':ambry-commons'),
+                project(':ambry-mysql')
+        implementation "org.apache.helix:helix-core:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:helix-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:zookeeper-api:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:metadata-store-directory-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:metrics-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "io.dropwizard.metrics:metrics-core:$metricsVersion"
+        implementation "org.json:json:$jsonVersion"
+        testImplementation project(':ambry-test-utils')
+        testImplementation project(':ambry-server')
+        testImplementation project(path: ':ambry-clustermap', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-api', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-server', configuration: 'testArchives')
+        testImplementation "com.google.jimfs:jimfs:$jimFsVersion"
+    }
+}
+
+project(':ambry-clustermap') {
+    dependencies {
+        implementation project(':ambry-api'),
+                project(':ambry-commons'),
+                project(':ambry-utils')
+        implementation "org.apache.helix:helix-core:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:helix-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:helix-lock:$helixLockVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:zookeeper-api:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:metadata-store-directory-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:metrics-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "com.fasterxml.jackson.core:jackson-core:$jacksonVersion"
+        implementation "com.fasterxml.jackson.core:jackson-annotations:$jacksonVersion"
+        implementation "com.fasterxml.jackson.core:jackson-databind:$jacksonVersion"
+        implementation "io.dropwizard.metrics:metrics-core:$metricsVersion"
+        implementation "org.json:json:$jsonVersion"
+        testImplementation project(':ambry-commons')
+        testImplementation project(':ambry-test-utils')
+        testImplementation project(':ambry-mysql')
+        testImplementation project(path: ':ambry-api', configuration: 'testArchives')
+    }
+}
+
+project(':ambry-network') {
+    dependencies {
+        implementation project(':ambry-api'),
+                project(':ambry-utils'),
+                project(':ambry-commons'),
+                project(':ambry-clustermap'),
+                project(':ambry-protocol')
+        implementation "io.netty:netty-all:$nettyVersion"
+        implementation "io.netty:netty-tcnative-boringssl-static:$nettyTcNativeBoringSSLStatic_linux_x86_64"
+        implementation "io.netty:netty-tcnative-boringssl-static:$nettyTcNativeBoringSSLStatic_osx_aarch_64"
+        implementation "io.netty:netty-transport-native-epoll:$nettyVersion"
+        implementation "io.dropwizard.metrics:metrics-core:$metricsVersion"
+        testImplementation project(':ambry-test-utils')
+        testImplementation "org.conscrypt:conscrypt-openjdk-uber:$conscryptVersion"
+        testImplementation "org.bouncycastle:bcpkix-jdk15on:$bouncycastleVersion"
+    }
+}
+
+project (':ambry-prioritization') {
+    dependencies{
+        implementation project(':ambry-api')
+        implementation project(':ambry-commons')
+        implementation project(':ambry-store')
+        implementation project(':ambry-clustermap')
+        implementation project(':ambry-replication')
+        implementation project(':ambry-utils')
+        implementation "io.dropwizard.metrics:metrics-core:$metricsVersion"
+        testImplementation project(':ambry-test-utils')
+        testImplementation "com.google.guava:guava:$guavaVersion"
+    }
+}
+
+project (':ambry-file-transfer') {
+    dependencies{
+        implementation project(':ambry-api')
+        implementation project(':ambry-commons')
+        implementation project(':ambry-store')
+        implementation project(':ambry-prioritization')
+        implementation project(':ambry-clustermap')
+        implementation project(':ambry-protocol')
+        implementation project(':ambry-utils')
+        implementation project(':ambry-network')
+        implementation "io.dropwizard.metrics:metrics-core:$metricsVersion"
+        testImplementation project(':ambry-test-utils')
+        testImplementation project(path: ':ambry-clustermap', configuration: 'testArchives')
+    }
+}
+
+project(':ambry-server') {
+    dependencies {
+        implementation project(':ambry-api'),
+                project(':ambry-cloud'),
+                project(':ambry-clustermap'),
+                project(':ambry-messageformat'),
+                project(':ambry-network'),
+                project(':ambry-protocol'),
+                project(':ambry-commons'),
+                project(':ambry-store'),
+                project(':ambry-utils'),
+                project(':ambry-rest'),
+                project(':ambry-account'),
+                project(':ambry-replication'),
+                project(':ambry-mysql'),
+                project(':ambry-prioritization'),
+                project(':ambry-file-transfer')
+        implementation "io.dropwizard.metrics:metrics-core:$metricsVersion"
+        implementation "io.dropwizard.metrics:metrics-jmx:$metricsVersion"
+        implementation "com.fasterxml.jackson.core:jackson-databind:$jacksonVersion"
+        runtimeOnly "org.apache.logging.log4j:log4j-core:$log4jVersion"
+        runtimeOnly "org.apache.logging.log4j:log4j-api:$log4jVersion"
+        runtimeOnly "org.apache.logging.log4j:log4j-slf4j-impl:$log4jVersion"
+        testImplementation project(':ambry-router')
+        testImplementation project(':ambry-test-utils')
+        testImplementation project(path: ':ambry-clustermap', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-api', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-replication', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-messageformat', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-store', configuration: 'testArchives')
+    }
+}
+
+project(':ambry-store') {
+    dependencies {
+        implementation project(':ambry-api'),
+                project(':ambry-utils'),
+                project(':ambry-account'),
+                project(':ambry-messageformat'),
+                project(':ambry-commons'),
+                project(':ambry-clustermap')
+        implementation "net.smacke:jaydio:$jaydioVersion"
+        implementation "io.dropwizard.metrics:metrics-core:$metricsVersion"
+        implementation "com.fasterxml.jackson.core:jackson-databind:$jacksonVersion"
+        implementation "com.fasterxml.jackson.core:jackson-annotations:$jacksonVersion"
+        testImplementation project(':ambry-test-utils')
+        testImplementation project(path: ':ambry-clustermap', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-api', configuration: 'testArchives')
+        testImplementation "commons-io:commons-io:$commonsIoVersion"
+        testImplementation "org.apache.helix:helix-core:$helixVersion" exclude group: 'org.apache.helix'
+        testImplementation "org.apache.helix:helix-common:$helixVersion" exclude group: 'org.apache.helix'
+        testImplementation "org.apache.helix:zookeeper-api:$helixVersion" exclude group: 'org.apache.helix'
+        testImplementation "org.apache.helix:metadata-store-directory-common:$helixVersion" exclude group: 'org.apache.helix'
+        testImplementation "org.apache.helix:metrics-common:$helixVersion" exclude group: 'org.apache.helix'
+        testImplementation("org.apache.hadoop:hadoop-common:$hadoopCommonVersion") {
+            exclude group: "org.bouncycastle"
+        }
+    }
+
+}
+
+
+project(':ambry-replication') {
+    dependencies {
+        implementation project(':ambry-api'),
+                project(':ambry-utils'),
+                project(':ambry-commons'),
+                project(':ambry-protocol'),
+                project(':ambry-store'),
+                project(':ambry-network'),
+                project(':ambry-clustermap'),
+                project(':ambry-messageformat')
+        implementation "io.dropwizard.metrics:metrics-core:$metricsVersion"
+        implementation "org.apache.commons:commons-lang3:$commonsLangVersion"
+        testImplementation project(':ambry-store')
+        testImplementation project(':ambry-clustermap')
+        testImplementation project(':ambry-test-utils')
+        testImplementation project(path: ':ambry-clustermap', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-api', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-messageformat', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-store', configuration: 'testArchives')
+    }
+}
+
+project(':ambry-tools') {
+    dependencies {
+        implementation project(':ambry-api'),
+                project(':ambry-account'),
+                project(':ambry-store'),
+                project(':ambry-server'),
+                project(':ambry-rest'),
+                project(':ambry-frontend'),
+                project(':ambry-cloud'),
+                project(':ambry-named-mysql'),
+                project(':ambry-test-utils'),
+                project(':ambry-protocol'),
+                project(':ambry-utils'),
+                project(':ambry-commons'),
+                project(':ambry-messageformat'),
+                project(':ambry-network'),
+                project(':ambry-mysql'),
+                project(':ambry-clustermap'),
+                project(':ambry-replication')
+        implementation "io.dropwizard.metrics:metrics-jmx:$metricsVersion"
+        implementation "net.sf.jopt-simple:jopt-simple:$joptSimpleVersion"
+        implementation platform("com.azure:azure-sdk-bom:$azureSdkBom")
+        implementation "com.azure:azure-storage-blob"
+        implementation "com.azure:azure-storage-blob-batch"
+        implementation "org.apache.helix:helix-core:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:helix-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:zookeeper-api:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:metadata-store-directory-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:metrics-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "commons-io:commons-io:$commonsIoVersion"
+        implementation "org.bouncycastle:bcpkix-jdk15on:$bouncycastleVersion"
+        implementation "com.zaxxer:HikariCP:$hikariVersion"
+        testImplementation project(path: ':ambry-clustermap', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-account', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-store', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-api', configuration: 'testArchives')
+    }
+}
+
+project(':ambry-protocol') {
+    dependencies {
+        implementation project(':ambry-api'),
+                project(':ambry-clustermap'),
+                project(':ambry-messageformat'),
+                project(':ambry-utils'),
+                project(':ambry-commons')
+        testImplementation project(':ambry-test-utils')
+        testImplementation "org.apache.commons:commons-math3:3.6.1"
+        testImplementation "com.fasterxml.jackson.core:jackson-databind:$jacksonVersion"
+    }
+}
+
+project(':ambry-rest') {
+    dependencies {
+        implementation project(':ambry-api'),
+                project(':ambry-account'),
+                project(':ambry-utils'),
+                project(':ambry-commons'),
+                project(':ambry-quota'),
+                project(':ambry-network')
+        implementation "io.dropwizard.metrics:metrics-core:$metricsVersion"
+        implementation "io.dropwizard.metrics:metrics-jmx:$metricsVersion"
+        implementation "net.sf.jopt-simple:jopt-simple:$joptSimpleVersion"
+        implementation "io.netty:netty-all:$nettyVersion"
+        implementation "io.netty:netty-tcnative-boringssl-static:$nettyTcNativeBoringSSLStatic_linux_x86_64"
+        implementation "io.netty:netty-tcnative-boringssl-static:$nettyTcNativeBoringSSLStatic_osx_aarch_64"
+        implementation "io.netty:netty-transport-native-epoll:$nettyVersion"
+        implementation "javax.servlet:javax.servlet-api:$javaxVersion"
+        implementation "org.apache.logging.log4j:log4j-core:$log4jVersion"
+        implementation "org.apache.logging.log4j:log4j-api:$log4jVersion"
+        runtimeOnly "org.apache.logging.log4j:log4j-slf4j-impl:$log4jVersion"
+        testImplementation project(':ambry-test-utils')
+        testImplementation project(path: ':ambry-api', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-account', configuration: 'testArchives')
+        testImplementation "org.bouncycastle:bcpkix-jdk15on:$bouncycastleVersion"
+    }
+}
+
+project(':ambry-router') {
+    dependencies {
+        implementation project(':ambry-api'),
+                project(':ambry-utils'),
+                project(':ambry-commons'),
+                project(':ambry-clustermap'),
+                project(':ambry-messageformat'),
+                project(':ambry-protocol'),
+                project(':ambry-network'),
+                project(':ambry-cloud'),
+                project(':ambry-rest'),
+                project(':ambry-quota')
+        implementation "io.dropwizard.metrics:metrics-core:$metricsVersion"
+        implementation "org.bouncycastle:bcpkix-jdk15on:$bouncycastleVersion"
+        implementation "com.google.guava:guava:$guavaVersion"
+        testImplementation project(':ambry-test-utils')
+        testImplementation project(':ambry-mysql')
+        testImplementation project(path: ':ambry-network', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-cloud', configuration: 'testArchives')
+        testImplementation "org.apache.commons:commons-lang3:$commonsLangVersion"
+        testImplementation "org.apache.commons:commons-math:2.2"
+        testImplementation "org.apache.commons:commons-math3:3.6.1"
+    }
+}
+
+project(':ambry-frontend') {
+    dependencies {
+        implementation project(':ambry-api'),
+                project(':ambry-account'),
+                project(':ambry-utils'),
+                project(':ambry-commons'),
+                project(':ambry-rest'),
+                project(':ambry-router'),
+                project(':ambry-quota'),
+                project(':ambry-clustermap')
+        implementation "io.dropwizard.metrics:metrics-core:$metricsVersion"
+        implementation "com.fasterxml.jackson.core:jackson-databind:$jacksonVersion"
+        implementation "com.fasterxml.jackson.dataformat:jackson-dataformat-xml:$jacksonVersion"
+        implementation "commons-codec:commons-codec:$commonsVersion"
+        testImplementation project(':ambry-test-utils')
+        testImplementation project(':ambry-quota')
+        testImplementation project(':ambry-named-mysql')
+        testImplementation project(path: ':ambry-api', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-rest', configuration: 'testArchives')
+        testImplementation "com.google.guava:guava:$guavaVersion"
+        testImplementation "org.apache.commons:commons-lang3:$commonsLangVersion"
+    }
+}
+
+project(':ambry-cloud') {
+    dependencies {
+        implementation project(':ambry-api'),
+            project(':ambry-utils'),
+            project(':ambry-commons'),
+            project(':ambry-account'),
+            project(':ambry-replication'),
+            project(':ambry-rest'),
+            project(':ambry-store'),
+            project(':ambry-messageformat'),
+            project(':ambry-clustermap'),
+            project(':ambry-protocol')
+
+        // use compile to include these jars during compile-time and make it avlb for ambry-tools
+        // https://mvnrepository.com/artifact/com.azure/azure-sdk-bom
+        implementation platform("com.azure:azure-sdk-bom:$azureSdkBom")
+        implementation "com.azure:azure-cosmos"
+        implementation "com.azure:azure-data-tables"
+        implementation "com.azure:azure-identity"
+        implementation "com.azure:azure-security-keyvault-secrets"
+        implementation "com.azure:azure-storage-blob"
+        implementation "com.azure:azure-storage-blob-batch"
+
+        implementation "io.dropwizard.metrics:metrics-core:$metricsVersion"
+        implementation "io.dropwizard.metrics:metrics-jmx:$metricsVersion"
+        implementation "com.microsoft.azure:msal4j:$azureMsal4jVersion"
+        implementation "org.apache.helix:helix-core:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:helix-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:helix-lock:$helixLockVersion" exclude group: "org.apache.helix"
+        implementation "org.apache.helix:zookeeper-api:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:metadata-store-directory-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:metrics-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.httpcomponents:httpclient:$httpclientVersion"
+        implementation "org.apache.commons:commons-lang3:$commonsLangVersion"
+        testImplementation project(':ambry-router')
+        testImplementation project(':ambry-test-utils')
+        testImplementation project(path: ':ambry-clustermap', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-store', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-replication', configuration: 'testArchives')
+    }
+}
+
+project(':ambry-vcr') {
+    dependencies {
+        implementation project(':ambry-api'),
+                project(':ambry-server'),
+                project(':ambry-cloud'),
+                project(':ambry-commons'),
+                project(':ambry-utils'),
+                project(':ambry-network'),
+                project(':ambry-rest'),
+                project(':ambry-protocol'),
+                project(':ambry-replication'),
+                project(':ambry-messageformat')
+        implementation "io.dropwizard.metrics:metrics-core:$metricsVersion"
+        implementation "io.dropwizard.metrics:metrics-jmx:$metricsVersion"
+        testImplementation project(':ambry-test-utils')
+        testImplementation project(':ambry-clustermap')
+        testImplementation project(':ambry-store')
+        testImplementation project(path: ':ambry-clustermap', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-cloud', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-store', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-replication', configuration: 'testArchives')
+        testImplementation platform("com.azure:azure-sdk-bom:$azureSdkBom")
+        testImplementation "com.azure:azure-data-tables"
+        testImplementation "com.azure:azure-storage-blob"
+        testImplementation "org.apache.helix:helix-core:$helixVersion" exclude group: 'org.apache.helix'
+        testImplementation "org.apache.helix:helix-common:$helixVersion" exclude group: 'org.apache.helix'
+        testImplementation "org.apache.helix:zookeeper-api:$helixVersion" exclude group: 'org.apache.helix'
+        testImplementation "org.apache.helix:metadata-store-directory-common:$helixVersion" exclude group: 'org.apache.helix'
+        testImplementation "org.apache.helix:metrics-common:$helixVersion" exclude group: 'org.apache.helix'
+        testImplementation "com.fasterxml.jackson.core:jackson-databind:$jacksonVersion"
+        testImplementation "commons-io:commons-io:$commonsIoVersion"
+        testImplementation "org.apache.httpcomponents:httpclient:$httpclientVersion"
+    }
+}
+
+project(':ambry-named-mysql') {
+    dependencies {
+        implementation project(':ambry-api')
+        implementation project(':ambry-mysql')
+        implementation project(':ambry-commons')
+        implementation project(':ambry-utils')
+        implementation "mysql:mysql-connector-java:$mysqlConnectorVersion"
+        implementation "com.zaxxer:HikariCP:$hikariVersion"
+        implementation "io.dropwizard.metrics:metrics-core:$metricsVersion"
+        implementation "commons-codec:commons-codec:$commonsVersion"
+        testImplementation project(':ambry-test-utils')
+    }
+}
+
+project(':ambry-quota') {
+    dependencies {
+        implementation project(':ambry-api'),
+            project(':ambry-commons'),
+            project(':ambry-mysql'),
+            project(':ambry-clustermap'),
+            project(':ambry-utils')
+        implementation "org.apache.helix:helix-core:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:helix-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:zookeeper-api:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:metadata-store-directory-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:metrics-common:$helixVersion" exclude group: 'org.apache.helix'
+        testImplementation project(':ambry-test-utils')
+        testImplementation project(':ambry-account')
+        testImplementation project(path: ':ambry-clustermap', configuration: 'testArchives')
+        intTestImplementation project(path: ':ambry-api', configuration: 'testArchives')
+    }
+}
+
+project(':ambry-mysql') {
+    dependencies {
+        implementation project(':ambry-api')
+        implementation project(':ambry-utils')
+        implementation project(':ambry-commons')
+        implementation "mysql:mysql-connector-java:$mysqlConnectorVersion"
+        implementation "org.apache.commons:commons-lang3:$commonsLangVersion"
+        implementation "org.apache.helix:helix-core:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:helix-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:zookeeper-api:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:metadata-store-directory-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "org.apache.helix:metrics-common:$helixVersion" exclude group: 'org.apache.helix'
+        implementation "com.zaxxer:HikariCP:$hikariVersion"
+        testImplementation project(':ambry-test-utils')
+        testImplementation project(path: ':ambry-clustermap', configuration: 'testArchives')
+        testImplementation project(path: ':ambry-api', configuration: 'testArchives')
+    }
+}
+
+project(':ambry-all') {
+    dependencies {
+        // this is a meta project that depends on all of the "entry-point" subprojects to make it easier to pull in the
+        // entire dependency tree.
+        implementation project(':ambry-frontend')
+        implementation project(':ambry-server')
+        implementation project(':ambry-tools')
+        implementation project(':ambry-cloud')
+        implementation project(':ambry-named-mysql')
+        implementation project(':ambry-test-utils')
+        implementation project(':ambry-quota')
+        implementation project(':ambry-vcr')
+        implementation project(':ambry-file-transfer')
+    }
+}
+
+subprojects.each { subproject -> evaluationDependsOn(subproject.path)}
+
+task allJar(type: Jar, dependsOn: subprojects.assemble) {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    manifest {
+        attributes 'Implementation-Title': 'Ambry',
+                   'Main-Class': 'com.github.ambry.server.AmbryMain'
+    }
+    zip64 true
+    destinationDirectory.set(file('target'))
+    archiveBaseName.set('ambry')
+    subprojects.each { subproject ->
+        from  {
+            (subproject.configurations.archives.allArtifacts.files + subproject.configurations.runtimeClasspath).collect {
+                zipTree(it)
+            }
+        }
+    }
+    exclude 'META-INF/*.RSA', 'META-INF/*.SF','META-INF/*.DSA'
+}
+
+task allJarVcr(type: Jar, dependsOn: subprojects.assemble) {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    manifest {
+        attributes 'Implementation-Title': 'Vcr',
+                   'Main-Class': 'com.github.ambry.vcr.VcrMain'
+    }
+    zip64 true
+    destinationDirectory.set(file('target'))
+    archiveBaseName.set('ambry-vcr')
+    subprojects.each { subproject ->
+        from  {
+            (subproject.configurations.archives.allArtifacts.files + subproject.configurations.runtimeClasspath).collect {
+                zipTree(it)
+            }
+        }
+    }
+    exclude 'META-INF/*.RSA', 'META-INF/*.SF','META-INF/*.DSA'
+}
+
+task codeCoverageReport(type: JacocoReport) {
+    // This task will compile a report for whatever tests have been run.
+    // Make sure to run the desired test tasks before generating the coverate report.
+    executionData fileTree(project.rootDir.absolutePath).include("**/build/jacoco/*.exec")
+
+    subprojects.each {
+        sourceSets it.sourceSets.main
+    }
+
+    // always rerun task when requested to get new execution data
+    outputs.upToDateWhen { false }
+
+    reports {
+        xml.enabled true
+        xml.destination file("${buildDir}/reports/jacoco/report.xml")
+        html.enabled true
+        csv.enabled true
+    }
+}
+
+if (hasProperty('buildScan')) {
+    buildScan {
+        termsOfServiceUrl = 'https://gradle.com/terms-of-service'
+        termsOfServiceAgree = 'yes'
+    }
+}
