@@ -17,7 +17,7 @@ require (
 	github.com/tidwall/gjson v1.20.2
 	github.com/tidwall/sjson v1.2.9
 	golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e
-	golang.org/x/mod v0.42.0
+	golang.org/x/mod v0.43.0
 	golang.org/x/tools v0.52.0
 	k8s.io/apimachinery v0.37.2
 	sigs.k8s.io/release-utils v0.12.5
